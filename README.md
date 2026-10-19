@@ -31,7 +31,7 @@
 ## 프로젝트 구조와 요청 흐름
 
 ```text
-AWS_back/
+seoul_now_back/
 ├── app/
 │   ├── main.py          # FastAPI 앱 생성과 시작·종료 처리
 │   ├── api/             # 요청을 받는 경로와 객체 연결
@@ -91,8 +91,8 @@ Service가 AI·추천 모듈을 호출하고 결과를 조립합니다. **수집
 이미 프로젝트를 받았다면 `Dockerfile`과 `compose.yaml`이 있는 백엔드 폴더로 이동하세요. 아직 받지 않았다면 프로젝트를 둘 상위 폴더에서 다음 명령을 실행합니다.
 
 ```bash
-git clone https://github.com/AWS-Cloud-One/seoul_now_backend.git AWS_back
-cd AWS_back
+git clone https://github.com/AWS-Cloud-One/seoul_now_back.git
+cd seoul_now_back
 ```
 
 이후 명령은 모두 이 폴더에서 실행합니다. Docker Desktop을 켜고 아래 명령이 실행되는지 확인하세요.
