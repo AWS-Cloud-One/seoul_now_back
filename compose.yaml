@@ -1,0 +1,86 @@
+name: seoul-now-backend
+
+x-backend: &backend
+  build:
+    context: .
+    target: development
+  environment: &app-environment
+    APP_DATABASE_URL: ${APP_DATABASE_URL:-postgresql+psycopg://seoul:seoul_local@db:5432/seoul_now}
+    APP_CORS_ORIGINS: '${APP_CORS_ORIGINS:-["http://localhost:5173","http://127.0.0.1:5173"]}'
+    APP_DOCS_ENABLED: ${APP_DOCS_ENABLED:-true}
+    APP_DB_CONNECT_TIMEOUT_SECONDS: ${APP_DB_CONNECT_TIMEOUT_SECONDS:-3}
+    APP_HEALTH_TIMEOUT_SECONDS: ${APP_HEALTH_TIMEOUT_SECONDS:-5}
+  volumes:
+    - ./app:/app/app
+    - ./jobs:/app/jobs
+    - ./migrations:/app/migrations
+    - ./tests:/app/tests
+    - ./pyproject.toml:/app/pyproject.toml:ro
+
+services:
+  db:
+    image: postgis/postgis:17-3.6@sha256:eeead53aa76f9219eac3af490e00484a7dd604dbcbc3ed2ae0e96668986f16f3
+    # The upstream Debian image currently ships amd64 only (2026-10-19).
+    # Docker Desktop on Apple Silicon therefore needs amd64 emulation.
+    platform: linux/amd64
+    environment:
+      POSTGRES_DB: seoul_now
+      POSTGRES_USER: seoul
+      POSTGRES_PASSWORD: seoul_local
+    ports:
+      - "127.0.0.1:${DB_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U seoul -d seoul_now"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  migrate:
+    <<: *backend
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+    healthcheck:
+      disable: true
+    depends_on:
+      db:
+        condition: service_healthy
+
+  api:
+    <<: *backend
+    init: true
+    ports:
+      - "127.0.0.1:${API_PORT:-8000}:8000"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health/ready', timeout=6)"
+      interval: 10s
+      timeout: 8s
+      retries: 5
+      start_period: 10s
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  tests:
+    <<: *backend
+    profiles: ["test"]
+    command: ["pytest"]
+    environment:
+      <<: *app-environment
+      TEST_DATABASE_URL: ${APP_DATABASE_URL:-postgresql+psycopg://seoul:seoul_local@db:5432/seoul_now}
+    healthcheck:
+      disable: true
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+volumes:
+  postgres_data:

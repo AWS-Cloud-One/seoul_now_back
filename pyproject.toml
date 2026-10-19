@@ -1,0 +1,15 @@
+# Direct package versions live in requirements.txt / requirements-dev.txt.
+# Python is fixed by the Dockerfile base image.
+[tool.ruff]
+target-version = "py314"
+line-length = 100
+extend-exclude = [".tools", ".uv-cache"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-ra"
+markers = ["integration: requires a running PostgreSQL/PostGIS database"]

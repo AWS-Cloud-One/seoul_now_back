@@ -1,0 +1,25 @@
+.env
+.env.*
+!.env.example
+.venv/
+.tools/
+.uv-cache/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.DS_Store
+
+# Personal development notes and agent instructions.
+agent/
+AGENTS.md
+
+# Local source files, generated data and evaluation output.
+/data/raw/*
+!/data/raw/README.md
+/data/processed/*
+!/data/processed/README.md
+/evals/results/*
+!/evals/results/README.md
