@@ -1,9 +1,8 @@
-"""Register SQLAlchemy models here so Alembic can discover their metadata.
-
-Import each new model below and add its name to __all__.
-Application tables will be defined when their requirements are agreed.
-"""
+"""Register SQLAlchemy models here so Alembic can discover their metadata."""
 
 from app.db.base import Base
+from app.models.citydata import CityDataSnapshot
+from app.models.parking import CollectionRun, ParkingRecord
+from app.models.provider import ProviderSnapshot
 
-__all__ = ["Base"]
+__all__ = ["Base", "ProviderSnapshot", "CityDataSnapshot", "CollectionRun", "ParkingRecord"]

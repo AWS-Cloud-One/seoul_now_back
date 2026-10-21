@@ -2,7 +2,7 @@
 
 중심 담당: 백엔드·데이터 처리 공동.
 
-Kakao 장소·경로, TOPIS·서울 공공 데이터 등 제공처별 인증·요청·응답 변환을 작성할 위치다. 현재 실제 외부 클라이언트는 없다. 모델 제공처 연결은 [app/modules/ai/providers](../modules/ai/providers/README.md)에서 관리한다.
+Kakao 장소·경로, TOPIS·서울 공공 데이터 등 제공처별 인증·요청·응답 변환을 작성할 위치다. SeoulClient가 GetParkInfo JSON 통신을 구현한다. 카카오·TOPIS·인구 연결은 후속이다. 모델 제공처 연결은 [app/modules/ai/providers](../modules/ai/providers/README.md)에서 관리한다.
 
 - 제공처별 모듈을 만들고 API Service와 수집기에서 공유한다. 같은 API의 인증·재시도 코드를 각 담당 폴더에 복사하지 않는다.
 - HTTPX 비동기 클라이언트와 설정을 생성자로 전달받는 방식으로 작성한다. API는 lifespan, 수집은 단발 작업 범위에서 연결을 열고 닫는다.

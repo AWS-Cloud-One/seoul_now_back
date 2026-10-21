@@ -1,0 +1,30 @@
+services:
+  citydata-collector:
+    extends:
+      file: compose.yaml
+      service: api
+    ports: !reset []
+    command: ["python", "-m", "jobs.collect_citydata_all", "--interval", "600"]
+    restart: unless-stopped
+    healthcheck:
+      disable: true
+  municipal-parking-collector:
+    extends:
+      file: compose.yaml
+      service: api
+    image: seoul-now-backend-api
+    ports: !reset []
+    command: ["python", "-m", "jobs.collect_municipal_parking", "--interval", "300"]
+    restart: unless-stopped
+    healthcheck:
+      disable: true
+  topis-collector:
+    extends:
+      file: compose.yaml
+      service: api
+    image: seoul-now-backend-api
+    ports: !reset []
+    command: ["python", "-m", "jobs.collect_topis_network", "--all", "--interval", "300"]
+    restart: unless-stopped
+    healthcheck:
+      disable: true

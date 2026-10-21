@@ -17,6 +17,12 @@ class Settings(BaseSettings):
         hide_input_in_errors=True,
     )
 
+    data_go_kr_api_key: SecretStr = SecretStr("")
+    seoul_municipal_parking_api_key: SecretStr = SecretStr("")
+    seoul_topis_api_key: SecretStr = SecretStr("")
+    seoul_api_key: SecretStr = SecretStr("")
+    seoul_citydata_api_key: SecretStr = SecretStr("")
+
     app_name: str = "서울 지금 어디 API"
     docs_enabled: bool = True
     cors_origins: list[str] = Field(
