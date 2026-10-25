@@ -17,6 +17,9 @@ class Settings(BaseSettings):
         hide_input_in_errors=True,
     )
 
+    api_port: int = Field(default=8000, validation_alias="API_PORT", ge=1, le=65535)
+    db_port: int = Field(default=5432, validation_alias="DB_PORT", ge=1, le=65535)
+
     data_go_kr_api_key: SecretStr = SecretStr("")
     seoul_municipal_parking_api_key: SecretStr = SecretStr("")
     seoul_topis_api_key: SecretStr = SecretStr("")
