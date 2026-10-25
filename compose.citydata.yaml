@@ -28,3 +28,13 @@ services:
     restart: unless-stopped
     healthcheck:
       disable: true
+  supplemental-collector:
+    extends:
+      file: compose.yaml
+      service: api
+    image: seoul-now-backend-api
+    ports: !reset []
+    command: ["python", "-m", "jobs.collect_supplemental_loop"]
+    restart: unless-stopped
+    healthcheck:
+      disable: true
