@@ -23,3 +23,8 @@ AGENTS.md
 !/data/processed/README.md
 /evals/results/*
 !/evals/results/README.md
+
+# Local provider probes and short-lived CCTV URLs
+/jobs/data/*_probe.json
+/jobs/data/parking_api_notes.txt
+/jobs/data/parking_api_20261001.docx
