@@ -6,3 +6,8 @@ from app.models.parking import CollectionRun, ParkingRecord
 from app.models.provider import ProviderSnapshot
 
 __all__ = ["Base", "ProviderSnapshot", "CityDataSnapshot", "CollectionRun", "ParkingRecord"]
+
+
+from app.models.population import FloatingPopulationHistory, PopulationArea
+
+__all__ += ["PopulationArea", "FloatingPopulationHistory"]
