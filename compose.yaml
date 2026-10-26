@@ -93,6 +93,19 @@ services:
       migrate:
         condition: service_completed_successfully
 
+  sdot-collector:
+    <<: *backend
+    init: true
+    command: ["python", "-u", "-m", "jobs.collect_sdot_loop"]
+    restart: unless-stopped
+    healthcheck:
+      disable: true
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
   tests:
     <<: *backend
     profiles: ["test"]
