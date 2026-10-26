@@ -1,5 +1,15 @@
 # 초래님 데이터 파이프라인 실행 안내
 
+## 도시데이터 자동 수집 (2026-10-26)
+
+`docker compose up -d`는 `citydata-collector`도 실행합니다. 서울 주요 121개 장소를
+한 회차 수집한 뒤 300초 대기하고 반복합니다. 회차 소요 시간은 별도입니다.
+`.env`의 `APP_SEOUL_CITYDATA_API_KEY`가 필요합니다. Docker가 실행되어 있어야 하며,
+서비스는 `unless-stopped` 정책으로 재시작합니다.
+상태 확인: `docker compose logs --tail 10 citydata-collector`.
+중지: `docker compose stop citydata-collector`.
+서울시 기준 시각과 실제 수집 시각은 다르며, 수집만으로 원천 자료가 최신이 되지는 않습니다.
+
 ## 현재 구현한 범위
 
 - 서울 GetParkInfo 공영주차장 기본정보 전량 페이지 수집, 최대 100,000행 상한.

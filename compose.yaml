@@ -80,6 +80,19 @@ services:
       migrate:
         condition: service_completed_successfully
 
+  citydata-collector:
+    <<: *backend
+    init: true
+    command: ["python", "-u", "-m", "jobs.collect_citydata_all", "--interval", "300"]
+    restart: unless-stopped
+    healthcheck:
+      disable: true
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
   tests:
     <<: *backend
     profiles: ["test"]
