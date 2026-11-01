@@ -1,0 +1,9 @@
+<component name="libraryTable">
+  <library name="citydata_places_official">
+    <CLASSES>
+      <root url="jar://$PROJECT_DIR$/jobs/data/citydata_places_official.zip!/" />
+    </CLASSES>
+    <JAVADOC />
+    <SOURCES />
+  </library>
+</component>

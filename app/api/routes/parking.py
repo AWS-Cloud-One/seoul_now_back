@@ -1,15 +1,20 @@
 from pathlib import Path
 from typing import Annotated, Literal
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import HTMLResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.contract import ContractRoute, envelope
 from app.api.dependencies import get_session
 from app.models.parking import CollectionRun
 from app.modules.data_pipeline.normalizers.parking import SOURCE
 from app.repositories.parking import ParkingRepository
+from app.repositories.parking_detail import ParkingDetailRepository
+from app.schemas.parking_detail import ParkingDetailResponse, ParkingErrorResponse
+from app.services.parking_detail import ParkingDetailService
 
 router = APIRouter(prefix="/parking", tags=["parking"])
 Session = Annotated[AsyncSession, Depends(get_session)]
@@ -61,3 +66,26 @@ async def municipal_raw(session: Session):
     if snapshot is None:
         raise HTTPException(404, "시영주차장 수집 기록이 없습니다.")
     return {"source": snapshot.source, "collected_at": snapshot.collected_at, "data": snapshot.data}
+
+
+# Include after the static paths so /nearby and /runs are not parsed as UUIDs.
+detail_router = APIRouter(route_class=ContractRoute)
+
+
+@detail_router.get(
+    "/{parking_id}",
+    response_model=ParkingDetailResponse,
+    summary="주차장 등록 상세 조회",
+    responses={
+        404: {"model": ParkingErrorResponse, "description": "주차장 없음 또는 제공 종료"},
+        422: {"model": ParkingErrorResponse, "description": "잘못된 UUID"},
+        503: {"model": ParkingErrorResponse, "description": "등록정보 조회 불가"},
+    },
+)
+async def parking_detail(parking_id: UUID, session: Session):
+    """Read active source registrations. Current vacancies are unsupported."""
+    service = ParkingDetailService(ParkingDetailRepository(session))
+    return envelope(await service.get_detail(parking_id))
+
+
+router.include_router(detail_router)

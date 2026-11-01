@@ -2,6 +2,13 @@
 
 from app.db.base import Base
 from app.models.citydata import CityDataSnapshot
+from app.models.map import (
+    MapFeature,
+    MapLayerVersion,
+    MapObservation,
+    ParkingFacility,
+    ParkingSourceRecord,
+)
 from app.models.parking import CollectionRun, ParkingRecord
 from app.models.provider import ProviderSnapshot
 
@@ -11,3 +18,10 @@ __all__ = ["Base", "ProviderSnapshot", "CityDataSnapshot", "CollectionRun", "Par
 from app.models.population import FloatingPopulationHistory, PopulationArea
 
 __all__ += ["PopulationArea", "FloatingPopulationHistory"]
+__all__ += [
+    "MapFeature",
+    "MapLayerVersion",
+    "MapObservation",
+    "ParkingFacility",
+    "ParkingSourceRecord",
+]
