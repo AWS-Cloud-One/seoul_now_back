@@ -4,6 +4,7 @@ from app.api.routes import (
     citydata,
     health,
     kakao,
+    locations,
     map_contract,
     parking,
     recommendations,
@@ -28,3 +29,4 @@ router.include_router(team_contract.router)
 router.include_router(supplemental.router)
 router.include_router(map_contract.router)
 router.include_router(recommendations.router)
+router.include_router(locations.router)

@@ -13,6 +13,7 @@ from pydantic import (
 )
 
 from app.schemas.common import ApiEnvelope
+from app.schemas.location import Location
 
 PositiveInt = Annotated[int, Field(strict=True, gt=0)]
 GroupType = Literal["solo", "date", "friends", "family", "other"]
@@ -21,19 +22,6 @@ AgeGroup = Literal["under_10", "teens", "twenties", "thirties", "forties", "fift
 
 class WireModel(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
-
-
-class Coordinates(WireModel):
-    latitude: float = Field(ge=-90, le=90)
-    longitude: float = Field(ge=-180, le=180)
-
-
-class Location(WireModel):
-    label: str
-    coordinates: Coordinates
-    address: str | None
-    region: Literal["seoul", "incheon", "gyeonggi", "other"] | None
-    supported: bool = Field(strict=True)
 
 
 class Purpose(WireModel):
