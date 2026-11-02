@@ -5,7 +5,7 @@ x-backend: &backend
     context: .
     target: development
   environment: &app-environment
-    APP_DATABASE_URL: ${APP_DATABASE_URL:-postgresql+psycopg://seoul:seoul_local@db:5432/seoul_now}
+    APP_DATABASE_URL: ${DOCKER_DATABASE_URL:-postgresql+psycopg://seoul:seoul_local@db:5432/seoul_now}
     APP_CORS_ORIGINS: '${APP_CORS_ORIGINS:-["http://localhost:5173","http://127.0.0.1:5173"]}'
     APP_DOCS_ENABLED: ${APP_DOCS_ENABLED:-true}
     APP_DB_CONNECT_TIMEOUT_SECONDS: ${APP_DB_CONNECT_TIMEOUT_SECONDS:-3}
@@ -30,6 +30,7 @@ x-backend: &backend
 
 services:
   db:
+    restart: unless-stopped
     image: postgis/postgis:17-3.6@sha256:eeead53aa76f9219eac3af490e00484a7dd604dbcbc3ed2ae0e96668986f16f3
     # The upstream Debian image currently ships amd64 only (2026-10-19).
     # Docker Desktop on Apple Silicon therefore needs amd64 emulation.
@@ -62,6 +63,7 @@ services:
   api:
     <<: *backend
     init: true
+    restart: unless-stopped
     ports:
       - "127.0.0.1:${API_PORT:-8000}:8000"
     healthcheck:
@@ -83,20 +85,7 @@ services:
   citydata-collector:
     <<: *backend
     init: true
-    command: ["python", "-u", "-m", "jobs.collect_citydata_all", "--interval", "300"]
-    restart: unless-stopped
-    healthcheck:
-      disable: true
-    depends_on:
-      db:
-        condition: service_healthy
-      migrate:
-        condition: service_completed_successfully
-
-  sdot-collector:
-    <<: *backend
-    init: true
-    command: ["python", "-u", "-m", "jobs.collect_sdot_loop"]
+    command: ["python", "-u", "-m", "jobs.scheduler"]
     restart: unless-stopped
     healthcheck:
       disable: true
@@ -112,7 +101,7 @@ services:
     command: ["pytest"]
     environment:
       <<: *app-environment
-      TEST_DATABASE_URL: ${APP_DATABASE_URL:-postgresql+psycopg://seoul:seoul_local@db:5432/seoul_now}
+      TEST_DATABASE_URL: ${DOCKER_DATABASE_URL:-postgresql+psycopg://seoul:seoul_local@db:5432/seoul_now}
     healthcheck:
       disable: true
     depends_on:

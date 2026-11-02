@@ -116,7 +116,11 @@ async def execute(links):
         )
     finally:
         await engine.dispose()
-    return 4 if stop.is_set() else int(any(k != "success" for k in counts))
+    if stop.is_set():
+        return 4
+    if any(k not in {"success", "provider_no_observation"} for k in counts):
+        return 1
+    return 2 if counts["provider_no_observation"] else 0
 
 
 if __name__ == "__main__":

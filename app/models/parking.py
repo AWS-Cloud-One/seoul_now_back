@@ -13,6 +13,10 @@ from app.db.base import Base
 
 class CollectionRun(Base):
     __tablename__ = "collection_runs"
+    __table_args__ = (
+        Index("ix_collection_runs_source_started", "source", "started_at"),
+        Index("ix_collection_runs_started", "started_at"),
+    )
 
     id: Mapped[UUID] = mapped_column(primary_key=True)
     source: Mapped[str] = mapped_column(String(80), index=True)

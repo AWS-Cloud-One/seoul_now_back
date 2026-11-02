@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 from app.clients.seoul import CollectionError
 from app.models.parking import CollectionRun
 from app.modules.data_pipeline.normalizers.parking import normalize_parking
+from app.repositories.external_api import archive_response, parking_observation
 from app.repositories.parking import ParkingRepository
 
 
@@ -71,6 +72,15 @@ async def run_parking(
                 status = "partial" if counters["rejected"] else "success"
                 async with factory.begin() as session:
                     await ParkingRepository(session).upsert(list(normalized.values()))
+                    await archive_response(
+                        session,
+                        run_id,
+                        source,
+                        "parking",
+                        rows,
+                        started,
+                        [parking_observation(item) for item in normalized.values()],
+                    )
                     run = await session.get(CollectionRun, run_id)
                     run.status = status
                     run.finished_at = datetime.now(UTC)

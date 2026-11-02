@@ -3,7 +3,7 @@ from logging.config import fileConfig
 
 from alembic import context
 from geoalchemy2 import alembic_helpers
-from sqlalchemy import Connection, pool
+from sqlalchemy import Connection, pool, text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.core.config import Settings
@@ -40,8 +40,18 @@ def do_run_migrations(connection: Connection) -> None:
         render_item=alembic_helpers.render_item,
         process_revision_directives=alembic_helpers.writer,
     )
-    with context.begin_transaction():
-        context.run_migrations()
+    # Separate release jobs/developers must not execute DDL concurrently.
+    locked = connection.scalar(text("SELECT pg_try_advisory_lock(hashtext('seoul_now:alembic'))"))
+    connection.commit()
+    if not locked:
+        raise RuntimeError("Another migration is running; retry after it completes")
+    try:
+        with context.begin_transaction():
+            context.run_migrations()
+    finally:
+        connection.rollback()
+        connection.execute(text("SELECT pg_advisory_unlock(hashtext('seoul_now:alembic'))"))
+        connection.commit()
 
 
 async def run_migrations_online() -> None:

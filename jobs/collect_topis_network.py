@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import json
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.core.config import Settings
@@ -13,17 +14,36 @@ from app.repositories.citydata import CityDataRepository
 from jobs.collect_topis import execute as collect_links
 
 
-async def targets(area_code, max_links):
+def scheduled_links(links, attempts, limit):
+    return sorted(links, key=lambda link: (attempts.get(link, ""), link))[:limit]
+
+
+async def targets(area_code, max_links, scheduled_batch=False):
     engine = create_engine(Settings())
     try:
         async with async_sessionmaker(engine)() as session:
             geometry = await session.get(ProviderSnapshot, "topis_geometry:2025")
             if geometry is not None and area_code is None:
                 links = sorted({f["id"] for f in geometry.data["features"]})
+                total = len(links)
+                if scheduled_batch:
+                    rows = await session.execute(
+                        select(ProviderSnapshot.source, ProviderSnapshot.collected_at).where(
+                            ProviderSnapshot.source.like("topis_attempt:%")
+                        )
+                    )
+                    attempts = {
+                        source.removeprefix("topis_attempt:"): when.isoformat()
+                        for source, when in rows
+                    }
+                    links = scheduled_links(links, attempts, max_links)
                 return links, {
-                    "scope": "all_official_geometry",
+                    "scope": "scheduled_official_batch"
+                    if scheduled_batch
+                    else "all_official_geometry",
+                    "total_links": total,
                     "selected_links": len(links),
-                    "truncated": False,
+                    "truncated": len(links) < total,
                 }
             area = await CityDataRepository(session).get(area_code)
             if geometry is None or area is None:
@@ -58,9 +78,9 @@ async def targets(area_code, max_links):
         await engine.dispose()
 
 
-async def run(area, max_links, interval):
+async def run(area, max_links, interval, scheduled_batch=False):
     while True:
-        links, report = await targets(area, max_links)
+        links, report = await targets(area, max_links, scheduled_batch)
         print(json.dumps(report), flush=True)
         result = await collect_links(links)
         if not interval:
@@ -75,9 +95,16 @@ if __name__ == "__main__":
     scope.add_argument("--all", action="store_true", help="Every validated official service link")
     parser.add_argument("--max-links", type=int, default=20)
     parser.add_argument(
+        "--scheduled-batch",
+        action="store_true",
+        help="Rotate oldest/uncollected links, bounded by max-links",
+    )
+    parser.add_argument(
         "--interval", type=int, default=0, help="Optional seconds between cycles; default is once"
     )
     args = parser.parse_args()
     if not 1 <= args.max_links <= 200 or args.interval and args.interval < 300:
         parser.error("max-links must be 1..200; interval must be 0 or at least 300")
-    raise SystemExit(asyncio.run(run(args.area, args.max_links, args.interval)))
+    raise SystemExit(
+        asyncio.run(run(args.area, args.max_links, args.interval, args.scheduled_batch))
+    )
