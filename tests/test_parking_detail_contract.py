@@ -3,7 +3,7 @@
 import warnings
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
@@ -13,6 +13,7 @@ from sqlalchemy.exc import OperationalError
 from app.api.dependencies import get_session
 from app.core.config import Settings
 from app.main import create_app
+from app.models import ParkingSourceRecord
 
 
 @pytest.fixture
@@ -27,7 +28,7 @@ def detail_client():
     session = AsyncMock()
     parking_id = uuid4()
     session.scalar.return_value = SimpleNamespace(
-        id=parking_id,
+        parking_id=parking_id,
         is_active=True,
         identity_status="unverified",
     )
@@ -44,25 +45,16 @@ def detail_client():
 def test_registered_detail_preserves_source_values(detail_client):
     client, session, parking_id = detail_client
     record_id = uuid4()
-    registered = {
-        "value": {
-            "address": "서울",
-            "registered_capacity": 0,
-            "operating_hours": {"weekdays": "0000~0000"},
-        },
-        "status": "available",
-        "freshness": "unknown",
-        "observed_at": None,
-        "collected_at": "2026-10-22T05:00:00Z",
-        "source": "seoul_getparkinfo",
-        "reason_code": "SOURCE_TIME_UNKNOWN",
-    }
     session.scalars.return_value = [
-        SimpleNamespace(
-            id=record_id,
+        ParkingSourceRecord(
+            source_record_id=record_id,
             source="seoul_getparkinfo",
             reference_date="2026-10-22",
-            registered=registered,
+            address="서울",
+            registered_capacity=0,
+            weekday_hours="0000~0000",
+            collected_at=datetime(2026, 10, 22, 5, tzinfo=UTC),
+            reason_code="SOURCE_TIME_UNKNOWN",
         )
     ]
     response = client.get(f"/api/v1/parking/{parking_id}")
@@ -126,12 +118,7 @@ def test_database_failure_is_not_empty_success(detail_client, operation):
 def test_invalid_stored_detail_is_data_failure(detail_client):
     client, session, parking_id = detail_client
     session.scalars.return_value = [
-        SimpleNamespace(
-            id=uuid4(),
-            source="test",
-            reference_date=None,
-            registered={"secret": "bad data"},
-        )
+        ParkingSourceRecord(source_record_id=uuid4(), source="test", registered_capacity=-1)
     ]
     response = client.get(f"/api/v1/parking/{parking_id}")
     assert response.status_code == 503
@@ -149,12 +136,3 @@ def test_route_registered_once_and_openapi_schema(detail_client):
     assert operation["tags"] == ["parking"]
     assert set(operation["responses"]) >= {"200", "404", "422", "503"}
     assert "ParkingDetailResponse" in schema["components"]["schemas"]
-
-
-def test_legacy_nearby_route_still_reaches_repository(detail_client):
-    client, _, _ = detail_client
-    with patch("app.api.routes.parking.ParkingRepository") as repository:
-        repository.return_value.nearby = AsyncMock(return_value={"items": []})
-        response = client.get("/api/v1/parking/nearby?lat=37.56&lon=126.97")
-    assert response.status_code == 200
-    assert response.json() == {"items": []}

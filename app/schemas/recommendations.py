@@ -4,15 +4,13 @@ from typing import Annotated, Literal
 from uuid import UUID
 
 from pydantic import (
-    BaseModel,
-    ConfigDict,
     Field,
     JsonValue,
     field_validator,
     model_validator,
 )
 
-from app.schemas.common import ApiEnvelope
+from app.schemas.common import ApiEnvelope, ContractModel
 from app.schemas.location import Location
 
 PositiveInt = Annotated[int, Field(strict=True, gt=0)]
@@ -20,16 +18,12 @@ GroupType = Literal["solo", "date", "friends", "family", "other"]
 AgeGroup = Literal["under_10", "teens", "twenties", "thirties", "forties", "fifties", "sixty_plus"]
 
 
-class WireModel(BaseModel):
-    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
-
-
-class Purpose(WireModel):
+class Purpose(ContractModel):
     purpose: Literal["cafe", "food", "walk", "exhibition"]
     keyword: str | None = Field(default=None, max_length=100)
 
 
-class Conditions(WireModel):
+class Conditions(ContractModel):
     origin: Location | None
     purposes: list[Purpose] = Field(max_length=2)
     group_type: GroupType | None
@@ -38,7 +32,7 @@ class Conditions(WireModel):
     max_travel_seconds: PositiveInt | None
 
 
-class ConditionsPatch(WireModel):
+class ConditionsPatch(ContractModel):
     origin: Location | None = None
     purposes: list[Purpose] | None = Field(default=None, min_length=1, max_length=2)
     group_type: GroupType | None = None
@@ -54,7 +48,7 @@ class ConditionsPatch(WireModel):
         return value
 
 
-class RecommendationRequest(WireModel):
+class RecommendationRequest(ContractModel):
     request_id: UUID
     trip_id: UUID
     condition_version: int = Field(strict=True, ge=0)
@@ -63,43 +57,43 @@ class RecommendationRequest(WireModel):
     conditions_patch: ConditionsPatch
 
 
-class Change(WireModel):
+class Change(ContractModel):
     field: str
     before: JsonValue
     after: JsonValue
 
 
-class ConditionUpdate(WireModel):
+class ConditionUpdate(ContractModel):
     applied: bool
     conditions: Conditions
     version: int = Field(ge=0)
     changes: list[Change]
 
 
-class Choice(WireModel):
+class Choice(ContractModel):
     label: str
     value: JsonValue
 
 
-class Clarification(WireModel):
+class Clarification(ContractModel):
     question: str
     required_fields: list[str]
     pending_patch: ConditionsPatch
     choices: list[Choice]
 
 
-class Stages(WireModel):
+class Stages(ContractModel):
     interpretation: Literal["skipped"] = "skipped"
     routes: Literal["skipped", "ok", "partial", "failed"] = "skipped"
     explanation: Literal["skipped", "ok", "fallback"] = "skipped"
 
 
-class WarningMessage(WireModel):
+class WarningMessage(ContractModel):
     code: str
     message: str
 
 
-class RecommendationData(WireModel):
+class RecommendationResponse(ContractModel):
     trip_id: UUID
     base_condition_version: int
     kind: Literal[
@@ -128,5 +122,5 @@ class RecommendationData(WireModel):
         return self
 
 
-class RecommendationEnvelope(ApiEnvelope[RecommendationData]):
+class RecommendationEnvelope(ApiEnvelope[RecommendationResponse]):
     pass

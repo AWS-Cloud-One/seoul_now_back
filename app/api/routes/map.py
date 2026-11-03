@@ -3,14 +3,14 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy.ext.asyncio import AsyncSession
+from pydantic import ValidationError
 
 from app.api.contract import ContractRoute, envelope
-from app.api.dependencies import get_session
-from app.repositories.map import MapRepository
+from app.api.dependencies import get_map_service
+from app.core.exceptions import ServiceError
 from app.schemas.common import ErrorResponse
 from app.schemas.map import GeometryResponse, Layer, MapQuery, StatusLayer, StatusResponse
-from app.services.map_contract import MapService, parse_bbox
+from app.services.map import MapService
 
 router = APIRouter(tags=["map-contract"], route_class=ContractRoute)
 
@@ -22,11 +22,10 @@ def get_map_query(
     ],
     level: Annotated[int, Query(gt=0, description="Kakao map level", examples=[6])],
 ) -> MapQuery:
-    return MapQuery(bbox=parse_bbox(bbox), level=level)
-
-
-def get_map_service(session: Annotated[AsyncSession, Depends(get_session)]) -> MapService:
-    return MapService(MapRepository(session))
+    try:
+        return MapQuery(bbox=tuple(float(value) for value in bbox.split(",")), level=level)
+    except ValueError, ValidationError:
+        raise ServiceError("INVALID_MAP_QUERY", "bbox의 경위도 범위를 확인해 주세요.") from None
 
 
 @router.get(

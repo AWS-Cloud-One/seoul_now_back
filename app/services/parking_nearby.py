@@ -4,12 +4,13 @@ from datetime import UTC, datetime
 
 from pydantic import ValidationError
 
-from app.api.contract import ContractError
 from app.clients.kakao import KakaoError, KakaoLocalClient
+from app.core.exceptions import ServiceError
 from app.repositories.parking_nearby import ParkingNearbyRepository
 from app.schemas.location import Coordinates
-from app.schemas.parking_nearby import NearbyFacility, NearbyParkingData, ParkingSummary
+from app.schemas.parking_nearby import NearbyParkingData, ParkingFacility, ParkingSummary
 from app.services.locations import provider_failure, region_from_coordinates
+from app.services.parking_registration import registered_information
 
 
 class ParkingNearbyService:
@@ -27,7 +28,7 @@ class ParkingNearbyService:
                 )
             )
             if region != "seoul":
-                raise ContractError(422, "VALIDATION_ERROR", "서울 목적지 좌표를 입력해 주세요.")
+                raise ServiceError("VALIDATION_ERROR", "서울 목적지 좌표를 입력해 주세요.")
             now = datetime.now(UTC)
             version = await self.repository.get_version()
             summary = ParkingSummary(
@@ -51,10 +52,10 @@ class ParkingNearbyService:
                     raise self.pagination_unavailable()
                 rows = await self.repository.list_facilities(coordinates, radius)
                 if len(rows) != count:
-                    raise ContractError(503, "DATA_UNAVAILABLE", "주차 조회 자료가 변경되었습니다.")
+                    raise ServiceError("DATA_UNAVAILABLE", "주차 조회 자료가 변경되었습니다.")
                 records = await self.repository.list_records([row[0] for row in rows])
                 items = [
-                    NearbyFacility(
+                    ParkingFacility(
                         parking_id=key,
                         identity_status=identity,
                         name=props["name"],
@@ -62,10 +63,10 @@ class ParkingNearbyService:
                         distance_meters=meters,
                         records=[
                             {
-                                "source_record_id": r.id,
+                                "source_record_id": r.source_record_id,
                                 "source": r.source,
                                 "reference_date": r.reference_date,
-                                "registered": r.registered,
+                                "registered": registered_information(r),
                             }
                             for r in records.get(key, [])
                         ],
@@ -90,14 +91,11 @@ class ParkingNearbyService:
         except KakaoError as exc:
             raise provider_failure(exc) from None
         except ValidationError, KeyError, TypeError:
-            raise ContractError(
-                503, "DATA_UNAVAILABLE", "주차 등록정보를 확인할 수 없습니다."
-            ) from None
+            raise ServiceError("DATA_UNAVAILABLE", "주차 등록정보를 확인할 수 없습니다.") from None
 
     @staticmethod
     def pagination_unavailable():
-        return ContractError(
-            503,
+        return ServiceError(
             "SERVICE_UNAVAILABLE",
             "주변 주차 다음 페이지 처리가 아직 연결되지 않았습니다.",
             retryable=False,

@@ -1,13 +1,12 @@
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.exc import OperationalError
 
-from app.api.dependencies import get_session
-from app.api.routes.parking import get_parking_nearby_service
+from app.api.dependencies import get_parking_nearby_service, get_session
 from app.core.config import Settings
 from app.main import create_app
 from app.services.parking_nearby import ParkingNearbyService
@@ -146,23 +145,11 @@ def test_db_error_is_not_successful_empty_inventory(api):
     assert "secret" not in response.text
 
 
-def test_legacy_and_team_requests_still_use_original_repository(api):
-    client, _, provider, _ = api
-    with patch("app.api.routes.parking.ParkingRepository") as repository:
-        repository.return_value.nearby = AsyncMock(return_value={"items": []})
-        assert client.get("/api/v1/parking/nearby?lat=37.56&lon=126.97").json() == {"items": []}
-        assert client.get("/api/v1/parkings/nearby?lat=37.56&lng=126.97").json() == {"items": []}
-        assert repository.return_value.nearby.await_count == 2
-    provider.region.assert_not_awaited()
-    assert client.get("/api/v1/parking/nearby?lat=0&lon=0").status_code == 422
-    assert "detail" in client.get("/api/v1/parking/nearby").json()
-
-
 def test_openapi_has_one_nearby_operation(api):
     client, _, _, _ = api
     operation = client.get("/openapi.json").json()["paths"]["/api/v1/parking/nearby"]["get"]
     params = {p["name"]: p for p in operation["parameters"]}
-    assert {"latitude", "longitude", "cursor", "lat", "lon"} <= params.keys()
-    assert params["lat"]["deprecated"] is True
-    assert params["source"]["schema"].get("default") is None
+    assert set(params) == {"latitude", "longitude", "cursor", "limit"}
+    assert params["latitude"]["required"] is True
+    assert params["longitude"]["required"] is True
     assert operation["responses"]["200"]["content"]["application/json"]["schema"]

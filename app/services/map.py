@@ -6,21 +6,12 @@ from datetime import UTC, datetime, timedelta
 
 from pydantic import TypeAdapter, ValidationError
 
-from app.api.contract import ContractError
+from app.core.exceptions import ServiceError
 from app.repositories.map import MapRepository
 from app.schemas.map import GeometryData, MapQuery, StatusData
 
 GEOMETRY_DATA = TypeAdapter(GeometryData)
 STATUS_DATA = TypeAdapter(StatusData)
-
-
-def parse_bbox(raw: str) -> tuple[float, float, float, float]:
-    try:
-        return MapQuery(bbox=tuple(float(v) for v in raw.split(",")), level=1).bbox
-    except ValueError, ValidationError:
-        raise ContractError(
-            422, "INVALID_MAP_QUERY", "bbox의 경위도 범위를 확인해 주세요."
-        ) from None
 
 
 class MapService:
@@ -31,11 +22,9 @@ class MapService:
     async def selection(self, layer, query, version=None, *, include_geometry=False):
         published = await self.repository.get_version(layer)
         if published is None or not published.is_ready or not published.geometry_version:
-            raise ContractError(503, "DATA_UNAVAILABLE", "지도 기준 자료가 준비되지 않았습니다.")
+            raise ServiceError("DATA_UNAVAILABLE", "지도 기준 자료가 준비되지 않았습니다.")
         if version is not None and version != published.geometry_version:
-            raise ContractError(
-                409, "GEOMETRY_VERSION_MISMATCH", "지도 위치 자료를 다시 조회해 주세요."
-            )
+            raise ServiceError("GEOMETRY_VERSION_MISMATCH", "지도 위치 자료를 다시 조회해 주세요.")
         features = await self.repository.select_features(
             layer,
             query.bbox,
@@ -43,7 +32,7 @@ class MapService:
             include_geometry=include_geometry,
         )
         if len(features) > self.max_features:
-            raise ContractError(422, "MAP_RANGE_TOO_LARGE", "지도 조회 범위를 줄여 주세요.")
+            raise ServiceError("MAP_RANGE_TOO_LARGE", "지도 조회 범위를 줄여 주세요.")
         return published, features
 
     async def geometry(self, layer, query: MapQuery):
@@ -70,9 +59,7 @@ class MapService:
                 }
             )
         except ValueError, TypeError, ValidationError:
-            raise ContractError(
-                503, "DATA_UNAVAILABLE", "지도 기준 자료를 확인할 수 없습니다."
-            ) from None
+            raise ServiceError("DATA_UNAVAILABLE", "지도 기준 자료를 확인할 수 없습니다.") from None
 
     async def status(self, layer, query: MapQuery, version):
         published, features = await self.selection(layer, query, version)
@@ -106,9 +93,7 @@ class MapService:
                 }
             )
         except ValidationError:
-            raise ContractError(
-                503, "DATA_UNAVAILABLE", "지도 상태 자료를 확인할 수 없습니다."
-            ) from None
+            raise ServiceError("DATA_UNAVAILABLE", "지도 상태 자료를 확인할 수 없습니다.") from None
 
 
 def valid_time(value, now):

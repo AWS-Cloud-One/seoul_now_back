@@ -7,16 +7,16 @@ from pydantic import AwareDatetime, Field
 
 from app.schemas.common import ApiEnvelope, ContractModel
 from app.schemas.location import Coordinates
-from app.schemas.parking_detail import ParkingSourceResponse, UnsupportedAvailability
+from app.schemas.parking_detail import ParkingSourceRecord, UnsupportedAvailability
 
 
-class NearbyFacility(ContractModel):
+class ParkingFacility(ContractModel):
     parking_id: UUID
     identity_status: Literal["verified", "unverified"]
     name: str
     coordinates: Coordinates
     distance_meters: float = Field(ge=0)
-    records: list[ParkingSourceResponse]
+    records: list[ParkingSourceRecord]
     availability: UnsupportedAvailability = Field(default_factory=UnsupportedAvailability)
 
 
@@ -26,7 +26,7 @@ class ParkingSummary(ContractModel):
     checked_at: AwareDatetime
     search_radius_meters: Literal[300, 500, 1000] | None
     nearest_distance_meters: float | None = Field(ge=0)
-    items: list[NearbyFacility]
+    items: list[ParkingFacility]
     total_count: int | None = Field(ge=0)
     next_cursor: str | None
 
@@ -39,3 +39,8 @@ class NearbyParkingData(ContractModel):
 class NearbyParkingResponse(ApiEnvelope[NearbyParkingData]):
     data: NearbyParkingData
     error: None = None
+
+
+class NearbyParkingQuery(Coordinates):
+    limit: int = Field(default=20, ge=1, le=100)
+    cursor: str | None = None
