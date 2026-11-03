@@ -11,4 +11,4 @@
 - `app/services/`는 요청 전체의 연결을 담당하고, 이 패키지는 추천 규칙을 담당한다. 같은 필터·정렬을 두 곳에 중복 구현하지 않는다.
 - 형식과 근거는 `app/schemas/`의 합의된 타입을 공유한다. 미정인 지표·종료 조건은 구현 시 해당 담당과 결정한다.
 
-검증 코드는 [추천 단위 테스트](../../../tests/unit/recommendation/README.md), 고정 평가 자료는 [evals](../../../evals/README.md)에 둔다.
+검증 코드는 [추천 단위 테스트](../../../tests/unit/recommendation/README.md), 테스트용 고정 후보·기대 결과는 `tests/fixtures/`에 둔다.

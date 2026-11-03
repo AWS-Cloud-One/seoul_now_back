@@ -2,9 +2,9 @@
 
 사용자의 조건에 맞는 서울의 장소를 추천하고, 지도에 필요한 정보를 제공하는 백엔드입니다. **백엔드, 백엔드 검증·AI 추천, 데이터 처리, AWS 담당이 함께 사용하는 저장소**입니다.
 
-현재 FastAPI·PostGIS 기반에 공영주차장과 서울시 OA-21285 통합 도시데이터 수집이 구현되어 있습니다. 유동인구·도로·대중교통·주차·상권 등 전체 응답을 장소별로 저장합니다. 실행은 [초래님 실행 안내](DATA_PIPELINE_GUIDE.md)를 참고하세요.
+현재 FastAPI·PostGIS 기반에 공영주차장과 서울시 OA-21285 통합 도시데이터 수집이 구현되어 있습니다. 유동인구·도로·대중교통·주차·상권 등 전체 응답을 장소별로 저장합니다. 실행은 [수집 실행 안내](jobs/README.md)를 참고하세요.
 
-현재 작업 범위: AI 추천·제품 프론트엔드·AWS 배포 자동화는 해당 담당의 후속 작업입니다. DB 저장 이력·마이그레이션·자동 수집과 격리 검증은 [DB 저장·자동 갱신 운영 절차](docs/DB_REFRESH_RUNBOOK.md)를 참고하세요.
+현재 작업 범위: AI 추천·제품 프론트엔드·AWS 배포 자동화는 해당 담당의 후속 작업입니다. DB 적용·격리 테스트는 아래 실행 절차를, 자동 수집은 [수집 실행 안내](jobs/README.md)를 참고하세요.
 
 > 처음 참여했다면 **역할별 작업 위치 → 처음 실행하기 → 서버 확인하기** 순서로 읽어 주세요. 필요한 세부 설명은 각 디렉터리의 README에 있습니다.
 
@@ -24,8 +24,8 @@
 | 담당 | 하는 일 | 먼저 볼 위치 |
 | --- | --- | --- |
 | 백엔드 | 화면의 요청을 받고, 데이터·AI·추천 결과를 응답으로 연결 | `app/api/`, `app/services/`, `app/schemas/` |
-| 백엔드 검증·AI 추천 | 조건 해석·설명, 후보 비교·순위, API·AI 품질 검증 | [AI](app/modules/ai/README.md), [추천](app/modules/recommendation/README.md), [테스트](tests/README.md), [평가](evals/README.md) |
-| 데이터 처리 | 교통·인구·주차 수집, 정규화·적재, 최신성·실패 상태 관리 | [데이터 처리](app/modules/data_pipeline/README.md), [수집 실행](jobs/README.md), [로컬 자료](data/README.md) |
+| 백엔드 검증·AI 추천 | 조건 해석·설명, 후보 비교·순위, API·AI 품질 검증 | [AI](app/modules/ai/README.md), [추천](app/modules/recommendation/README.md), [테스트](tests/README.md) |
+| 데이터 처리 | 교통·인구·주차 수집, 정규화·적재, 최신성·실패 상태 관리 | [데이터 처리](app/modules/data_pipeline/README.md), [수집 실행](jobs/README.md), [입력 자료](jobs/README.md#공식-입력-자료) |
 | AWS | 실행 이미지, 인프라, 배포 자동화와 운영 환경 구성 | [인프라](infra/README.md), [이미지](infra/docker.md), [워크플로](.github/workflows/README.md) |
 
 **DB 모델·조회 코드·마이그레이션·외부 HTTP 연결은 백엔드와 데이터 처리 담당이 공동으로 관리합니다.** 담당별로 별도의 DB 연결이나 같은 제공처 클라이언트를 중복 작성하지 않습니다.
@@ -51,7 +51,6 @@ seoul_now_back/
 ├── jobs/                # API와 별도로 실행할 단발 수집 작업
 ├── migrations/          # DB 구조의 변경 이력
 ├── tests/               # API·단위·통합 테스트와 표본
-├── evals/               # AI·추천 평가 사례와 결과
 ├── data/                # 로컬 원본·중간 결과
 ├── infra/               # AWS 인프라·환경 설정·운영 절차
 ├── .github/workflows/   # GitHub Actions 작성 위치
@@ -83,6 +82,10 @@ API의 기본 처리 흐름은 다음과 같습니다.
 | Migration | DB 구조가 바뀔 때 순서대로 적용하는 변경 기록 |
 
 Service가 AI·추천 모듈을 호출하고 결과를 조립합니다. **수집 작업은 `jobs/`의 별도 worker에서 실행**하며 API와 공통 모델·Repository·DB를 사용합니다. `docker compose up`은 마이그레이션 이후 수집 worker도 실행합니다. API 프로세스만 실행하면 자동 수집은 시작되지 않습니다.
+
+`app/api/`는 제품 HTTP 요청·응답과 명세의 헬스체크를 담당합니다. 임시 데이터 검사 화면·원본 조회·구형 API 호환 경로는 제공하지 않습니다. 수집·저장·공간 정보의 검증은 `tests/unit/data_pipeline/`과 `tests/integration/`에서 수행합니다. `/parking/nearby`는 명세의 `latitude`·`longitude`를 필수로 받습니다.
+
+Service·Repository·외부 클라이언트는 `app/api/dependencies.py`에서 연결합니다. Service는 `app/core/exceptions.py`의 `ServiceError(code, message, ...)`를 전달하고, HTTP 상태 코드는 `app/api/errors.py`, 제품 응답 봉투는 `app/api/contract.py`에서 처리합니다. 추천 담당의 검증기·엔진은 `get_recommendation_service()`에 연결하며 실제 알고리즘은 담당 모듈에서 구현합니다.
 
 ## 처음 실행하기
 
@@ -217,36 +220,57 @@ docker compose run --rm migrate
 
 마이그레이션은 담당별로 나누지 않고 하나의 `migrations/`에서 관리합니다. 현재 앱 테이블은 기본 `public` 스키마에 작성하며, Alembic도 이 스키마를 기준으로 비교합니다. API 프로세스가 직접 실행하지 않고 별도 `migrate` 컨테이너로 적용합니다. 최초 revision을 되돌려도 다른 테이블이 사용할 수 있는 PostGIS 확장은 삭제하지 않습니다.
 
+병합 후 최신 revision은 **`0009`**입니다. 서로 다른 두 0008 구조에서
+최종 정형 스키마로 직접 전환합니다. DDL과 데이터 이관 코드는
+`migrations/versions/0009_relational_storage.py` 한 파일에 있습니다.
+원문은 `data/raw/payloads` 파일로, 제외 사유는 자식 테이블로 보관합니다.
+이전 테이블도 검증된 파일 보관 후 DB에서 제거하며 `legacy_archives`로 추적합니다.
+장소·카테고리·대화 세션·메시지와 조건·제외 장소 관계 등 8개 테이블도 함께 생성합니다.
+총 27개 테이블이며 새 장소·대화 스키마의 API 저장 연결은 후속 작업입니다.
+[0009 이관 규칙](migrations/versions/0009_relational_storage.py)을 먼저 확인하고 DB·원문 파일을 함께 백업한 뒤 적용하세요.
+마이그레이션·API·수집기는 같은 보관 디렉터리를 사용해야 합니다. Compose는 호스트의 `./data/raw/payloads`를 공유합니다.
+Linux에서는 이 디렉터리의 소유 계정을 컨테이너 UID 10001에 맞춰 읽기·쓰기를 허용하세요.
+API와 수집 worker는 적용 중 중지합니다. `stamp`, 볼륨 삭제, DB 초기화는 사용하지 않습니다.
+
+```bash
+docker compose run --build --rm migrate
+docker compose run --rm migrate alembic current
+docker compose run --rm migrate alembic check
+```
+
+정상 결과는 `0009 (head)`와 `No new upgrade operations detected.`입니다.
+0009는 데이터 손실 방지를 위해 downgrade를 차단합니다. 복구하려면 같은 시점의 DB와 원문 파일 백업이 필요합니다.
+
 </details>
 
 ## 테스트 실행하기
 
-먼저 `docker compose up --build -d`로 개발 이미지를 준비합니다. 아래 명령은 컨테이너 안에서 실행하므로 로컬 Python이 필요하지 않습니다.
+아래 명령은 필요한 이미지를 빌드해 컨테이너 안에서 실행하므로 로컬 Python이 필요하지 않습니다. API·수집기를 먼저 실행할 필요는 없습니다.
 
 ```bash
 # 코드 규칙·형식 검사
-docker compose run --rm --no-deps api ruff check .
-docker compose run --rm --no-deps api ruff format --check .
+docker compose run --build --rm --no-deps tests ruff check .
+docker compose run --build --rm --no-deps tests ruff format --check .
 
 # 실제 DB 없이 API·단위 테스트만 실행
-docker compose run --rm --no-deps api pytest -m "not integration"
+docker compose run --build --rm --no-deps tests pytest -m "not integration"
 
 # 실제 PostgreSQL/PostGIS를 포함한 전체 테스트
 docker compose --profile test run --build --rm tests
 ```
 
-기본 테스트에서는 외부 API나 유료 모델을 호출하지 않습니다. `tests` 서비스는 테스트용 프로필에서만 실행되며, DB 준비·migration 적용 후 공간 쿼리를 포함한 검사를 진행합니다. `--build`로 실행해야 패키지 변경 후에도 최신 개발 의존성을 검사합니다. 자세한 구분과 작성 위치는 [테스트 안내](tests/README.md)를 참고하세요.
+테스트는 외부 API나 유료 모델을 호출하지 않습니다. `compose.yaml`의 `test` 프로필에 있는 `test-db`는 서비스 DB와 별도 볼륨을 사용하며 호스트에 포트를 열지 않습니다. `tests`에는 실제 API 키·원문 파일을 연결하지 않습니다. 각 DB 쓰기 테스트가 임시 DB를 생성해 마이그레이션을 적용하고 검사 후 삭제합니다. `--build`로 최신 코드와 의존성을 검사하며, 테스트 후에는 `docker compose --profile test stop test-db`로 테스트 DB만 중지할 수 있습니다. 자세한 구분과 작성 위치는 [테스트 안내](tests/README.md)를 참고하세요.
 
 <details>
-<summary>DB 변경 상태와 SQL 확인하기</summary>
+<summary>DB 변경 이력과 적용 상태 확인하기</summary>
 
 ```bash
 docker compose exec api alembic current
 docker compose exec api alembic check
-docker compose run --rm --no-deps api alembic upgrade head --sql
+docker compose run --rm --no-deps api alembic history
 ```
 
-현재 적용된 revision, 모델과 DB의 차이, migration의 SQL을 확인합니다. 모델 변경 후 자동 생성한 migration은 내용과 적용 순서를 검토하세요.
+현재 적용된 revision, 모델과 DB의 차이, migration 순서를 확인합니다. 0009의 테이블 생성 SQL은 해당 Python 파일의 `SCHEMA_SQL`에 있으며 별도 SQL·frozen 디렉터리는 사용하지 않습니다. 기존 데이터 이관과 원문 파일 보관이 필요하므로 0009는 `--sql`만으로 적용할 수 없습니다. 모델 변경 후 자동 생성한 migration은 내용과 적용 순서를 검토하세요.
 
 </details>
 
@@ -291,6 +315,6 @@ docker compose run --rm --no-deps api alembic upgrade head --sql
 
 테스트는 통과하지만 Starlette TestClient가 기존 HTTPX 사용에 대한 **사용 중단 예정 경고 1건**을 출력합니다. 현재 조합의 테스트는 정상 동작하며 경고를 숨기지는 않았습니다. 테스트 클라이언트 의존성을 변경할 때 별도로 검토합니다.
 
-2026-10-22 현재 OA-21285 전체 도시데이터를 실제 호출해 광화문·덕수궁(POI009) 스냅샷을 저장했고, API에서 유동인구 4,000~4,500명과 응답 15개 섹션을 확인했습니다. 수집은 장소별 단발 작업이며 자동 갱신은 연결하지 않았습니다. 상세 범위와 실행은 DATA_PIPELINE_GUIDE.md 및 app/modules/data_pipeline/IMPLEMENTATION_STATUS.md를 참고하세요. AI 추천, 제품 프론트엔드, AWS 자동 배포는 별도 담당 작업입니다.
+OA-21285 도시데이터는 공식 121장소를 대상으로 수집하며, 원문은 파일로 보관하고 서비스 값은 정형 테이블에 적재합니다. 실행·수집 주기는 [수집 안내](jobs/README.md), 공식 입력 파일은 [자료 안내](jobs/README.md#공식-입력-자료)를 참고하세요.
 
-`.env`, 가상환경, 로컬 원본·중간 데이터와 평가 생성 결과는 Git에서 제외됩니다. `agent/`와 `AGENTS.md`도 개인 작업용으로 제외하며, 팀원이 필요한 공통 안내는 이 README와 각 디렉터리의 README에서 관리합니다. 개인 문서와 로컬 데이터는 Docker 빌드에서도 제외합니다.
+`.env`, 가상환경, 로컬 원문·백업는 Git에서 제외됩니다. `agent/`, `docs/`, `AGENTS.md`도 개인 작업용으로 제외하며, 팀원이 필요한 공통 안내는 이 README와 각 디렉터리의 README에서 관리합니다. 개인 문서와 로컬 데이터는 Docker 빌드에서도 제외합니다.
