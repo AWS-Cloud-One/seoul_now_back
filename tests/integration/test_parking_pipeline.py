@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from app.clients.seoul import CollectionError
 from app.core.config import Settings
 from app.db.session import create_engine
+from app.models.external_api import ExternalApiObservation, ExternalApiResponse
 from app.models.parking import CollectionRun, ParkingRecord
 from app.modules.data_pipeline.pipelines.parking import run_parking
 from app.repositories.parking import ParkingRepository
@@ -38,7 +39,28 @@ def test_atomic_runs_idempotency_spatial_lookup_and_failure_preservation():
             assert (first["accepted"], first["duplicates"], first["rejected"]) == (1, 1, 1)
             second = await run_parking(engine, fetch, source)
             assert second["status"] == "partial"
+            good["TPKCT"] = "50"
+            assert (await run_parking(engine, fetch, source))["status"] == "partial"
             async with factory() as session:
+                record = await session.scalar(
+                    select(ParkingRecord).where(ParkingRecord.source == source)
+                )
+                assert record.details["TPKCT"] == "50"
+                archives = list(
+                    await session.scalars(
+                        select(ExternalApiResponse).where(ExternalApiResponse.source == source)
+                    )
+                )
+                assert len(archives) == 3
+                observations = list(
+                    await session.scalars(
+                        select(ExternalApiObservation).where(
+                            ExternalApiObservation.response_id.in_([item.id for item in archives])
+                        )
+                    )
+                )
+                assert len(observations) == 3
+                assert observations[0].latitude == 37.5665
                 count = await session.scalar(
                     select(func.count())
                     .select_from(ParkingRecord)
@@ -69,6 +91,17 @@ def test_atomic_runs_idempotency_spatial_lookup_and_failure_preservation():
                     )
         finally:
             async with factory.begin() as session:
+                responses = select(ExternalApiResponse.id).where(
+                    ExternalApiResponse.source == source
+                )
+                await session.execute(
+                    delete(ExternalApiObservation).where(
+                        ExternalApiObservation.response_id.in_(responses)
+                    )
+                )
+                await session.execute(
+                    delete(ExternalApiResponse).where(ExternalApiResponse.source == source)
+                )
                 await session.execute(delete(ParkingRecord).where(ParkingRecord.source == source))
                 await session.execute(delete(CollectionRun).where(CollectionRun.source == source))
             await engine.dispose()

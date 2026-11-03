@@ -10,13 +10,14 @@ from app.models.map import (
     ParkingSourceRecord,
 )
 from app.models.parking import CollectionRun, ParkingRecord
+from app.models.population import FloatingPopulationHistory, PopulationArea
 from app.models.provider import ProviderSnapshot
 
 __all__ = ["Base", "ProviderSnapshot", "CityDataSnapshot", "CollectionRun", "ParkingRecord"]
 
+from app.models.external_api import ExternalApiObservation, ExternalApiResponse
 
-from app.models.population import FloatingPopulationHistory, PopulationArea
-
+__all__ += ["ExternalApiResponse", "ExternalApiObservation"]
 __all__ += ["PopulationArea", "FloatingPopulationHistory"]
 __all__ += [
     "MapFeature",

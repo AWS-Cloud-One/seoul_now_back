@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from app.clients.seoul import CollectionError, SeoulClient
 from app.core.config import Settings
 from app.db.session import create_engine
-from app.repositories.provider import save_snapshot
+from app.repositories.provider import save_snapshot, snapshot_outcome
 
 DATA = Path(__file__).parent / "data"
 
@@ -359,11 +359,16 @@ async def execute(target, reuse_probe=False):
                         else:
                             data = await collect_parking(http, settings)
                         await save_snapshot(session, source, data)
-                        await save_snapshot(session, source + ":attempt", {"status": "success"})
+                        outcome = snapshot_outcome(data)
+                        await save_snapshot(session, source + ":attempt", {"status": outcome})
                         return {
                             "source": source,
-                            "status": "success",
-                            "records": len(data.get("items", data.get("features", []))),
+                            "status": outcome,
+                            "records": (
+                                sum(len(dataset["rows"]) for dataset in data["datasets"].values())
+                                if "datasets" in data
+                                else len(data.get("items", data.get("features", [])))
+                            ),
                         }
             except Exception as exc:
                 code = (
@@ -392,4 +397,6 @@ if __name__ == "__main__":
         help="Use already fetched ITS response without spending quota",
     )
     args = parser.parse_args()
-    print(json.dumps(asyncio.run(execute(args.target, args.reuse_probe)), ensure_ascii=False))
+    result = asyncio.run(execute(args.target, args.reuse_probe))
+    print(json.dumps(result, ensure_ascii=False))
+    raise SystemExit({"success": 0, "partial": 2, "skipped": 3}.get(result["status"], 1))

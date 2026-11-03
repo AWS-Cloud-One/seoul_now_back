@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 from app.clients.seoul import CollectionError
 from app.models.parking import CollectionRun
 from app.repositories.citydata import CityDataRepository
+from app.repositories.external_api import archive_response
 
 SOURCE = "seoul_citydata"
 
@@ -61,6 +62,24 @@ async def run_citydata(
                 # CITYDATA is stored intact: modules evolve and may be partially absent.
                 async with factory.begin() as session:
                     await CityDataRepository(session).upsert(area_code, area_name, data, started)
+                    await archive_response(
+                        session,
+                        run_id,
+                        SOURCE,
+                        "citydata",
+                        data,
+                        started,
+                        [
+                            {
+                                "record_key": area_code,
+                                "name": area_name,
+                                "observed_at": None,
+                                "latitude": None,
+                                "longitude": None,
+                                "data": data,
+                            }
+                        ],
+                    )
                     run = await session.get(CollectionRun, run_id)
                     run.area_name, run.area_code = area_name, area_code
                     run.status = "success"

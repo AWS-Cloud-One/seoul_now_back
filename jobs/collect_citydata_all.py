@@ -81,7 +81,7 @@ async def main_async(interval):
                 )
                 print(json.dumps(await project(engine), ensure_ascii=False), flush=True)
                 if not interval:
-                    break
+                    return success == len(targets)
                 await asyncio.sleep(interval)
     finally:
         await engine.dispose()
@@ -98,4 +98,5 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if args.interval and args.interval < 300:
         parser.error("interval must be at least 300 seconds")
-    asyncio.run(main_async(args.interval))
+    if not asyncio.run(main_async(args.interval)):
+        raise SystemExit(1)

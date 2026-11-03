@@ -2,8 +2,11 @@
 
 ## 도시데이터 자동 수집 (2026-10-26)
 
-`docker compose up -d`는 `citydata-collector`도 실행합니다. 서울 주요 121개 장소를
-한 회차 수집한 뒤 300초 대기하고 반복합니다. 회차 소요 시간은 별도입니다.
+최신 DB 적용·격리 테스트·자동 수집 절차는 [DB 저장·자동 갱신 운영 절차](docs/DB_REFRESH_RUNBOOK.md)를 먼저 확인하세요.
+
+`docker compose up -d`는 `citydata-collector`의 공통 scheduler도 실행합니다.
+도시데이터는 회차 시작 기준 300초 주기로 수집하고, 설정된 키에 따라 주차 기본정보와
+시영주차장도 각각 갱신합니다. 키가 없는 작업은 건너뜁니다.
 `.env`의 `APP_SEOUL_CITYDATA_API_KEY`가 필요합니다. Docker가 실행되어 있어야 하며,
 서비스는 `unless-stopped` 정책으로 재시작합니다.
 상태 확인: `docker compose logs --tail 10 citydata-collector`.

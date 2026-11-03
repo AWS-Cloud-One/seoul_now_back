@@ -8,6 +8,10 @@ from app.api.routes import (
     map_contract,
     parking,
     recommendations,
+    collections,
+    health,
+    kakao,
+    parking,
     supplemental,
     team_contract,
     traffic,
@@ -17,6 +21,7 @@ router = APIRouter(prefix="/api/v1")
 router.include_router(health.router)
 router.include_router(parking.router)
 router.include_router(citydata.router)
+router.include_router(collections.router)
 
 router.include_router(traffic.router)
 
