@@ -16,7 +16,7 @@ class SeoulClient:
         self.key = key
         self.service = service
 
-    async def parking_page(self, start: int, end: int) -> tuple[int, list[dict]]:
+    async def fetch_page(self, start: int, end: int) -> tuple[int, list[dict]]:
         if not self.key:
             raise CollectionError("missing_api_key")
         base = f"http://openapi.seoul.go.kr:8088/{quote(self.key, safe='')}"

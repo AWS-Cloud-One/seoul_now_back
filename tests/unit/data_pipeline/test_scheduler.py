@@ -25,16 +25,11 @@ def test_missing_sgis_secret_is_skipped_without_running_collection(monkeypatch):
         "Settings",
         lambda: Settings(_env_file=None, sgis_consumer_key="test", sgis_consumer_secret=""),
     )
-    try:
-        asyncio.run(scheduler.main(["areas"], once=True))
-    except SystemExit as exc:
-        assert str(exc) == "No configured collection tasks"
-    else:
-        raise AssertionError("SGIS must require both credentials")
+    assert asyncio.run(scheduler.execute(["areas"], once=True)) == 1
 
 
 def test_topis_rotates_uncollected_and_oldest_links():
-    from jobs.collect_topis_network import scheduled_links
+    from app.modules.data_pipeline.pipelines.topis_rules import scheduled_links
 
     assert scheduled_links(["a", "b", "c", "d"], {"a": "2026-01-02", "b": "2026-01-01"}, 3) == [
         "c",

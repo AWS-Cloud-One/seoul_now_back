@@ -9,6 +9,18 @@ MUNICIPAL_PARKING_SOURCE = "seoul_municipal_parking"
 CITYDATA_PARKING_SOURCE = "seoul_citydata_prk"
 
 
+def attach_municipal_positions(rows, positions):
+    """Use registration coordinates only when a provider ID identifies one position."""
+    enriched = []
+    for row in rows:
+        record = dict(row)
+        candidates = positions.get(str(row.get("PKLT_CD")), set())
+        if len(candidates) == 1:
+            record["LAT"], record["LOT"] = next(iter(candidates))
+        enriched.append(record)
+    return enriched
+
+
 def text_value(value: object) -> str | None:
     return str(value).strip() if value is not None and str(value).strip() else None
 

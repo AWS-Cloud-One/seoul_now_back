@@ -2,15 +2,18 @@
 
 import argparse
 import asyncio
-import json
 import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
 from app.db.session import create_engine
+from app.repositories.reference import ReferenceRepository
+from jobs.runtime import report as report_result
+from jobs.runtime import run_cli
 
 
 @dataclass(frozen=True)
@@ -67,12 +70,7 @@ TASKS = {
 
 
 def report(task, status, **extra):
-    print(
-        json.dumps(
-            {"time": datetime.now(UTC).isoformat(), "task": task, "status": status, **extra}
-        ),
-        flush=True,
-    )
+    report_result({"time": datetime.now(UTC).isoformat(), "task": task, "status": status, **extra})
 
 
 async def run_command(task):
@@ -96,10 +94,8 @@ async def run_command(task):
 async def cycle(engine, name, task):
     async with engine.connect() as connection:
         for source in task.prerequisites:
-            exists = await connection.scalar(
-                text("SELECT EXISTS (SELECT 1 FROM provider_snapshots WHERE source=:source)"),
-                {"source": source},
-            )
+            async with AsyncSession(bind=connection) as session:
+                exists = await ReferenceRepository(session).has_prerequisite(source)
             if not exists:
                 report(name, "waiting", error_code="missing_prerequisite", source=source)
                 return None
@@ -142,7 +138,7 @@ async def worker(engine, name, task, once=False, sleep=asyncio.sleep, clock=None
         await sleep(max(1, interval - (now() - started)))
 
 
-async def main(names, once=False):
+async def execute(names, once=False) -> int:
     settings = Settings()
     enabled = []
     for name in names:
@@ -153,24 +149,24 @@ async def main(names, once=False):
         else:
             enabled.append((name, task))
     if not enabled:
-        raise SystemExit("No configured collection tasks")
+        return 1
     engine = create_engine(settings)
     try:
         results = await asyncio.gather(
             *(worker(engine, name, task, once) for name, task in enabled)
         )
-        if once and not all(results):
-            raise SystemExit(1)
+        return 0 if not once or all(results) else 1
     finally:
         await engine.dispose()
 
 
-if __name__ == "__main__":
+def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--task", action="append", choices=TASKS)
     parser.add_argument("--once", action="store_true")
     args = parser.parse_args()
-    try:
-        asyncio.run(main(list(dict.fromkeys(args.task or TASKS)), args.once))
-    except KeyboardInterrupt:
-        pass
+    run_cli(execute, list(dict.fromkeys(args.task or TASKS)), args.once)
+
+
+if __name__ == "__main__":
+    main()

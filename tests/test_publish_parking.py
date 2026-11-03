@@ -1,102 +1,124 @@
+"""Real storage/publication checks replacing mocks tied to the retired JSON publisher."""
+
 import asyncio
-import json
-from datetime import UTC, datetime
-from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
-from uuid import uuid4
 
 import pytest
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from jobs.publish_map import build_parking
+from app.models import MapFeature, ParkingFacility, ParkingSourceRecord
+from app.modules.data_pipeline.pipelines.parking import run_parking
+from app.repositories.parking_detail import ParkingDetailRepository
+from app.services.map_publication import MapPublicationService
+from app.services.parking_detail import ParkingDetailService
 
-
-class Rows(list):
-    def all(self):
-        return self
-
-
-def run(status="partial"):
-    return SimpleNamespace(
-        source="seoul_getparkinfo",
-        area_code=None,
-        status=status,
-        started_at=datetime.now(UTC),
-        rejected=725 if status == "partial" else 0,
-    )
+pytestmark = pytest.mark.integration
 
 
-def test_partial_collection_publishes_valid_records():
-    session = MagicMock()
-    session.scalars = AsyncMock(side_effect=[Rows([run()]), []])
-    session.flush = AsyncMock()
-    record = SimpleNamespace(
-        id="original-fingerprint",
-        source="seoul_getparkinfo",
-        name="등록 주차장",
-        address="서울",
-        details={"TPKCT": "10"},
-        source_updated_at=None,
-        collected_at=datetime.now(UTC),
-    )
-    session.execute = AsyncMock(
-        return_value=[
-            (
-                record,
-                '{"type":"Point","coordinates":[126.978,37.5665]}',
+@pytest.mark.parametrize("partial", [True, False])
+def test_partial_omission_keeps_ids_and_full_snapshot_deactivates_missing(
+    normalized_database, partial
+):
+    async def run():
+        engine = create_async_engine(normalized_database)
+        factory = async_sessionmaker(engine)
+        a = {
+            "PKLT_CD": "1",
+            "PKLT_NM": "기존 주차장",
+            "LAT": 37.56,
+            "LOT": 126.97,
+            "TPKCT": "0",
+            "PRK_CRG": "0",
+        }
+        b = {"PKLT_CD": "2", "PKLT_NM": "새 주차장", "LAT": 37.56, "LOT": 126.98}
+
+        async def first():
+            return [a, b]
+
+        async def second():
+            return [b, {**a, "LAT": 0}] if partial else [b]
+
+        try:
+            assert (await run_parking(engine, first, "seoul_getparkinfo"))["status"] == "success"
+            async with factory.begin() as s:
+                assert await MapPublicationService(s).publish("parking") == 2
+                records = list(await s.scalars(select(ParkingSourceRecord)))
+                identities = {
+                    r.provider_record_id: (r.parking_id, r.source_record_id) for r in records
+                }
+                detail = await ParkingDetailService(ParkingDetailRepository(s)).get_detail(
+                    identities["1"][0]
+                )
+                assert detail.records[0].registered.value.registered_capacity == 0
+                assert detail.records[0].registered.value.fees.base_fee_krw == 0
+                assert detail.availability.status == "unsupported"
+            assert (await run_parking(engine, second, "seoul_getparkinfo"))["status"] == (
+                "partial" if partial else "success"
             )
-        ]
-    )
-    info = {}
-    features, _ = asyncio.run(build_parking(session, info))
-    assert len(features) == 1
-    assert features[0]["properties"]["name"] == record.name
-    assert info == {"partial_runs": 1, "rejected_rows": 725}
-    source_record = session.add.call_args_list[-1].args[0]
-    assert source_record.legacy_record_id == record.id
-    assert source_record.registered["collected_at"] == record.collected_at.isoformat()
+            async with factory.begin() as s:
+                assert await MapPublicationService(s).publish("parking") == (2 if partial else 1)
+                records = list(await s.scalars(select(ParkingSourceRecord)))
+                assert identities == {
+                    r.provider_record_id: (r.parking_id, r.source_record_id) for r in records
+                }
+                a_record = next(r for r in records if r.provider_record_id == "1")
+                assert a_record.is_active is partial
+                assert (await s.get(ParkingFacility, identities["1"][0])).is_active is partial
+                features = list(await s.scalars(select(MapFeature)))
+                assert {f.feature_id for f in features} == (
+                    {str(x[0]) for x in identities.values()}
+                    if partial
+                    else {str(identities["2"][0])}
+                )
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
 
 
-def test_partial_omission_keeps_previously_published_record():
-    session = MagicMock()
-    mapping = SimpleNamespace(
-        legacy_record_id="previous",
-        source="seoul_getparkinfo",
-        parking_id=uuid4(),
-        is_active=True,
-    )
-    previous = SimpleNamespace(is_active=True, properties={"name": "기존 주차장"})
-    shape = {"type": "Point", "coordinates": [126.978, 37.5665]}
-    session.scalars = AsyncMock(side_effect=[Rows([run()]), [mapping]])
-    session.execute = AsyncMock(return_value=[])
-    session.get = AsyncMock(return_value=previous)
-    session.scalar = AsyncMock(return_value=json.dumps(shape))
-    features, _ = asyncio.run(build_parking(session))
-    assert mapping.is_active is True
-    assert features[0]["id"] == str(mapping.parking_id)
-    assert features[0]["geometry"] == shape
+def test_no_geometry_does_not_publish_empty_ready_layer(normalized_database):
+    async def run():
+        engine = create_async_engine(normalized_database)
+        try:
+            async with async_sessionmaker(engine).begin() as s:
+                with pytest.raises(RuntimeError, match="No normalized geometry"):
+                    await MapPublicationService(s).publish("parking")
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
 
 
-def test_no_completed_valid_collection_does_not_deactivate_records():
-    session = MagicMock()
-    session.scalars = AsyncMock(return_value=Rows())
-    with pytest.raises(RuntimeError, match="No completed parking collection"):
-        asyncio.run(build_parking(session))
-    session.add.assert_not_called()
+def test_changed_identity_is_held_and_verified_representative_is_preserved(normalized_database):
+    async def run():
+        engine = create_async_engine(normalized_database)
+        factory = async_sessionmaker(engine)
+        row = {"PKLT_CD": "1", "PKLT_NM": "A", "LAT": 37.56, "LOT": 126.97}
 
+        async def fetch():
+            return [row]
 
-def test_full_snapshot_still_deactivates_missing_record():
-    session = MagicMock()
-    mapping = SimpleNamespace(
-        legacy_record_id="removed",
-        source="seoul_getparkinfo",
-        parking_id=uuid4(),
-        is_active=True,
-    )
-    facility = SimpleNamespace(identity_status="unverified", is_active=True)
-    session.scalars = AsyncMock(side_effect=[Rows([run("success")]), [mapping]])
-    session.execute = AsyncMock(return_value=[])
-    session.get = AsyncMock(return_value=facility)
-    features, _ = asyncio.run(build_parking(session))
-    assert features == []
-    assert mapping.is_active is False
-    assert facility.is_active is False
+        try:
+            await run_parking(engine, fetch, "seoul_getparkinfo")
+            async with factory.begin() as s:
+                f = await s.scalar(select(ParkingFacility))
+                f.identity_status = "verified"
+                f.name = "수동 확인 명칭"
+                original = f.parking_id
+            await run_parking(engine, fetch, "seoul_getparkinfo")
+            row["PKLT_NM"] = "B"
+            result = await run_parking(engine, fetch, "seoul_getparkinfo")
+            assert result["status"] == "partial" and result["rejection_reasons"] == {
+                "identity_change_requires_review": 1
+            }
+            async with factory() as s:
+                facilities = list(await s.scalars(select(ParkingFacility)))
+                assert (
+                    len(facilities) == 1
+                    and facilities[0].parking_id == original
+                    and facilities[0].name == "수동 확인 명칭"
+                )
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())

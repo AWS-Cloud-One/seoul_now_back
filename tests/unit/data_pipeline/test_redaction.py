@@ -1,4 +1,4 @@
-from app.repositories.external_api import redact
+from app.storage.redaction import redact
 
 
 def test_archive_redacts_nested_credentials_without_changing_measurements():

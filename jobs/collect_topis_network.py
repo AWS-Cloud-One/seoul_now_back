@@ -1,99 +1,49 @@
-"""Bounded TOPIS collection selected through the official standard/service mapping."""
+"""CLI for TOPIS collection over all official roads or a rotating batch."""
 
 import argparse
 import asyncio
-import json
 
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import async_sessionmaker
+import httpx
 
 from app.core.config import Settings
 from app.db.session import create_engine
-from app.models.provider import ProviderSnapshot
-from app.repositories.citydata import CityDataRepository
-from jobs.collect_topis import execute as collect_links
+from app.modules.data_pipeline.collectors.topis import collect_topis
+from app.modules.data_pipeline.pipelines.topis import CONCURRENCY, run_topis_network
+from jobs.runtime import finish, report, run_cli
 
 
-def scheduled_links(links, attempts, limit):
-    return sorted(links, key=lambda link: (attempts.get(link, ""), link))[:limit]
-
-
-async def targets(area_code, max_links, scheduled_batch=False):
-    engine = create_engine(Settings())
+async def execute(max_links, interval=0, scheduled_batch=False) -> int:
+    settings = Settings()
+    key = (
+        settings.seoul_topis_api_key.get_secret_value() or settings.seoul_api_key.get_secret_value()
+    )
+    engine = create_engine(settings)
     try:
-        async with async_sessionmaker(engine)() as session:
-            geometry = await session.get(ProviderSnapshot, "topis_geometry:2025")
-            if geometry is not None and area_code is None:
-                links = sorted({f["id"] for f in geometry.data["features"]})
-                total = len(links)
-                if scheduled_batch:
-                    rows = await session.execute(
-                        select(ProviderSnapshot.source, ProviderSnapshot.collected_at).where(
-                            ProviderSnapshot.source.like("topis_attempt:%")
-                        )
-                    )
-                    attempts = {
-                        source.removeprefix("topis_attempt:"): when.isoformat()
-                        for source, when in rows
-                    }
-                    links = scheduled_links(links, attempts, max_links)
-                return links, {
-                    "scope": "scheduled_official_batch"
-                    if scheduled_batch
-                    else "all_official_geometry",
-                    "total_links": total,
-                    "selected_links": len(links),
-                    "truncated": len(links) < total,
-                }
-            area = await CityDataRepository(session).get(area_code)
-            if geometry is None or area is None:
-                raise ValueError("missing_geometry_or_area")
-            road = area.data.get("ROAD_TRAFFIC_STTS") or {}
-            rows = road.get("ROAD_TRAFFIC_STTS") or []
-            inverse = geometry.data["standard_to_services"]
-            valid = {f["id"] for f in geometry.data["features"]}
-            standards = {
-                str(row["LINK_ID"]) for row in rows if isinstance(row, dict) and row.get("LINK_ID")
-            }
-            links = sorted(
-                {
-                    link
-                    for standard in standards
-                    for link in inverse.get(standard, [])
-                    if link in valid
-                }
-            )
-            if not links:
-                raise ValueError("no_official_mapping_for_area")
-            return links[:max_links], {
-                "area_code": area_code,
-                "mapped_service_links": len(links),
-                "selected_links": min(len(links), max_links),
-                "truncated": len(links) > max_links,
-                "unmapped_standard_links": len(
-                    [s for s in standards if not any(link in valid for link in inverse.get(s, []))]
-                ),
-            }
+        async with httpx.AsyncClient(limits=httpx.Limits(max_connections=CONCURRENCY)) as client:
+            while True:
+                result = await run_topis_network(
+                    engine,
+                    lambda link: collect_topis(client, key, link),
+                    max_links,
+                    scheduled_batch,
+                    report=report,
+                )
+                code = finish(result)
+                if not interval:
+                    return code
+                await asyncio.sleep(max(interval, 3600) if code == 4 else interval)
     finally:
         await engine.dispose()
 
 
-async def run(area, max_links, interval, scheduled_batch=False):
-    while True:
-        links, report = await targets(area, max_links, scheduled_batch)
-        print(json.dumps(report), flush=True)
-        result = await collect_links(links)
-        if not interval:
-            return result
-        await asyncio.sleep(max(interval, 3600) if result == 4 else interval)
-
-
-if __name__ == "__main__":
+def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    scope = parser.add_mutually_exclusive_group(required=True)
-    scope.add_argument("--area", help="Collected citydata AREA_CD")
-    scope.add_argument("--all", action="store_true", help="Every validated official service link")
-    parser.add_argument("--max-links", type=int, default=20)
+    parser.add_argument(
+        "--all", action="store_true", required=True, help="Use the validated official road list"
+    )
+    parser.add_argument(
+        "--max-links", type=int, default=20, help="Limit for --scheduled-batch only"
+    )
     parser.add_argument(
         "--scheduled-batch",
         action="store_true",
@@ -105,6 +55,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if not 1 <= args.max_links <= 200 or args.interval and args.interval < 300:
         parser.error("max-links must be 1..200; interval must be 0 or at least 300")
-    raise SystemExit(
-        asyncio.run(run(args.area, args.max_links, args.interval, args.scheduled_batch))
-    )
+    run_cli(execute, args.max_links, args.interval, args.scheduled_batch)
+
+
+if __name__ == "__main__":
+    main()

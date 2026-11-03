@@ -1,11 +1,13 @@
 """Fetch the complete integrated Seoul Real-Time City Data payload for one hotspot."""
 
 import asyncio
+import re
 from urllib.parse import quote
 
 import httpx
 
 from app.clients.seoul import CollectionError
+from app.modules.data_pipeline.collectors.official_files import read_xlsx_rows
 
 
 async def collect_citydata(client: httpx.AsyncClient, key: str, area_name: str) -> dict:
@@ -50,3 +52,15 @@ async def collect_citydata(client: httpx.AsyncClient, key: str, area_name: str) 
         except ValueError, KeyError, TypeError, AttributeError:
             raise CollectionError("provider_invalid_response") from None
     raise CollectionError("provider_unavailable")
+
+
+def read_citydata_areas(path):
+    result = {}
+    for row in read_xlsx_rows(path):
+        values = list(row.values())
+        for index, value in enumerate(values):
+            if re.fullmatch(r"POI\d{3}", value) and index + 1 < len(values):
+                result[value] = values[index + 1]
+    if len(result) != 121:
+        raise ValueError("official_area_list_invalid")
+    return result

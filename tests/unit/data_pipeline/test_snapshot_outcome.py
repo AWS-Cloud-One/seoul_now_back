@@ -1,6 +1,6 @@
 import pytest
 
-from app.repositories.provider import snapshot_outcome
+from app.modules.data_pipeline.pipelines.snapshots import snapshot_outcome
 
 
 @pytest.mark.parametrize(
