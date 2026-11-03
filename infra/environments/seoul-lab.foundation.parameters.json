@@ -1,0 +1,8 @@
+[
+  {"ParameterKey": "ProjectName", "ParameterValue": "seoul-now"},
+  {"ParameterKey": "Environment", "ParameterValue": "lab"},
+  {"ParameterKey": "VpcCidr", "ParameterValue": "10.42.0.0/16"},
+  {"ParameterKey": "AvailabilityZoneA", "ParameterValue": "ap-northeast-2a"},
+  {"ParameterKey": "AvailabilityZoneB", "ParameterValue": "ap-northeast-2c"},
+  {"ParameterKey": "NatMode", "ParameterValue": "none"}
+]
