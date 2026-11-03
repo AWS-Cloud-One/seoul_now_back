@@ -6,6 +6,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.api.dependencies import get_settings
+from app.clients.kakao import KakaoError, kakao_get
 from app.core.config import Settings
 
 router = APIRouter(prefix="/kakao", tags=["kakao"])
@@ -13,24 +14,14 @@ Config = Annotated[Settings, Depends(get_settings)]
 
 
 async def request_provider(url: str, params: dict, settings: Settings) -> dict:
-    key = settings.kakao_rest_api_key.get_secret_value().strip()
-    if not key:
-        raise HTTPException(503, "백엔드 APP_KAKAO_REST_API_KEY를 설정해 주세요.")
     try:
         async with httpx.AsyncClient(timeout=10) as client:
-            response = await client.get(
-                url, params=params, headers={"Authorization": f"KakaoAK {key}"}
+            return await kakao_get(
+                client, url, params, settings.kakao_rest_api_key.get_secret_value()
             )
-        if response.status_code in (401, 403):
-            raise HTTPException(502, "카카오 키 또는 해당 API 사용 권한을 확인해 주세요.")
-        if response.status_code == 429:
-            raise HTTPException(503, "카카오 API 사용 한도를 초과했습니다.")
-        response.raise_for_status()
-        return response.json()
-    except httpx.TimeoutException:
-        raise HTTPException(504, "카카오 API 응답 시간이 초과되었습니다.") from None
-    except httpx.HTTPError, ValueError:
-        raise HTTPException(502, "카카오 API 요청에 실패했습니다.") from None
+    except KakaoError as exc:
+        # Preserve the legacy endpoint's response contract; L01 uses 429.
+        raise HTTPException(503 if exc.status == 429 else exc.status, exc.message) from None
 
 
 @router.get("/places")
