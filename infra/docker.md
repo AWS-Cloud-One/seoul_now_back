@@ -7,7 +7,7 @@
 | 빌드 단계 | 포함 내용 | 용도 |
 | --- | --- | --- |
 | `runtime` | Python·실행 패키지·앱·migration·jobs | 실행 이미지의 공통 기반 |
-| `development` | runtime + pytest·Ruff·tests | 로컬 개발, 자동 재시작, 검사 |
+| `development` | runtime + pytest·Ruff·cfn-lint·tests | 로컬 개발, 자동 재시작, 앱·인프라 검사 |
 | `production` | runtime | 테스트 도구와 자동 재시작을 제외한 배포용 이미지 |
 
 Python 버전과 OS 이미지는 Dockerfile의 첫 `FROM`에서 함께 고정합니다. 실행 패키지는 `requirements.txt`, 개발 패키지는 이를 참조하는 `requirements-dev.txt`에 직접 작성합니다. 빌드 때 `pip install -r`로 설치하고 `pip check`로 의존성 충돌을 확인합니다.
