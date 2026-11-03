@@ -15,6 +15,7 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 settings = Settings()
+config.attributes["payload_storage_dir"] = settings.payload_storage_dir
 target_metadata = Base.metadata
 
 

@@ -41,6 +41,7 @@ class Settings(BaseSettings):
     database_url: SecretStr = SecretStr(
         "postgresql+psycopg://seoul:seoul_local@127.0.0.1:5432/seoul_now"
     )
+    payload_storage_dir: Path = PROJECT_ROOT / "data/raw/payloads"
     db_connect_timeout_seconds: int = Field(default=3, ge=1, le=30)
     health_timeout_seconds: float = Field(default=5, gt=0, le=30)
 

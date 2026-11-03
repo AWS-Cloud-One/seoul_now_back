@@ -1,28 +1,54 @@
-"""Register SQLAlchemy models here so Alembic can discover their metadata."""
+"""Active normalized SQLAlchemy registry, revision 0009."""
 
-from app.db.base import Base
-from app.models.citydata import CityDataSnapshot
-from app.models.map import (
-    MapFeature,
-    MapLayerVersion,
-    MapObservation,
-    ParkingFacility,
-    ParkingSourceRecord,
+from .areas import AdministrativeArea, PopulationArea, PopulationLatest, RegionBoundary
+from .base import Base
+from .chat import (
+    ChatConditionAgeGroup,
+    ChatConditionPurpose,
+    ChatConditionVersion,
+    ChatExcludedPlace,
+    ChatMessage,
+    ChatSession,
 )
-from app.models.parking import CollectionRun, ParkingRecord
-from app.models.population import FloatingPopulationHistory, PopulationArea
-from app.models.provider import ProviderSnapshot
+from .collection import (
+    CollectionRejectionReason,
+    CollectionRun,
+    DataSource,
+    LegacyArchive,
+    RawPayload,
+)
+from .map import MapFeature, MapLayerVersion, MapPopulationObservation, MapRoadObservation
+from .parking import ParkingFacility, ParkingSourceRecord
+from .places import Place, PlaceCategory
+from .traffic import RoadAreaMapping, RoadLink, RoadLinkMapping, RoadTrafficLatest
 
-__all__ = ["Base", "ProviderSnapshot", "CityDataSnapshot", "CollectionRun", "ParkingRecord"]
-
-from app.models.external_api import ExternalApiObservation, ExternalApiResponse
-
-__all__ += ["ExternalApiResponse", "ExternalApiObservation"]
-__all__ += ["PopulationArea", "FloatingPopulationHistory"]
-__all__ += [
+__all__ = [
+    "ChatConditionAgeGroup",
+    "ChatConditionPurpose",
+    "ChatConditionVersion",
+    "ChatExcludedPlace",
+    "ChatMessage",
+    "ChatSession",
+    "Place",
+    "PlaceCategory",
+    "AdministrativeArea",
+    "CollectionRun",
+    "CollectionRejectionReason",
+    "LegacyArchive",
+    "DataSource",
     "MapFeature",
     "MapLayerVersion",
-    "MapObservation",
+    "MapPopulationObservation",
+    "MapRoadObservation",
     "ParkingFacility",
     "ParkingSourceRecord",
+    "PopulationArea",
+    "PopulationLatest",
+    "RawPayload",
+    "RegionBoundary",
+    "RoadAreaMapping",
+    "RoadLink",
+    "RoadLinkMapping",
+    "RoadTrafficLatest",
+    "Base",
 ]
