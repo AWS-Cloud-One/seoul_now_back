@@ -9,7 +9,7 @@ from app.core.config import Settings
 from app.db.session import create_engine
 from app.modules.data_pipeline.collectors.topis import collect_topis
 from app.modules.data_pipeline.pipelines.topis import CONCURRENCY, run_topis_network
-from jobs.runtime import finish, report, run_cli
+from jobs.runtime import finish, run_cli
 
 
 async def execute(max_links, interval=0, scheduled_batch=False) -> int:
@@ -26,7 +26,6 @@ async def execute(max_links, interval=0, scheduled_batch=False) -> int:
                     lambda link: collect_topis(client, key, link),
                     max_links,
                     scheduled_batch,
-                    report=report,
                 )
                 code = finish(result)
                 if not interval:

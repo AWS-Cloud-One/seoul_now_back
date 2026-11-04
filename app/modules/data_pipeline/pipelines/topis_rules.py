@@ -24,7 +24,7 @@ def cycle_status(counts, outcomes, stopped):
     if stopped:
         return "paused_provider_limit"
     if outcomes.get("failed", 0) > counts.get("provider_no_observation", 0):
-        return "failed"
+        return "partial" if outcomes.get("success", 0) or outcomes.get("partial", 0) else "failed"
     if outcomes.get("partial", 0) or counts.get("provider_no_observation", 0):
         return "partial"
     return "success"

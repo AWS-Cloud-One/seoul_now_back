@@ -8,7 +8,7 @@ from app.core.config import Settings
 from app.db.session import create_engine
 from app.modules.data_pipeline.collectors.topis import collect_topis
 from app.modules.data_pipeline.pipelines.topis import CONCURRENCY, run_topis
-from jobs.runtime import finish, report, run_cli
+from jobs.runtime import finish, run_cli
 
 
 async def execute(links) -> int:
@@ -19,9 +19,7 @@ async def execute(links) -> int:
     engine = create_engine(settings)
     try:
         async with httpx.AsyncClient(limits=httpx.Limits(max_connections=CONCURRENCY)) as client:
-            result = await run_topis(
-                engine, lambda link: collect_topis(client, key, link), links, report=report
-            )
+            result = await run_topis(engine, lambda link: collect_topis(client, key, link), links)
         return finish(result)
     finally:
         await engine.dispose()

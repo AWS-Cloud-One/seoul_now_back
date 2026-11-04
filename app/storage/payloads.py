@@ -100,6 +100,18 @@ class PayloadStore:
         except UnicodeDecodeError, ValueError:
             raise PayloadStorageError("원본 보관 파일을 해석할 수 없습니다.") from None
 
+    def delete(self, key):
+        """Called only after committed metadata deletion and a locked reference check."""
+        if not re.fullmatch(r"sha256/[0-9a-f]{2}/[0-9a-f]{64}\.blob", key or ""):
+            raise PayloadStorageError("원본 보관 파일의 참조가 올바르지 않습니다.")
+        path = self.root / key
+        if not path.resolve().is_relative_to(self.root.resolve()):
+            raise PayloadStorageError("원본 보관 파일의 참조가 올바르지 않습니다.")
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            raise PayloadStorageError("원본 보관 파일을 삭제할 수 없습니다.") from None
+
 
 def configured_store():
     from app.core.config import Settings

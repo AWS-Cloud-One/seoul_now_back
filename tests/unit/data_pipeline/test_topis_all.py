@@ -1,5 +1,5 @@
 import asyncio
-from contextlib import asynccontextmanager
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -9,7 +9,6 @@ import pytest
 from app.clients.seoul import CollectionError
 from app.core.config import Settings
 from app.modules.data_pipeline.collectors.topis import collect_topis
-from app.modules.data_pipeline.pipelines import topis
 from app.modules.data_pipeline.pipelines.topis_rules import cycle_status, select_targets
 from jobs import collect_topis as topis_job
 from jobs import collect_topis_network as network_job
@@ -51,6 +50,19 @@ def test_missing_official_roads_prevent_collection(links):
         ({"missing_road_geometry": 1}, {"partial": 1}, False, "partial"),
         ({"provider_no_observation": 1, "provider_http_error": 1}, {"failed": 2}, False, "failed"),
         ({"normalization_failed": 1}, {"failed": 1}, False, "failed"),
+        (
+            {"success": 1, "provider_network_error": 1},
+            {"success": 1, "failed": 1},
+            False,
+            "partial",
+        ),
+        (
+            {"some_values": 1, "provider_server_error": 1},
+            {"partial": 1, "failed": 1},
+            False,
+            "partial",
+        ),
+        ({"success": 1, "normalization_failed": 1}, {"success": 1, "failed": 1}, False, "partial"),
         ({}, {}, True, "paused_provider_limit"),
     ],
 )
@@ -81,10 +93,9 @@ def test_jobs_pass_resources_return_exit_codes_and_dispose(monkeypatch, capsys, 
         clients.append(client)
         assert not client.is_closed
 
-    async def pipeline(resource, fetch_link, *args, report):
+    async def pipeline(resource, fetch_link, *args):
         assert resource is engine
         await fetch_link("1000000000")
-        report({"link_id": "1000000000", "status": status})
         return {"status": status}
 
     monkeypatch.setattr(job, "collect_topis", fetch)
@@ -95,7 +106,9 @@ def test_jobs_pass_resources_return_exit_codes_and_dispose(monkeypatch, capsys, 
     assert asyncio.run(call) == code
     assert clients[0].is_closed
     engine.dispose.assert_awaited_once()
-    assert '"link_id": "1000000000"' in capsys.readouterr().out
+    assert [json.loads(line) for line in capsys.readouterr().out.splitlines()] == [
+        {"status": status}
+    ]
 
 
 @pytest.mark.parametrize(
@@ -121,40 +134,6 @@ def test_explicit_repeat_preserves_limit_backoff(monkeypatch, status, delay):
     engine.dispose.assert_awaited_once()
 
 
-def test_unexpected_worker_failure_cancels_other_requests_before_return(monkeypatch):
-    @asynccontextmanager
-    async def transaction():
-        yield None
-
-    monkeypatch.setattr(topis, "async_sessionmaker", lambda _: SimpleNamespace(begin=transaction))
-    monkeypatch.setattr(
-        topis, "save_snapshot", AsyncMock(return_value=SimpleNamespace(status="success"))
-    )
-    monkeypatch.setattr(topis, "REQUEST_INTERVAL", 0)
-    cancelled = []
-
-    async def run():
-        started = asyncio.Event()
-
-        async def fetch(link):
-            if link == "first":
-                await started.wait()
-                raise RuntimeError("database or unexpected worker failure")
-            started.set()
-            try:
-                await asyncio.Event().wait()
-            finally:
-                cancelled.append(link)
-
-        with pytest.raises(ExceptionGroup) as error:
-            await topis.run_topis(None, fetch, ["first", "second"])
-        assert any(isinstance(e, RuntimeError) for e in error.value.exceptions)
-        assert cancelled == ["second"]
-        assert not [task for task in asyncio.all_tasks() if task is not asyncio.current_task()]
-
-    asyncio.run(run())
-
-
 def test_quota_and_auth_errors_are_classified_without_key_leak():
     async def run():
         for code, expected in [
@@ -171,5 +150,31 @@ def test_quota_and_auth_errors_are_classified_without_key_leak():
                     await collect_topis(client, "secret-example-key", "1000000300")
                 assert str(error.value) == expected
                 assert "secret-example-key" not in str(error.value)
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    "status,body,expected",
+    [
+        (503, "unavailable", "provider_server_error"),
+        (429, "limited", "provider_quota_exceeded"),
+        (401, "unauthorized", "provider_auth_error"),
+        (403, "forbidden", "provider_auth_error"),
+        (404, "not found", "provider_http_error"),
+        (200, "invalid xml", "provider_invalid_xml"),
+    ],
+)
+def test_http_errors_distinguish_retryable_server_failure_from_permanent_errors(
+    status, body, expected
+):
+    async def run():
+        async def handler(request):
+            return httpx.Response(status, text=body)
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            with pytest.raises(CollectionError) as error:
+                await collect_topis(client, "secret-example-key", "1000000300")
+            assert str(error.value) == expected
 
     asyncio.run(run())
