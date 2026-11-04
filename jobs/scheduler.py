@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
 from app.db.session import create_engine
+from app.modules.data_pipeline.pipelines.maintenance import recover_collection
 from app.modules.data_pipeline.pipelines.publication import publish_result
 from app.modules.data_pipeline.pipelines.topis_storage import maintain_cycles
 from app.repositories.reference import ReferenceRepository
@@ -40,7 +41,12 @@ class TaskResult:
 
 
 TASKS = {
-    "citydata": Task("jobs.collect_citydata_all", 600, ("seoul_citydata_api_key",)),
+    "citydata": Task(
+        "jobs.collect_citydata_all",
+        600,
+        ("seoul_citydata_api_key",),
+        prerequisites=("citydata_places",),
+    ),
     "parking": Task("jobs.collect_parking", 86400, ("seoul_api_key",)),
     "municipal": Task(
         "jobs.collect_municipal_parking",
@@ -60,7 +66,7 @@ TASKS = {
         600,
         ("seoul_sdot_api_key",),
         ("sdot",),
-        prerequisites=("sgis_seoul_boundary",),
+        prerequisites=("sgis_seoul_boundary", "sdot_locations"),
         failure_interval=600,
         after=("areas",),
     ),
@@ -87,6 +93,12 @@ PUBLICATION_RECOVERY = {
     "parking": (("parking",), ()),
     "municipal": (("parking",), ()),
     "national-parking": (("parking",), ()),
+}
+
+INTERRUPTED_COLLECTIONS = {
+    "citydata": "seoul_citydata",
+    "parking": "seoul_getparkinfo",
+    "municipal": "seoul_municipal_parking",
 }
 
 
@@ -123,6 +135,8 @@ async def recover_publication(engine, name):
             async with asyncio.timeout(120):
                 if name == "topis":
                     await maintain_cycles(engine, recover=True)
+                elif name in INTERRUPTED_COLLECTIONS:
+                    await recover_collection(engine, INTERRUPTED_COLLECTIONS[name])
                 result = await publish_result(
                     engine, {"status": "success"}, geometry=geometry, observations=observations
                 )

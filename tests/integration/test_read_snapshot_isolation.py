@@ -24,85 +24,36 @@ from app.models import (
     ParkingSourceRecord,
 )
 from app.modules.data_pipeline.normalizers.parking import SOURCE
+from app.modules.data_pipeline.normalizers.storage_fields import population
 from app.modules.data_pipeline.pipelines.parking import run_parking
 from app.repositories.map import MapRepository
 from app.repositories.parking_detail import ParkingDetailRepository
 from app.repositories.parking_nearby import ParkingNearbyRepository
+from app.repositories.population import PopulationWriter
 from app.services.map_publication import MapPublicationService
-from tests.fixtures.road_reference import save_fixture_snapshot as save_snapshot
+from tests.fixtures.citydata import boundary, document
+from tests.fixtures.topis import response, seed_roads, write
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("no_runtime_files")]
 BBOX = "126.9,37.4,127.2,37.7"
 
 
 async def seed_map(factory, layer):
+    now = datetime.now(UTC)
+    if layer == "roads":
+        await seed_roads(factory, ["road"])
+        await write(factory, "road", response("road", 10, 10), now)
+    else:
+        await boundary(factory)
+        body = document()["CITYDATA"]
+        body["LIVE_PPLTN_STTS"][0]["PPLTN_TIME"] = now.astimezone(ZoneInfo("Asia/Seoul")).strftime(
+            "%Y-%m-%d %H:%M"
+        )
+        values = population(body, received_at=now)
+        values.pop("quality")
+        async with factory.begin() as s:
+            await s.run_sync(lambda sync: PopulationWriter(sync).observation("POI001", values, now))
     async with factory.begin() as s:
-        if layer == "roads":
-            await save_snapshot(
-                s,
-                "topis_geometry:2025",
-                {
-                    "features": [
-                        {
-                            "id": "road",
-                            "geometry": {
-                                "type": "LineString",
-                                "coordinates": [[127, 37.5], [127.01, 37.5]],
-                            },
-                        }
-                    ]
-                },
-            )
-            await save_snapshot(
-                s,
-                "topis:road",
-                {"rows": [{"link_id": "road", "prcs_spd": "10", "prcs_trv_time": "10"}]},
-                received_at=datetime.now(UTC),
-            )
-        else:
-            await save_snapshot(
-                s,
-                "citydata_place_boundaries",
-                {
-                    "features": [
-                        {
-                            "id": "POI001",
-                            "properties": {"name": "area"},
-                            "geometry": {
-                                "type": "Polygon",
-                                "coordinates": [
-                                    [[127, 37.5], [127.01, 37.5], [127.01, 37.51], [127, 37.5]]
-                                ],
-                            },
-                        }
-                    ]
-                },
-            )
-            now = datetime.now(UTC)
-            await save_snapshot(
-                s,
-                "seoul_citydata",
-                {
-                    "AREA_CD": "POI001",
-                    "AREA_NM": "area",
-                    "PRK_STTS": [],
-                    "ROAD_TRAFFIC_STTS": {"ROAD_TRAFFIC_STTS": []},
-                    "LIVE_PPLTN_STTS": [
-                        {
-                            "AREA_CD": "POI001",
-                            "AREA_NM": "area",
-                            "AREA_PPLTN_MIN": "0",
-                            "AREA_PPLTN_MAX": "10",
-                            "AREA_CONGEST_LVL": "여유",
-                            "REPLACE_YN": "N",
-                            "PPLTN_TIME": now.astimezone(ZoneInfo("Asia/Seoul")).strftime(
-                                "%Y-%m-%d %H:%M"
-                            ),
-                        }
-                    ],
-                },
-                received_at=now,
-            )
         await MapPublicationService(s).publish(layer)
 
 

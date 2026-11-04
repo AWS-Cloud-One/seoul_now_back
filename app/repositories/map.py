@@ -9,7 +9,6 @@ from app.models import (
     MapLayerVersion,
     MapPopulationObservation,
     MapRoadObservation,
-    RawPayload,
 )
 
 
@@ -75,18 +74,9 @@ class MapRepository:
             return {}
         cls = MapRoadObservation if layer == "roads" else MapPopulationObservation
         key = cls.link_id if layer == "roads" else cls.area_code
-        rows = await self.session.execute(
-            select(
-                cls,
-                func.coalesce(cls.received_at, RawPayload.received_at)
-                if layer == "roads"
-                else RawPayload.received_at,
-            )
-            .outerjoin(RawPayload, cls.payload_id == RawPayload.payload_id)
-            .where(key.in_(ids))
-        )
+        rows = await self.session.scalars(select(cls).where(key.in_(ids)))
         result = {}
-        for r, collected in rows:
+        for r in rows:
             value = None
             if r.has_observation:
                 value = (
@@ -101,6 +91,6 @@ class MapRepository:
                     }
                 )
             result[r.link_id if layer == "roads" else r.area_code] = Observation(
-                value, r.observed_at, collected, r.collection_failed
+                value, r.observed_at, r.received_at, r.collection_failed
             )
         return result

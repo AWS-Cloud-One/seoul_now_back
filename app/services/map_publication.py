@@ -8,15 +8,14 @@ from sqlalchemy import delete, func, or_, select
 from sqlalchemy.dialects.postgresql import insert
 
 from app.models import (
-    CollectionRun,
     MapFeature,
     MapLayerVersion,
     MapPopulationObservation,
     MapRoadObservation,
     ParkingFacility,
     PopulationArea,
+    PopulationAttemptLatest,
     PopulationLatest,
-    RawPayload,
     RoadLink,
     RoadTrafficAttemptLatest,
     RoadTrafficLatest,
@@ -225,56 +224,12 @@ class MapPublicationService:
                 .order_by((model.source == source).asc())
             )
         }
-        prefix = "link:" if layer == "roads" else "area:"
+        attempt_model = RoadTrafficAttemptLatest if layer == "roads" else PopulationAttemptLatest
         attempts = {
-            r.target_key: r
-            for r in await s.scalars(
-                select(CollectionRun)
-                .where(
-                    CollectionRun.source == source,
-                    CollectionRun.target_key.in_([prefix + item for item in ids]),
-                    CollectionRun.run_kind.in_(["collection", "legacy"]),
-                    CollectionRun.status != "running",
-                    CollectionRun.finished_at.is_not(None),
-                )
-                .distinct(CollectionRun.target_key)
-                .order_by(
-                    CollectionRun.target_key,
-                    CollectionRun.started_at.desc(),
-                    CollectionRun.id.desc(),
-                )
+            getattr(row, key): row
+            for row in await s.scalars(
+                select(attempt_model).where(getattr(attempt_model, key).in_(ids))
             )
-        }
-        road_attempts = (
-            {
-                row.link_id: row
-                for row in await s.scalars(
-                    select(RoadTrafficAttemptLatest).where(
-                        RoadTrafficAttemptLatest.link_id.in_(ids)
-                    )
-                )
-            }
-            if layer == "roads"
-            else {}
-        )
-        receipts = {
-            payload_id: (stamp, run_id, received_at)
-            for payload_id, stamp, run_id, received_at in (
-                await s.execute(
-                    select(
-                        RawPayload.payload_id,
-                        func.coalesce(
-                            RawPayload.received_at,
-                            RawPayload.legacy_collected_at,
-                            CollectionRun.started_at,
-                        ),
-                        RawPayload.run_id,
-                        RawPayload.received_at,
-                    )
-                    .outerjoin(CollectionRun)
-                    .where(RawPayload.payload_id.in_([r.payload_id for r in latest.values()]))
-                )
-            ).all()
         }
         measurements = (
             ("speed_kmh", "travel_seconds")
@@ -283,7 +238,6 @@ class MapPublicationService:
         )
         evidence = (
             "source",
-            "payload_id",
             "observed_at",
             "processed_at",
             "processor_version",
@@ -291,41 +245,21 @@ class MapPublicationService:
         )
         self.observations_changed = 0
         for identity in ids:
-            r, run = latest.get(identity), attempts.get(prefix + identity)
-            current = road_attempts.get(identity)
-            if current and run and current.attempted_at < (run.finished_at or run.started_at):
-                current = None
-            receipt = (
-                (r.received_at or receipts[r.payload_id][2])
-                if r and layer == "roads"
-                else receipts[r.payload_id][0]
-                if r
-                else None
-            )
-            if current:
-                newer_attempt = r is None or (
-                    not current.observation_updated
-                    and (receipt is None or current.attempted_at >= receipt)
-                )
-                attempt_id, attempt_status, attempt_error = (
-                    current.run_id,
-                    current.status,
-                    current.error_code,
-                )
-            else:
-                newer_attempt = bool(
-                    run
-                    and (
-                        r is None
-                        or (
-                            run.id != receipts[r.payload_id][1]
-                            and (receipt is None or run.started_at >= receipt)
-                        )
+            r, current = latest.get(identity), attempts.get(identity)
+            receipt = r.received_at if r else None
+            newer_attempt = bool(
+                current
+                and (
+                    r is None
+                    or (
+                        not current.observation_updated
+                        and (receipt is None or current.attempted_at >= receipt)
                     )
                 )
-                attempt_id = run.id if run else None
-                attempt_status = run.status if run else None
-                attempt_error = run.error_code if run else None
+            )
+            attempt_id = current.run_id if current and layer == "roads" else None
+            attempt_status = current.status if current else None
+            attempt_error = current.error_code if current else None
             no_record = bool(newer_attempt and attempt_error == "provider_no_observation")
             has = r is not None and not no_record
             values = dict(
@@ -333,6 +267,10 @@ class MapPublicationService:
                 **{key: identity},
                 has_observation=has,
                 last_attempt_id=attempt_id,
+                received_at=receipt if has else None,
+                attempted_at=current.attempted_at if current else None,
+                attempt_status=attempt_status,
+                attempt_error_code=attempt_error,
                 # A completed but rejected refresh retains the prior value and its receipt.
                 # Partial errors in another CITYDATA section do not taint this run's valid value.
                 collection_failed=bool(
@@ -340,8 +278,6 @@ class MapPublicationService:
                 ),
                 **{name: getattr(r, name) if has else None for name in (*evidence, *measurements)},
             )
-            if layer == "roads":
-                values["received_at"] = receipt if has else None
             statement = insert(published).values(**values)
             updates = {
                 name: statement.excluded[name] for name in values if name not in {key, "layer"}
