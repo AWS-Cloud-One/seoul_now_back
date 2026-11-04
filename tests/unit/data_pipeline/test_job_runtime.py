@@ -39,19 +39,16 @@ def test_main_exits_cleanly_without_exposing_exception_details(monkeypatch, caps
         }
 
 
-def test_probe_uses_local_raw_directory_and_reports_stored_outcome(monkeypatch, tmp_path, capsys):
+def test_supplemental_reports_outcome_without_file_paths(monkeypatch, capsys):
     engine = AsyncMock()
     monkeypatch.setattr(collect_supplemental, "create_engine", lambda _: engine)
-    monkeypatch.setattr(collect_supplemental, "RAW_DATA", tmp_path / "raw")
-    monkeypatch.setattr(collect_supplemental, "REFERENCE_DATA", tmp_path / "reference")
     pipeline = AsyncMock(return_value={"status": "partial", "records": 3})
     monkeypatch.setattr(collect_supplemental, "run_supplemental", pipeline)
-    monkeypatch.setattr("sys.argv", ["collect_supplemental", "cctv", "--reuse-probe"])
+    monkeypatch.setattr("sys.argv", ["collect_supplemental", "sdot"])
     with pytest.raises(SystemExit) as result:
         collect_supplemental.main()
     assert result.value.code == 2
     kwargs = pipeline.call_args.kwargs
-    assert kwargs["probe_path"] == tmp_path / "raw/its_probe.json"
-    assert kwargs["sensor_path"] == tmp_path / "reference/sdot_locations_20251113.xlsx"
+    assert kwargs == {}
     assert json.loads(capsys.readouterr().out) == {"status": "partial", "records": 3}
     engine.dispose.assert_awaited_once()

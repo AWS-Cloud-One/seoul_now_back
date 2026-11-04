@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 from geoalchemy2 import Geometry
-from sqlalchemy import and_, func, literal_column, or_, select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
 
 from app.modules.data_pipeline.identity import PROCESSOR_VERSION
@@ -40,7 +40,7 @@ class NormalizedWriter:
             .on_conflict_do_nothing()
         )
 
-    def upsert(self, name, values, keys, *, newer_payload=False, return_changed=False, preserve=()):
+    def upsert(self, name, values, keys, *, return_changed=False, preserve=()):
         t = self.t(name)
         stmt = insert(t).values(**values)
         changed = {
@@ -48,73 +48,11 @@ class NormalizedWriter:
         }
         if "updated_at" in t.c:
             changed["updated_at"] = func.now()
-        where = None
-        if newer_payload:
-            raw = self.t("raw_payloads")
-            # Refer to the ON CONFLICT row; a table column adds an uncorrelated FROM here.
-            current_payload = literal_column(f"{t.name}.payload_id", type_=raw.c.payload_id.type)
-            old = (
-                select(func.coalesce(raw.c.received_at, raw.c.legacy_collected_at, raw.c.stored_at))
-                .where(raw.c.payload_id == current_payload)
-                .scalar_subquery()
-            )
-            new = (
-                select(func.coalesce(raw.c.received_at, raw.c.legacy_collected_at, raw.c.stored_at))
-                .where(raw.c.payload_id == values["payload_id"])
-                .scalar_subquery()
-            )
-            if name == "road_traffic_latest" and values.get("received_at") is not None:
-                old = func.coalesce(t.c.received_at, old)
-                new = values["received_at"]
-            if "observed_at" in values:
-                observed = values["observed_at"]
-                where = (
-                    and_(new >= old, or_(t.c.observed_at.is_(None), t.c.observed_at <= observed))
-                    if observed
-                    else and_(new >= old, t.c.observed_at.is_(None))
-                )
-            else:
-                where = new >= old
-        stmt = stmt.on_conflict_do_update(index_elements=keys, set_=changed, where=where)
+        stmt = stmt.on_conflict_do_update(index_elements=keys, set_=changed)
         if return_changed:
             return self.session.scalar(stmt.returning(t.c[keys[0]])) is not None
         self.session.execute(stmt)
         return None
-
-    def traffic(self, link_id, values, payload_id):
-        # Serialize competing cycles per source/link before reading the current payload.
-        # ON CONFLICT still enforces receipt/observation ordering atomically.
-        self.session.execute(
-            select(func.pg_advisory_xact_lock(func.hashtext("traffic:topis_traffic:" + link_id)))
-        )
-        self.source("topis_traffic")
-        return self.upsert(
-            "road_traffic_latest",
-            dict(
-                source="topis_traffic",
-                link_id=link_id,
-                payload_id=payload_id,
-                processed_at=datetime.now(UTC),
-                processor_version=PROCESSOR_VERSION,
-                **values,
-            ),
-            ["source", "link_id"],
-            newer_payload=True,
-            return_changed=True,
-        )
-
-    def validate_payload(self, source, target, payload_id, *, area_name=None):
-        raw, runs = self.t("raw_payloads"), self.t("collection_runs")
-        run = self.session.execute(
-            select(runs.c.source, runs.c.target_key)
-            .join(raw, raw.c.run_id == runs.c.id)
-            .where(raw.c.payload_id == payload_id)
-        ).first()
-        allowed = {target}
-        if area_name:
-            allowed.add("area_name:" + area_name)
-        if run is None or run.source != source or run.target_key not in allowed:
-            raise ValueError("payload_source_target_mismatch")
 
     def exists(self, name, **identity):
         table = self.t(name)
@@ -161,12 +99,6 @@ class NormalizedWriter:
         source = all_candidates[0].record["source"]
         if any(c.record["source"] != source for c in all_candidates):
             raise ValueError("mixed_parking_sources")
-        for payload_id in {
-            evidence.payload_id
-            for candidate in all_candidates
-            for evidence in (candidate, candidate.observation or candidate)
-        }:
-            self.validate_payload(source, scope, payload_id)
         inputs = {candidate.record["identity_key"]: candidate for candidate in candidates}
         if len(inputs) != len(candidates):
             raise ValueError("unresolved_parking_duplicates")
@@ -210,7 +142,7 @@ class NormalizedWriter:
         )
         for row, previous in resolved:
             evidence = inputs[row["identity_key"]]
-            payload_id, received_at = evidence.payload_id, evidence.received_at
+            received_at = evidence.received_at
             static_is_current = not (
                 previous is not None
                 and previous["collected_at"]
@@ -266,7 +198,6 @@ class NormalizedWriter:
                     source=source,
                     location=row["location"],
                     collected_at=received_at,
-                    last_payload_id=payload_id,
                     is_active=True,
                     processed_at=now,
                     processor_version=PROCESSOR_VERSION,
@@ -274,7 +205,6 @@ class NormalizedWriter:
                 )
                 if row["fees"] is not None:
                     values.update(
-                        operation_payload_id=payload_id,
                         operation_received_at=received_at,
                         operation_processed_at=now,
                         operation_processor_version=PROCESSOR_VERSION,
@@ -295,13 +225,13 @@ class NormalizedWriter:
             )
             accepted.append(record_id)
         # Conflicting candidates cannot change registration. Record their attempt only
-        # when an existing identity is unambiguous; otherwise raw/run evidence is retained.
+        # when an existing identity is unambiguous; otherwise record only its rejection count.
         for candidate, reason in sorted(
             conflicts,
             key=lambda item: (
                 item[0].received_at or datetime.min.replace(tzinfo=UTC),
                 item[0].origin,
-                str(item[0].payload_id),
+                item[0].row_index if item[0].row_index is not None else -1,
             ),
         ):
             matched, _ = resolve_parking_identities([candidate.record], existing)
