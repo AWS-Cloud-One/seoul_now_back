@@ -13,7 +13,7 @@ from sqlalchemy.exc import OperationalError
 from app.api.dependencies import get_session
 from app.core.config import Settings
 from app.main import create_app
-from app.models import ParkingSourceRecord
+from app.models import ParkingOperatingHour, ParkingSourceRecord
 
 
 @pytest.fixture
@@ -52,7 +52,11 @@ def test_registered_detail_preserves_source_values(detail_client):
             reference_date="2026-10-22",
             address="서울",
             registered_capacity=0,
-            weekday_hours="0000~0000",
+            operating_hours=[
+                ParkingOperatingHour(
+                    day_type="weekday", state="unknown", reason_code="AMBIGUOUS_EQUAL_TIMES"
+                )
+            ],
             collected_at=datetime(2026, 10, 22, 5, tzinfo=UTC),
             reason_code="SOURCE_TIME_UNKNOWN",
         )
@@ -71,7 +75,8 @@ def test_registered_detail_preserves_source_values(detail_client):
     assert record["reference_date"] == "2026-10-22"
     assert record["registered"]["value"]["registered_capacity"] == 0
     assert record["registered"]["value"]["fees"] is None
-    assert record["registered"]["value"]["operating_hours"]["weekdays"] == "0000~0000"
+    assert record["registered"]["value"]["operating_hours"]["weekdays"] is None
+    assert record["registered"]["value"]["operating_hours"]["notes"] == "평일 미확인"
     assert record["registered"]["collected_at"] == "2026-10-22T05:00:00Z"
     assert datetime.fromisoformat(data["checked_at"]).tzinfo == UTC
 

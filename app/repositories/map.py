@@ -1,4 +1,4 @@
-"""Spatial lookup of one locked publication; reconstruct DTOs from typed columns."""
+"""Spatial lookup within the API's committed snapshot; no reader row locks."""
 
 from dataclasses import dataclass
 
@@ -11,6 +11,10 @@ from app.models import (
     MapRoadObservation,
     RawPayload,
 )
+
+
+def lock_map_layer(session, layer):
+    session.execute(select(func.pg_advisory_xact_lock(func.hashtext("map-publish:" + layer))))
 
 
 @dataclass(frozen=True)
@@ -34,7 +38,7 @@ class MapRepository:
 
     async def get_version(self, layer):
         return await self.session.scalar(
-            select(MapLayerVersion).where(MapLayerVersion.layer == layer).with_for_update(read=True)
+            select(MapLayerVersion).where(MapLayerVersion.layer == layer)
         )
 
     async def select_features(self, layer, bbox, max_features, *, include_geometry):
@@ -72,7 +76,12 @@ class MapRepository:
         cls = MapRoadObservation if layer == "roads" else MapPopulationObservation
         key = cls.link_id if layer == "roads" else cls.area_code
         rows = await self.session.execute(
-            select(cls, RawPayload.received_at)
+            select(
+                cls,
+                func.coalesce(cls.received_at, RawPayload.received_at)
+                if layer == "roads"
+                else RawPayload.received_at,
+            )
             .outerjoin(RawPayload, cls.payload_id == RawPayload.payload_id)
             .where(key.in_(ids))
         )

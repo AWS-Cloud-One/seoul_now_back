@@ -1,13 +1,13 @@
-"""Atomically publish typed canonical data; no provider payload parsing or HTTP."""
+"""Publish committed canonical data atomically; refresh observations without rebuilding geometry."""
 
 import json
 from datetime import UTC, datetime
 
 from geoalchemy2 import Geometry
-from sqlalchemy import delete, func, select, text, update
+from sqlalchemy import delete, func, or_, select
+from sqlalchemy.dialects.postgresql import insert
 
 from app.models import (
-    AdministrativeArea,
     CollectionRun,
     MapFeature,
     MapLayerVersion,
@@ -18,38 +18,64 @@ from app.models import (
     PopulationLatest,
     RawPayload,
     RoadLink,
+    RoadTrafficAttemptLatest,
     RoadTrafficLatest,
 )
-from app.modules.data_pipeline.identity import PROCESSOR_VERSION, fingerprint
+from app.modules.data_pipeline.identity import fingerprint
+from app.repositories.map import lock_map_layer
+from app.repositories.reference import current_roads
+from app.repositories.road_reference import lock_road_reference, rebuild_road_areas
+
+
+class PublicationNotReady(RuntimeError):
+    def __init__(self, code, message=None):
+        self.code = code
+        super().__init__(message or code)
 
 
 class MapPublicationService:
     def __init__(self, session):
         self.session = session
+        self.geometry_changed = False
+        self.observations_changed = 0
 
-    async def publish(self, layer):
-        s = self.session
-        await s.execute(
-            text("SELECT pg_advisory_xact_lock(hashtext(:key))"), {"key": "map-publish:" + layer}
-        )
-        version = await s.scalar(
+    async def _lock(self, layer):
+        self.geometry_changed = False
+        self.observations_changed = 0
+        if layer not in {"roads", "population", "parking"}:
+            raise ValueError("unsupported_map_layer")
+        if layer == "roads":
+            await self.session.run_sync(lock_road_reference)
+        await self.session.run_sync(lambda sync: lock_map_layer(sync, layer))
+        return await self.session.scalar(
             select(MapLayerVersion).where(MapLayerVersion.layer == layer).with_for_update()
         )
+
+    @staticmethod
+    def _canonical(layer):
         cls = {"roads": RoadLink, "population": PopulationArea, "parking": ParkingFacility}[layer]
         geometry = cls.location.cast(Geometry) if layer == "parking" else cls.geometry
-        rows = (
-            await s.execute(select(cls, func.ST_AsGeoJSON(geometry)).where(cls.is_active.is_(True)))
-        ).all()
+        filters = current_roads() if layer == "roads" else (cls.is_active.is_(True),)
+        return cls, geometry, filters
+
+    async def publish(self, layer):
+        """Explicit reference refresh/retry; unchanged geometry retains its rows and timestamps."""
+        s = self.session
+        version = await self._lock(layer)
+        cls, geometry, filters = self._canonical(layer)
+        rows = (await s.execute(select(cls, func.ST_AsGeoJSON(geometry)).where(*filters))).all()
         if not rows:
-            raise RuntimeError("No normalized geometry available to publish")
+            raise PublicationNotReady(
+                "missing_normalized_geometry", "No normalized geometry available to publish"
+            )
         if version is None:
             version = MapLayerVersion(
                 layer=layer, geometry_version=None, is_ready=False, coverage=""
             )
             s.add(version)
             await s.flush()
-        features = []
-        signature = []
+        features, signature = [], []
+        geometries = {}
         for r, geo in rows:
             key = (
                 str(r.parking_id)
@@ -76,113 +102,266 @@ class MapPublicationService:
                 values.update(parking_id=r.parking_id, identity_status=r.identity_status)
                 props.update(parking_id=key, identity_status=r.identity_status)
             features.append(MapFeature(**values))
+            geometries[key] = json.loads(geo)
             signature.append(dict(id=key, geometry=json.loads(geo), properties=props))
         signature.sort(key=lambda f: f["id"])
-        version.geometry_version = fingerprint(dict(selection_rule=2, features=signature))
-        version.coverage = "Stored provider coverage only; not all Seoul roads or facilities."
-        # Dependent publications must be removed before their parent geometry.
-        if layer in {"roads", "population"}:
-            await s.execute(
-                delete(MapRoadObservation if layer == "roads" else MapPopulationObservation)
-            )
-        await s.execute(delete(MapFeature).where(MapFeature.layer == layer))
-        s.add_all(features)
-        await s.flush()
-        if layer in {"roads", "population"}:
-            model = RoadTrafficLatest if layer == "roads" else PopulationLatest
-            published = MapRoadObservation if layer == "roads" else MapPopulationObservation
-            source = "topis_traffic" if layer == "roads" else "seoul_citydata"
-            latest = {
-                r.link_id if layer == "roads" else r.area_code: r
-                for r in await s.scalars(
-                    select(model)
-                    .where(model.source.in_([source, "legacy_map_publication"]))
-                    .order_by((model.source == source).asc())
-                )
-            }
-            attempts = {
-                r.target_key: r
-                for r in await s.scalars(
-                    select(CollectionRun)
-                    .where(
-                        CollectionRun.source == source,
-                        CollectionRun.run_kind.in_(["collection", "legacy"]),
+        geometry_version = fingerprint(dict(selection_rule=2, features=signature))
+        self.geometry_changed = not version.is_ready or version.geometry_version != geometry_version
+        if self.geometry_changed:
+            await self._write_features(layer, features, geometries)
+            version.geometry_version = geometry_version
+            version.coverage = "Stored provider coverage only; not all Seoul roads or facilities."
+            version.is_ready = True
+            if layer == "roads":
+                await s.run_sync(
+                    lambda sync: rebuild_road_areas(
+                        sync, [f.feature_id for f in features], geometry_version
                     )
-                    .distinct(CollectionRun.target_key)
-                    .order_by(CollectionRun.target_key, CollectionRun.started_at.desc())
+                )
+        if layer in {"roads", "population"}:
+            await self._write_observations(layer, [f.feature_id for f in features])
+        await self._finish(version)
+        return len(features)
+
+    async def _write_features(self, layer, features, geometries):
+        """Apply only changed features; a transaction publishes the entire new version at once."""
+        s = self.session
+        existing = {
+            row.feature_id: (row, json.loads(geo))
+            for row, geo in await s.execute(
+                select(MapFeature, func.ST_AsGeoJSON(MapFeature.geometry)).where(
+                    MapFeature.layer == layer
+                )
+            )
+        }
+        removed = set(existing) - {feature.feature_id for feature in features}
+        if removed:
+            if layer in {"roads", "population"}:
+                observation = self._observation_model(layer)
+                identity = observation.link_id if layer == "roads" else observation.area_code
+                await s.execute(delete(observation).where(identity.in_(removed)))
+            await s.execute(
+                delete(MapFeature).where(
+                    MapFeature.layer == layer, MapFeature.feature_id.in_(removed)
+                )
+            )
+        attributes = (
+            "name",
+            "direction",
+            "identity_status",
+            "is_active",
+            "road_link_id",
+            "population_area_code",
+            "parking_id",
+        )
+        for incoming in features:
+            old = existing.get(incoming.feature_id)
+            if old is None:
+                s.add(incoming)
+                continue
+            current, geometry = old
+            changed = geometry != geometries[incoming.feature_id]
+            if changed:
+                current.geometry = incoming.geometry
+            for name in attributes:
+                if getattr(current, name) != getattr(incoming, name):
+                    setattr(current, name, getattr(incoming, name))
+                    changed = True
+            if changed:
+                current.published_at = datetime.now(UTC)
+        await s.flush()
+
+    async def refresh_observations(self, layer):
+        """Only refresh a ready publication whose canonical reference still matches."""
+        if layer not in {"roads", "population"}:
+            raise ValueError("unsupported_observation_layer")
+        version = await self._lock(layer)
+        if version is None or not version.is_ready or not version.geometry_version:
+            raise PublicationNotReady("geometry_publication_required")
+        s = self.session
+        ids = list(await s.scalars(select(MapFeature.feature_id).where(MapFeature.layer == layer)))
+        cls, geometry, filters = self._canonical(layer)
+        key = cls.link_id if layer == "roads" else cls.area_code
+        # Compare in PostgreSQL; no GeoJSON transfer, geometry writes or spatial remapping.
+        matches = [
+            MapFeature.feature_id.is_(None),
+            func.ST_AsGeoJSON(geometry).is_distinct_from(func.ST_AsGeoJSON(MapFeature.geometry)),
+            cls.name.is_distinct_from(MapFeature.name),
+        ]
+        if layer == "roads":
+            matches.append(cls.direction.is_distinct_from(MapFeature.direction))
+        different = (
+            select(key)
+            .outerjoin(MapFeature, (MapFeature.layer == layer) & (MapFeature.feature_id == key))
+            .where(*filters, or_(*matches))
+        )
+        count = await s.scalar(select(func.count()).select_from(cls).where(*filters))
+        if count != len(ids) or await s.scalar(select(different.exists())):
+            raise PublicationNotReady("geometry_publication_required")
+        await self._write_observations(layer, ids)
+        await self._finish(version)
+        return len(ids)
+
+    @staticmethod
+    def _observation_model(layer):
+        return MapRoadObservation if layer == "roads" else MapPopulationObservation
+
+    async def _write_observations(self, layer, ids):
+        if not ids:
+            return
+        s = self.session
+        model = RoadTrafficLatest if layer == "roads" else PopulationLatest
+        published = self._observation_model(layer)
+        key = "link_id" if layer == "roads" else "area_code"
+        source = "topis_traffic" if layer == "roads" else "seoul_citydata"
+        latest = {
+            getattr(r, key): r
+            for r in await s.scalars(
+                select(model)
+                .where(
+                    model.source.in_([source, "legacy_map_publication"]),
+                    getattr(model, key).in_(ids),
+                )
+                .order_by((model.source == source).asc())
+            )
+        }
+        prefix = "link:" if layer == "roads" else "area:"
+        attempts = {
+            r.target_key: r
+            for r in await s.scalars(
+                select(CollectionRun)
+                .where(
+                    CollectionRun.source == source,
+                    CollectionRun.target_key.in_([prefix + item for item in ids]),
+                    CollectionRun.run_kind.in_(["collection", "legacy"]),
+                    CollectionRun.status != "running",
+                    CollectionRun.finished_at.is_not(None),
+                )
+                .distinct(CollectionRun.target_key)
+                .order_by(
+                    CollectionRun.target_key,
+                    CollectionRun.started_at.desc(),
+                    CollectionRun.id.desc(),
+                )
+            )
+        }
+        road_attempts = (
+            {
+                row.link_id: row
+                for row in await s.scalars(
+                    select(RoadTrafficAttemptLatest).where(
+                        RoadTrafficAttemptLatest.link_id.in_(ids)
+                    )
                 )
             }
-            payload_ids = [r.payload_id for r in latest.values()]
-            receipts = (
-                dict(
-                    (
-                        await s.execute(
-                            select(RawPayload.payload_id, CollectionRun.started_at)
-                            .join(CollectionRun)
-                            .where(RawPayload.payload_id.in_(payload_ids))
-                        )
-                    ).all()
+            if layer == "roads"
+            else {}
+        )
+        receipts = {
+            payload_id: (stamp, run_id, received_at)
+            for payload_id, stamp, run_id, received_at in (
+                await s.execute(
+                    select(
+                        RawPayload.payload_id,
+                        func.coalesce(
+                            RawPayload.received_at,
+                            RawPayload.legacy_collected_at,
+                            CollectionRun.started_at,
+                        ),
+                        RawPayload.run_id,
+                        RawPayload.received_at,
+                    )
+                    .outerjoin(CollectionRun)
+                    .where(RawPayload.payload_id.in_([r.payload_id for r in latest.values()]))
                 )
-                if payload_ids
-                else {}
+            ).all()
+        }
+        measurements = (
+            ("speed_kmh", "travel_seconds")
+            if layer == "roads"
+            else ("min_people", "max_people", "congestion", "is_replacement")
+        )
+        evidence = (
+            "source",
+            "payload_id",
+            "observed_at",
+            "processed_at",
+            "processor_version",
+            "reason_code",
+        )
+        self.observations_changed = 0
+        for identity in ids:
+            r, run = latest.get(identity), attempts.get(prefix + identity)
+            current = road_attempts.get(identity)
+            if current and run and current.attempted_at < (run.finished_at or run.started_at):
+                current = None
+            receipt = (
+                (r.received_at or receipts[r.payload_id][2])
+                if r and layer == "roads"
+                else receipts[r.payload_id][0]
+                if r
+                else None
             )
-            for f in features:
-                r = latest.get(f.feature_id)
-                run = attempts.get(("link:" if layer == "roads" else "area:") + f.feature_id)
-                # A newer no-observation response explicitly supersedes old values.
-                no_record = bool(
+            if current:
+                newer_attempt = r is None or (
+                    not current.observation_updated
+                    and (receipt is None or current.attempted_at >= receipt)
+                )
+                attempt_id, attempt_status, attempt_error = (
+                    current.run_id,
+                    current.status,
+                    current.error_code,
+                )
+            else:
+                newer_attempt = bool(
                     run
-                    and run.error_code == "provider_no_observation"
-                    and (r is None or run.started_at >= receipts[r.payload_id])
+                    and (
+                        r is None
+                        or (
+                            run.id != receipts[r.payload_id][1]
+                            and (receipt is None or run.started_at >= receipt)
+                        )
+                    )
                 )
-                has = r is not None and not no_record
-                values = dict(
-                    layer=layer,
-                    **{"link_id" if layer == "roads" else "area_code": f.feature_id},
-                    has_observation=has,
-                    last_attempt_id=run.id if run else None,
-                    collection_failed=bool(
-                        run
-                        and run.status == "failed"
-                        and not no_record
-                        and (r is None or run.started_at >= receipts[r.payload_id])
-                    ),
+                attempt_id = run.id if run else None
+                attempt_status = run.status if run else None
+                attempt_error = run.error_code if run else None
+            no_record = bool(newer_attempt and attempt_error == "provider_no_observation")
+            has = r is not None and not no_record
+            values = dict(
+                layer=layer,
+                **{key: identity},
+                has_observation=has,
+                last_attempt_id=attempt_id,
+                # A completed but rejected refresh retains the prior value and its receipt.
+                # Partial errors in another CITYDATA section do not taint this run's valid value.
+                collection_failed=bool(
+                    newer_attempt and attempt_status in {"failed", "partial"} and not no_record
+                ),
+                **{name: getattr(r, name) if has else None for name in (*evidence, *measurements)},
+            )
+            if layer == "roads":
+                values["received_at"] = receipt if has else None
+            statement = insert(published).values(**values)
+            updates = {
+                name: statement.excluded[name] for name in values if name not in {key, "layer"}
+            }
+            changed = or_(
+                *(
+                    getattr(published, name).is_distinct_from(value)
+                    for name, value in updates.items()
                 )
-                if has:
-                    for name in (
-                        "source",
-                        "payload_id",
-                        "observed_at",
-                        "processed_at",
-                        "processor_version",
-                        "reason_code",
-                    ):
-                        values[name] = getattr(r, name)
-                    for name in (
-                        ("speed_kmh", "travel_seconds")
-                        if layer == "roads"
-                        else ("min_people", "max_people", "congestion", "is_replacement")
-                    ):
-                        values[name] = getattr(r, name)
-                s.add(published(**values))
-        version.is_ready = True
-        version.updated_at = datetime.now(UTC)
-        await s.flush()
-        if layer == "roads":
-            await s.execute(text("DELETE FROM road_area_mappings"))
-            await s.execute(
-                text("""INSERT INTO road_area_mappings
-                    (link_id,dong_code,boundary_version,road_geometry_version,processor_version,mapped_at)
-                SELECT r.link_id,a.dong_code,a.boundary_version,:version,:processor,now()
-                FROM road_links r JOIN administrative_areas a
-                    ON ST_Intersects(r.geometry,a.geometry)
-                WHERE r.is_active AND a.is_active
-                    AND ST_Length(ST_Intersection(r.geometry,a.geometry)) > 0"""),
-                {"version": version.geometry_version, "processor": PROCESSOR_VERSION},
             )
-            await s.execute(
-                update(AdministrativeArea)
-                .where(AdministrativeArea.is_active.is_(True))
-                .values(road_mapping_version=version.geometry_version)
+            result = await s.execute(
+                statement.on_conflict_do_update(
+                    index_elements=[key],
+                    set_={**updates, "published_at": func.now()},
+                    where=changed,
+                ).returning(getattr(published, key))
             )
-        return len(features)
+            self.observations_changed += len(result.all())
+
+    async def _finish(self, version):
+        if self.geometry_changed or self.observations_changed:
+            version.updated_at = datetime.now(UTC)
+        await self.session.flush()

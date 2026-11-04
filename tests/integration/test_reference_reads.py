@@ -9,11 +9,11 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.models import RawPayload, RegionBoundary, RoadLink
 from app.modules.data_pipeline.pipelines import topis
-from app.modules.data_pipeline.pipelines.snapshots import save_snapshot
 from app.repositories.reference import ReferenceRepository
 from app.repositories.spatial import SpatialRepository
 from app.storage.payloads import configured_store
 from jobs import scheduler
+from tests.fixtures.road_reference import save_fixture_snapshot as save_snapshot
 
 pytestmark = pytest.mark.integration
 ROAD = {"type": "LineString", "coordinates": [[127, 37.5], [127.01, 37.5]]}
@@ -71,7 +71,7 @@ def test_current_road_import_excludes_leftover_and_inactive_links(normalized_dat
                 repo = ReferenceRepository(session)
                 assert await repo.topis_links() == ["a", "c"]
                 assert await repo.has_prerequisite("topis_geometry:2025")
-                assert (await session.get(RoadLink, "b")).is_active  # Leftover row really exists.
+                assert not (await session.get(RoadLink, "b")).is_active  # History remains inactive.
                 assert (await session.get(RoadLink, "a")).last_payload_id == current.payload_id
             links, report = await topis.targets(engine, 1, True)
             assert links == ["a"] and report["total_links"] == 2
@@ -149,7 +149,7 @@ def test_scheduler_checks_usable_typed_rows_instead_of_file_presence(
                         row.is_active = False
                     elif state == "empty_refresh":
                         empty = await save_snapshot(session, source, {"features": []})
-                        assert empty.status == "success"
+                        assert empty.status == ("failed" if is_road else "success")
                     elif state == "failed_refresh":
                         failed = await save_snapshot(
                             session,
@@ -173,8 +173,12 @@ def test_scheduler_checks_usable_typed_rows_instead_of_file_presence(
             monkeypatch.setattr(scheduler, "run_command", command)
             task = scheduler.Task("unused", 300, (), prerequisites=(source,))
             result = await scheduler.cycle(engine, "reference-test", task)
-            ready = state in {"ready", "failed_refresh"}
-            assert result is (True if ready else None)
+            ready = state in {"ready", "failed_refresh"} or (is_road and state == "empty_refresh")
+            assert result == (
+                scheduler.TaskResult("success", 0)
+                if ready
+                else scheduler.TaskResult("waiting", 1, "missing_prerequisite")
+            )
             assert len(calls) == int(ready)
             # Empty successful receipts must not revive rows left by an older import.
             if state == "empty_refresh":
@@ -185,7 +189,7 @@ def test_scheduler_checks_usable_typed_rows_instead_of_file_presence(
                     )
                     repo = ReferenceRepository(session)
                     current = await repo.topis_links() if is_road else await repo.seoul_boundary()
-                    assert current == ([] if is_road else None)
+                    assert current == (["a"] if is_road else None)
         finally:
             await engine.dispose()
 

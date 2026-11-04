@@ -9,7 +9,7 @@ from app.storage.payloads import configured_store
 
 @pytest.fixture
 def stored_payload():
-    async def read(session, source, target_key):
+    async def read(session, source, target_key, *, payload_kind=None):
         stamp = func.coalesce(
             RawPayload.received_at, RawPayload.legacy_collected_at, RawPayload.stored_at
         )
@@ -22,7 +22,13 @@ def stored_payload():
                 CollectionRun.status.in_(["success", "partial"]),
                 RawPayload.format == "json",
                 RawPayload.document_type.in_(["object", "array"]),
-                RawPayload.payload_kind != "legacy_observation",
+                RawPayload.payload_kind == payload_kind
+                if payload_kind
+                else (
+                    RawPayload.payload_kind == "processing_report"
+                    if target_key.startswith("report:")
+                    else RawPayload.payload_kind.not_in(["legacy_observation", "processing_report"])
+                ),
             )
             .order_by(stamp.desc(), RawPayload.stored_at.desc())
             .limit(1)

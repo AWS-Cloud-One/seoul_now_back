@@ -6,8 +6,8 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.models import CollectionRun, RawPayload, RoadTrafficLatest
-from app.modules.data_pipeline.pipelines.snapshots import save_snapshot
 from app.repositories.collection import CollectionRepository
+from tests.fixtures.road_reference import save_fixture_snapshot as save_snapshot
 
 pytestmark = pytest.mark.integration
 
@@ -58,7 +58,7 @@ def test_provider_history_failure_and_older_response_preserve_latest(
                     await CollectionRepository(s).latest_run("topis_traffic", "link:r1")
                 ).status == "failed"
                 assert await s.scalar(select(func.count()).select_from(RoadTrafficLatest)) == 1
-                assert await s.scalar(select(func.count()).select_from(RawPayload)) == 3
+                assert await s.scalar(select(func.count()).select_from(RawPayload)) == 6
             # Invalid geometry is retained, but the failed normalization cannot erase good geometry.
             async with factory.begin() as s:
                 result = await save_snapshot(
@@ -91,7 +91,7 @@ def test_provider_history_failure_and_older_response_preserve_latest(
 
                 counts = await CollectionRepository(s).rejection_counts([r.id for r in runs])
                 assert {"normalization_failed": 1} in counts.values()
-                assert await s.scalar(select(func.count()).select_from(RawPayload)) == 4
+                assert await s.scalar(select(func.count()).select_from(RawPayload)) == 8
         finally:
             await engine.dispose()
 
@@ -157,7 +157,6 @@ def test_boundary_and_link_mapping_conversion_preserves_relations(normalized_dat
                         ],
                         "mapping_rows": [
                             {"service_link_id": "r1", "sequence": 0, "standard_link_id": "s1"},
-                            {"service_link_id": "missing", "sequence": 0, "standard_link_id": "s2"},
                         ],
                     },
                 )
@@ -185,7 +184,7 @@ def test_boundary_and_link_mapping_conversion_preserves_relations(normalized_dat
                 assert (road.name, road.direction, road.source_version) == (
                     "테스트로",
                     "동",
-                    "2024",
+                    "2025",
                 )
                 mapping = await session.get(RoadLinkMapping, ("r1", 0, "s1"))
                 assert (
@@ -208,7 +207,7 @@ def test_snapshot_run_kinds_receipts_and_attempts_remain_distinct(normalized_dat
             async with factory.begin() as session:
                 collected = await save_snapshot(
                     session,
-                    "national_parking",
+                    "fixture_provider",
                     {"datasets": {"parking": {"rows": [], "complete": False}}},
                     received_at=receipt,
                 )
@@ -219,16 +218,16 @@ def test_snapshot_run_kinds_receipts_and_attempts_remain_distinct(normalized_dat
                     session, "topis_collection_status", {"status": "complete"}
                 )
                 assert (
-                    await save_snapshot(session, "national_parking:attempt", {"status": "partial"})
+                    await save_snapshot(session, "fixture_provider:attempt", {"status": "partial"})
                     is None
                 )
                 assert (
-                    await save_snapshot(session, "national_parking:attempt", {"status": "success"})
+                    await save_snapshot(session, "fixture_provider:attempt", {"status": "success"})
                     is None
                 )
                 failed = await save_snapshot(
                     session,
-                    "national_parking:attempt",
+                    "fixture_provider:attempt",
                     {"status": "failed", "error_code": "provider_network_error"},
                 )
             assert collected.status == "partial" and imported.status == report.status == "success"

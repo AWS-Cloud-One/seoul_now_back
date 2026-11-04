@@ -10,11 +10,17 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.clients.seoul import CollectionError
 from app.models import CollectionRun
+from app.modules.data_pipeline.collectors.citydata import CityDataDocument, CityDataResponseError
+from app.modules.data_pipeline.normalizers.citydata import CityDataError
+from app.modules.data_pipeline.pipelines.citydata_storage import store_citydata
 from app.modules.data_pipeline.pipelines.parking import project_citydata_parking
+from app.modules.data_pipeline.pipelines.publication import publication_summary, publish_result
 from app.modules.data_pipeline.pipelines.snapshots import normalize_snapshot
+from app.modules.data_pipeline.results import ProcessingCounts
 from app.repositories.collection import CollectionRepository
 
 SOURCE = "seoul_citydata"
+STOP_ERRORS = {"provider_auth_error", "provider_quota_exceeded", "missing_citydata_api_key"}
 
 
 async def run_citydata_batch(engine, fetch_area, targets, *, report=None):
@@ -22,9 +28,17 @@ async def run_citydata_batch(engine, fetch_area, targets, *, report=None):
     if not targets:
         raise ValueError("empty_citydata_targets")
     counts = Counter()
+    current_runs, stop_reason = {}, None
     for code, name in targets.items():
-        result = await run_citydata(engine, lambda name=name: fetch_area(name), name)
+        result = await run_citydata(
+            engine,
+            lambda code=code, name=name: fetch_area(code, name),
+            name,
+            expected_code=code,
+            _publish=False,
+        )
         counts[result["status"]] += 1
+        current_runs[code] = result.get("run_id")
         if report:
             report(
                 {
@@ -34,9 +48,12 @@ async def run_citydata_batch(engine, fetch_area, targets, *, report=None):
                     "error_code": result.get("error_code"),
                 }
             )
+        if result.get("error_code") in STOP_ERRORS:
+            stop_reason = result["error_code"]
+            break
         await asyncio.sleep(0.25)
     try:
-        projection = await project_citydata_parking(engine)
+        projection = await project_citydata_parking(engine, current_run_ids=current_runs)
     except Exception:
         projection = {"status": "failed", "error_code": "parking_projection_failed"}
     statuses = set(counts) | {projection["status"]}
@@ -49,20 +66,33 @@ async def run_citydata_batch(engine, fetch_area, targets, *, report=None):
         if statuses == {"skipped"}
         else "partial"
     )
-    return {
-        "cycle_complete": True,
-        "status": status,
+    result = {
+        "cycle_complete": stop_reason is None,
+        "status": "paused_provider_limit" if stop_reason else status,
+        "stop_reason": stop_reason,
+        "completed": sum(counts.values()),
+        "remaining": len(targets) - sum(counts.values()),
         "total": len(targets),
         **{key: counts[key] for key in ("success", "partial", "failed", "skipped")},
         "parking_projection": projection,
     }
+    result = await publish_result(engine, result, observations=("population",))
+    result["publication"] = publication_summary(
+        {
+            **result["publication"]["layers"],
+            **projection.get("publication", {}).get("layers", {}),
+        }
+    )
+    return result
 
 
-async def run_citydata(engine, fetch, requested_area):
+async def run_citydata(engine, fetch, requested_area, *, expected_code, _publish=True):
+    requested_area, expected_code = requested_area.strip(), expected_code.strip()
+    if not requested_area or not expected_code:
+        raise CollectionError("missing_area_identity")
     factory = async_sessionmaker(engine, expire_on_commit=False)
     run_id = uuid4()
     started = datetime.now(UTC)
-    area_code = None
     lock_name = f"{SOURCE}:{requested_area.casefold()}"
     async with engine.connect() as lock:
         acquired = await lock.scalar(
@@ -78,58 +108,69 @@ async def run_citydata(engine, fetch, requested_area):
         try:
             async with factory.begin() as session:
                 await CollectionRepository(session).start(
-                    SOURCE, "area_name:" + requested_area, run_id=run_id, started_at=started
+                    SOURCE, "area:" + expected_code, run_id=run_id, started_at=started
                 )
-            status, error = "failed", None
             try:
-                data = await fetch()
-                received = datetime.now(UTC)
+                try:
+                    data = await fetch()
+                except CityDataResponseError as exc:
+                    data = exc.document  # Rejected envelopes are still immutable evidence.
+                document = (
+                    data
+                    if isinstance(data, CityDataDocument)
+                    else CityDataDocument(data, datetime.now(UTC), require_envelope=False)
+                )
+                # Commit the original before normalization; unexpected failures must not lose it.
                 async with factory.begin() as session:
-                    payload = await CollectionRepository(session).archive(run_id, data, received)
-                    payload_id = payload.payload_id
-                if not isinstance(data, dict):
-                    raise CollectionError("invalid_snapshot")
-                area_code = str(data.get("AREA_CD") or "").strip()
-                area_name = str(data.get("AREA_NM") or "").strip()
-                if not area_code or not area_name:
-                    raise CollectionError("missing_area_identity")
-                async with factory.begin() as session:
-                    issue = await session.run_sync(
-                        lambda sync: normalize_snapshot(
-                            sync, SOURCE, data, payload_id, received_at=received
-                        )
+                    original = await CollectionRepository(session).archive(
+                        run_id, document.body, document.received_at
                     )
+                async with factory.begin() as session:
                     run = await session.get(CollectionRun, run_id)
-                    run.target_key = "area:" + area_code
-                    await CollectionRepository(session).finish(
+                    result = await store_citydata(
+                        session,
                         run,
-                        status="partial" if issue else "success",
-                        completeness="complete",
-                        received=1,
-                        accepted=0 if issue else 1,
-                        rejected=1 if issue else 0,
-                        rejection_reasons={issue: 1} if issue else {},
+                        document.body,
+                        document.received_at,
+                        normalize_snapshot,
+                        expected_code=expected_code,
+                        expected_name=requested_area,
+                        original=original,
+                        require_envelope=document.require_envelope,
                     )
-                    status = run.status
             except Exception as exc:
-                status = "failed"
-                error = str(exc) if isinstance(exc, CollectionError) else "internal_error"
+                error = (
+                    str(exc)
+                    if isinstance(exc, (CollectionError, CityDataError))
+                    else "internal_error"
+                )
+                counts = ProcessingCounts(unit="section", scope="citydata_section_processing")
+                result = {
+                    "status": "failed",
+                    "error_code": error,
+                    **counts.as_dict(),
+                    "sections": {},
+                }
                 async with factory.begin() as session:
+                    repo = CollectionRepository(session)
                     run = await session.get(CollectionRun, run_id)
-                    await CollectionRepository(session).finish(
-                        run, status="failed", error_code=error
+                    await repo.archive(
+                        run_id, result, None, kind="processing_report", part="sections"
                     )
-            return dict(
-                run_id=str(run_id),
-                source=SOURCE,
-                area_name=requested_area,
-                area_code=area_code,
-                status=status,
-                error_code=error,
-                received=int(status in {"success", "partial"}),
-                accepted=int(status == "success"),
-                rejected=int(status == "partial"),
-                duplicates=0,
+                    await repo.finish(
+                        run, status="failed", error_code=error, **counts.database_counts()
+                    )
+            result = {
+                "run_id": str(run_id),
+                "source": SOURCE,
+                "area_name": requested_area,
+                "area_code": expected_code,
+                **result,
+            }
+            return (
+                await publish_result(engine, result, observations=("population",))
+                if _publish
+                else result
             )
         finally:
             await lock.execute(

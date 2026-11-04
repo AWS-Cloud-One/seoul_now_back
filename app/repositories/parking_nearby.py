@@ -3,6 +3,7 @@
 from geoalchemy2 import Geography
 from sqlalchemy import String, cast, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.models import MapFeature, MapLayerVersion, ParkingFacility, ParkingSourceRecord
 
@@ -13,11 +14,7 @@ class ParkingNearbyRepository:
 
     async def get_version(self):
         return await self.session.scalar(
-            select(MapLayerVersion)
-            .where(
-                MapLayerVersion.layer == "parking",
-            )
-            .with_for_update(read=True)
+            select(MapLayerVersion).where(MapLayerVersion.layer == "parking")
         )
 
     @staticmethod
@@ -77,6 +74,7 @@ class ParkingNearbyRepository:
             return {}
         rows = await self.session.scalars(
             select(ParkingSourceRecord)
+            .options(selectinload(ParkingSourceRecord.operating_hours))
             .where(
                 ParkingSourceRecord.parking_id.in_(ids),
                 ParkingSourceRecord.is_active.is_(True),

@@ -1,16 +1,25 @@
 """Collection attempts and immutable evidence; no HTTP or provider-specific parsing."""
 
 import asyncio
-from datetime import UTC, datetime
+import hashlib
+from datetime import UTC, date, datetime
 from uuid import uuid4
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert
 
 from app.models import CollectionRejectionReason, CollectionRun, DataSource, RawPayload
 from app.modules.data_pipeline.identity import PROCESSOR_VERSION
 from app.storage.payloads import configured_store
 from app.storage.redaction import redact
+
+
+async def lock_payload_file(session, sha256):
+    # Writers and post-commit cleanup use the same lock, including identical content
+    # shared by different providers. A collector must lock before creating the file.
+    await session.execute(
+        select(func.pg_advisory_xact_lock(func.hashtext("payload-file:" + sha256)))
+    )
 
 
 class CollectionRepository:
@@ -80,13 +89,17 @@ class CollectionRepository:
         self, run_id, data, received_at, *, kind="provider_response", part="response", legacy=None
     ):
         data = redact(data)
-        stored = await asyncio.to_thread(self.store.put_bytes, self.store.encode_json(data))
+        body = self.store.encode_json(data)
+        await lock_payload_file(self.session, hashlib.sha256(body).hexdigest())
+        stored = await asyncio.to_thread(self.store.put_bytes, body)
+        run = await self.session.get(CollectionRun, run_id)
         document_type = (
             "object" if isinstance(data, dict) else "array" if isinstance(data, list) else "scalar"
         )
         payload = RawPayload(
             payload_id=uuid4(),
             run_id=run_id,
+            source=run.source,
             part_key=part,
             format="json",
             payload_kind=kind,
@@ -96,6 +109,34 @@ class CollectionRepository:
             document_type=document_type,
             received_at=received_at,
             **(legacy or {}),
+        )
+        self.session.add(payload)
+        await self.session.flush()
+        return payload
+
+    async def archive_file(self, run_id, body, *, part, metadata):
+        """Preserve the exact official bytes used for parsing, without inventing receipt time."""
+        await lock_payload_file(self.session, hashlib.sha256(body).hexdigest())
+        stored = await asyncio.to_thread(self.store.put_bytes, body)
+        run = await self.session.get(CollectionRun, run_id)
+        if stored.sha256 != metadata["sha256"] or stored.byte_size != metadata["byte_size"]:
+            raise ValueError("source_file_evidence_mismatch")
+        payload = RawPayload(
+            payload_id=uuid4(),
+            run_id=run_id,
+            source=run.source,
+            part_key=part,
+            payload_kind="source_file",
+            format="xlsx",
+            document_type="binary",
+            file_ref=stored.file_ref,
+            sha256=stored.sha256,
+            byte_size=stored.byte_size,
+            received_at=None,
+            source_version=metadata["version"],
+            reference_date=date.fromisoformat(metadata["reference_date"])
+            if metadata.get("reference_date")
+            else None,
         )
         self.session.add(payload)
         await self.session.flush()

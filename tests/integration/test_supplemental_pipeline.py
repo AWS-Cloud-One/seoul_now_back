@@ -1,6 +1,7 @@
 """Supplemental requests run outside DB transactions and preserve stored data contracts."""
 
 import asyncio
+from datetime import UTC, datetime
 
 import httpx
 import pytest
@@ -14,6 +15,7 @@ from app.modules.data_pipeline.pipelines.snapshots import save_snapshot
 from app.modules.data_pipeline.pipelines.supplemental import SOURCES, run_supplemental
 from app.repositories.collection import CollectionRepository
 from app.storage.payloads import configured_store
+from tests.fixtures.sdot import sensor_file
 
 pytestmark = pytest.mark.integration
 
@@ -66,13 +68,25 @@ async def seed_boundary(factory, year=2025):
 def test_http_runs_without_open_transactions_and_saved_shapes_are_preserved(
     normalized_database, monkeypatch, target, stored_payload
 ):
+    original_collect_sdot = collectors.collect_sdot
+
+    async def collect_sdot_at_fixed_time(http, settings):
+        return await original_collect_sdot(
+            http, settings, now=datetime(2026, 10, 25, 9, 30, tzinfo=UTC)
+        )
+
+    monkeypatch.setattr(collectors, "collect_sdot", collect_sdot_at_fixed_time)
     sensor_rows = [
         {"B": "1", "D": "서울특별시", "E": "37.5", "F": "127"},
         {"B": "2", "D": "서울특별시", "E": "37.5", "F": "129"},
         {"B": "3", "D": "서울특별시", "E": "37.4", "F": "126.9"},
         {"B": "4", "D": "서울특별시", "E": "37.5", "F": "127"},
     ]
-    monkeypatch.setattr(collectors, "read_sensor_rows", lambda path: sensor_rows)
+    monkeypatch.setattr(
+        collectors,
+        "read_sensor_file",
+        lambda path: sensor_file([dict(r, C="device-" + r["B"]) for r in sensor_rows]),
+    )
 
     async def run():
         engine = create_async_engine(normalized_database)
@@ -87,8 +101,16 @@ def test_http_runs_without_open_transactions_and_saved_shapes_are_preserved(
             )
             calls.append(request.url.path)
             if target == "sdot":
+                if not request.url.path.endswith("2026-10-25_18"):
+                    return httpx.Response(200, json={"RESULT": {"CODE": "INFO-200"}})
                 rows = [
-                    {"SERIAL": code, "SENSING_TIME": "2026-10-25_18:00:00", "VISITOR_COUNT": count}
+                    {
+                        "SERIAL": code,
+                        "SENSING_TIME": "2026-10-25_18:00:00",
+                        "VISITOR_COUNT": count,
+                        "DATA_NO": "1",
+                        "DATE": "2026-10-25 18:01:00",
+                    }
                     for code, count in (("1", "0"), ("2", "9"), ("3", "4"), ("3", "5"))
                 ]
                 data = {
@@ -102,7 +124,19 @@ def test_http_runs_without_open_transactions_and_saved_shapes_are_preserved(
                 data = {"response": {"data": CCTV_ROWS}}
             elif target == "parking":
                 method = request.url.path.rsplit("/", 1)[1].removesuffix("_v1")
-                data = {"resultCode": "00", "totalCount": 1, method: [{"prk_center_id": "p1"}]}
+                row = {"prk_center_id": "p1"}
+                if method == "PrkSttusInfo":
+                    row.update(
+                        prk_plce_nm="parking",
+                        prk_plce_adres_sido="서울특별시",
+                        prk_plce_entrc_la="37.56",
+                        prk_plce_entrc_lo="126.97",
+                    )
+                elif method == "PrkOprInfo":
+                    row["basic_info"] = {"parking_chrge_bs_chrge": "1000"}
+                else:
+                    row.update(pkfc_ParkingLots_total="10", pkfc_Available_ParkingLots_total="0")
+                data = {"resultCode": "00", "totalCount": 1, method: [row]}
             elif request.url.path.endswith("authentication.json"):
                 data = {"result": {"accessToken": "test-token"}}
             elif request.url.path.endswith("stage.json"):
@@ -157,11 +191,16 @@ def test_http_runs_without_open_transactions_and_saved_shapes_are_preserved(
                     result = await run_supplemental(
                         engine, http, settings, target, sensor_path="fixture.xlsx"
                     )
-            assert result["status"] == "success"
+            assert result["status"] == ("partial" if target in {"parking", "sdot"} else "success")
             assert result["records"] == {"areas": 1, "sdot": 3, "cctv": 2, "parking": 3}[target]
-            assert len(calls) == {"areas": 4, "sdot": 1, "cctv": 1, "parking": 3}[target]
+            assert len(calls) == {"areas": 4, "sdot": 3, "cctv": 1, "parking": 3}[target]
             async with factory() as session:
-                _, data = await stored_payload(session, SOURCES[target], "all")
+                _, data = await stored_payload(
+                    session,
+                    SOURCES[target],
+                    "all",
+                    payload_kind="processing_report" if target == "parking" else None,
+                )
                 if target == "areas":
                     feature = data["features"][0]
                     assert feature["properties"]["sigungu_code"] == "1101"
@@ -179,7 +218,10 @@ def test_http_runs_without_open_transactions_and_saved_shapes_are_preserved(
                     )
                     assert items["4"]["observed_at"] is None
                     assert data["excluded_outside_seoul"] == 1 and data["received"] == 4
-                    assert data["scope"] == "recent_10000_rows" and data["complete_history"] is True
+                    assert data["scope"] == "bounded_query_window_client_time_order"
+                    assert data["complete_history"] is False and data["query_complete"] is True
+                    assert data["observation_summary"]["with_count"] == 1
+                    assert result["normalized_storage"] == "applied"
                 elif target == "cctv":
                     assert [item["id"] for item in data["items"]] == ["inside:0", "edge:1"]
                     assert data["received"] == 4 and data["issued_at"].endswith("+00:00")
@@ -286,6 +328,73 @@ def test_cctv_http_failure_preserves_previous_data_and_releases_lock(
                     "status"
                 ] == "success"
                 assert calls == 3
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("case", ["bad_header", "failed_page", "partial_page"])
+def test_sdot_input_failures_keep_specific_evidence(normalized_database, monkeypatch, case):
+    from app.models import RawPayload
+    from tests.fixtures.sdot import collected, observation
+
+    file = sensor_file()
+    if case == "bad_header":
+        file["header"] = {"B": "wrong"}
+    monkeypatch.setattr(collectors, "read_sensor_file", lambda _: file)
+
+    async def collect(*args):
+        assert case != "bad_header", "bad installation header must stop before HTTP"
+        result = collected([observation()] if case == "partial_page" else [])
+        result["pages"].append(
+            {"start": 1001, "end": 2000, "received": 0, "error_code": "provider_http_error"}
+        )
+        result["issues"] = ["provider_http_error"]
+        result["query_complete"] = False
+        return result
+
+    monkeypatch.setattr(collectors, "collect_sdot", collect)
+
+    async def run():
+        engine = create_async_engine(normalized_database)
+        factory = async_sessionmaker(engine)
+        try:
+            await seed_boundary(factory)
+            result = await run_supplemental(
+                engine, None, Settings(_env_file=None), "sdot", sensor_path="synthetic"
+            )
+            assert result["status"] == ("partial" if case == "partial_page" else "failed")
+            if case == "bad_header":
+                assert result["error_code"] == "invalid_sensor_file_header"
+            else:
+                assert result["normalized_storage"] == "applied"
+                async with factory() as session:
+                    payloads = list(
+                        await session.scalars(
+                            select(RawPayload)
+                            .join(CollectionRun)
+                            .where(CollectionRun.source == "sdot_people")
+                        )
+                    )
+                    assert {p.payload_kind for p in payloads} == {
+                        "source_file",
+                        "provider_response",
+                        "derived_snapshot",
+                        "processing_report",
+                    }
+                    assert all(
+                        p.received_at is None
+                        for p in payloads
+                        if p.payload_kind != "provider_response"
+                    )
+                    derived = next(p for p in payloads if p.payload_kind == "derived_snapshot")
+                    content = configured_store().load_json(derived)
+                    assert content["collection_issues"] == ["provider_http_error"]
+                    if case == "partial_page":
+                        assert (
+                            content["input_rows"][0]["received_at"] == "2026-11-04T01:00:00+00:00"
+                        )
         finally:
             await engine.dispose()
 

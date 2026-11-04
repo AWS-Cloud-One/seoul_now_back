@@ -4,7 +4,7 @@ import json
 
 from sqlalchemy import func, select
 
-from app.models import CollectionRun, RawPayload, RegionBoundary, RoadLink
+from app.models import CollectionRun, RawPayload, RegionBoundary, RoadLink, RoadTrafficAttemptLatest
 
 
 def latest_payload_id(source, target):
@@ -70,23 +70,37 @@ class ReferenceRepository:
                 CollectionRun.target_key, CollectionRun.started_at.desc(), CollectionRun.id.desc()
             )
         )
-        return {target.removeprefix("link:"): when.isoformat() for target, when in rows}
+        attempts = {target.removeprefix("link:"): when for target, when in rows}
+        for link, when in await self.session.execute(
+            select(RoadTrafficAttemptLatest.link_id, RoadTrafficAttemptLatest.attempted_at)
+        ):
+            if link not in attempts or when >= attempts[link]:
+                attempts[link] = when
+        return {link: when.isoformat() for link, when in attempts.items()}
 
     async def seoul_boundary(self):
         row = (
             await self.session.execute(
                 select(
-                    func.ST_AsGeoJSON(RegionBoundary.geometry), RegionBoundary.source_version
+                    func.ST_AsGeoJSON(RegionBoundary.geometry),
+                    RegionBoundary.source_version,
+                    RegionBoundary.last_payload_id,
+                    RegionBoundary.boundary_version,
                 ).where(*current_seoul_boundary())
             )
         ).first()
         if row is None:
             return None
         year = int(row[1]) if row[1] and row[1].isdigit() else None
-        return {"geometry": json.loads(row[0]), "year": year}
+        return {
+            "geometry": json.loads(row[0]),
+            "year": year,
+            "payload_id": str(row[2]),
+            "version": row[3],
+        }
 
     async def has_prerequisite(self, source):
-        if source == "topis_geometry:2025":
+        if source == "topis_geometry" or source.startswith("topis_geometry:"):
             query = select(RoadLink.link_id).where(*current_roads())
         elif source == "sgis_seoul_boundary":
             query = select(RegionBoundary.region_code).where(*current_seoul_boundary())

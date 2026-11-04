@@ -5,14 +5,18 @@ versioned. Revision 0009 contains its own historical conversion rules.
 """
 
 import json
+from collections import defaultdict
 from datetime import UTC, datetime
 from uuid import uuid4
 
+from geoalchemy2 import Geometry
 from sqlalchemy import and_, func, literal_column, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 
 from app.modules.data_pipeline.identity import PROCESSOR_VERSION
+from app.modules.data_pipeline.normalizers.parking_resolution import resolve_parking_identities
 from app.modules.data_pipeline.normalizers.storage_fields import parking_fields
+from app.repositories.parking_state import ParkingStateWriter
 
 
 class NormalizedWriter:
@@ -36,10 +40,12 @@ class NormalizedWriter:
             .on_conflict_do_nothing()
         )
 
-    def upsert(self, name, values, keys, *, newer_payload=False):
+    def upsert(self, name, values, keys, *, newer_payload=False, return_changed=False, preserve=()):
         t = self.t(name)
         stmt = insert(t).values(**values)
-        changed = {k: getattr(stmt.excluded, k) for k in values if k not in keys}
+        changed = {
+            k: getattr(stmt.excluded, k) for k in values if k not in keys and k not in preserve
+        }
         if "updated_at" in t.c:
             changed["updated_at"] = func.now()
         where = None
@@ -57,6 +63,9 @@ class NormalizedWriter:
                 .where(raw.c.payload_id == values["payload_id"])
                 .scalar_subquery()
             )
+            if name == "road_traffic_latest" and values.get("received_at") is not None:
+                old = func.coalesce(t.c.received_at, old)
+                new = values["received_at"]
             if "observed_at" in values:
                 observed = values["observed_at"]
                 where = (
@@ -66,8 +75,32 @@ class NormalizedWriter:
                 )
             else:
                 where = new >= old
+        stmt = stmt.on_conflict_do_update(index_elements=keys, set_=changed, where=where)
+        if return_changed:
+            return self.session.scalar(stmt.returning(t.c[keys[0]])) is not None
+        self.session.execute(stmt)
+        return None
+
+    def traffic(self, link_id, values, payload_id):
+        # Serialize competing cycles per source/link before reading the current payload.
+        # ON CONFLICT still enforces receipt/observation ordering atomically.
         self.session.execute(
-            stmt.on_conflict_do_update(index_elements=keys, set_=changed, where=where)
+            select(func.pg_advisory_xact_lock(func.hashtext("traffic:topis_traffic:" + link_id)))
+        )
+        self.source("topis_traffic")
+        return self.upsert(
+            "road_traffic_latest",
+            dict(
+                source="topis_traffic",
+                link_id=link_id,
+                payload_id=payload_id,
+                processed_at=datetime.now(UTC),
+                processor_version=PROCESSOR_VERSION,
+                **values,
+            ),
+            ["source", "link_id"],
+            newer_payload=True,
+            return_changed=True,
         )
 
     def validate_payload(self, source, target, payload_id, *, area_name=None):
@@ -95,91 +128,193 @@ class NormalizedWriter:
         )
 
     def upsert_geometry(self, name, values, keys):
+        table = self.t(name)
+        geometry = func.ST_Multi(
+            func.ST_SetSRID(func.ST_GeomFromGeoJSON(json.dumps(values["geometry"])), 4326)
+        )
+        identity = [table.c[key] == values[key] for key in keys]
+        # Preserve coordinate ordering (road direction/ring representation), not just coverage.
+        # Lock only writers so comparison and update cannot race; snapshot readers never wait.
+        same = self.session.scalar(
+            select(func.ST_OrderingEquals(table.c.geometry, geometry))
+            .where(*identity)
+            .with_for_update()
+        )
+        if same:
+            self.session.execute(
+                update(table)
+                .where(*identity)
+                .values(**{k: v for k, v in values.items() if k not in {*keys, "geometry"}})
+            )
+            return
         self.upsert(
             name,
-            {
-                **values,
-                "geometry": func.ST_Multi(
-                    func.ST_SetSRID(func.ST_GeomFromGeoJSON(json.dumps(values["geometry"])), 4326)
-                ),
-            },
+            {**values, "geometry": geometry},
             keys,
         )
 
-    def parking(self, rows, payload_id, received_at, *, complete=False, scope="all"):
-        if not rows:
-            return dict(accepted=0, held=0)
-        source = rows[0]["source"]
-        self.validate_payload(source, scope, payload_id)
-        if any(row["source"] != source for row in rows):
+    def parking(self, candidates, *, complete=False, scope="all", conflicts=()):
+        all_candidates = [*candidates, *(item[0] for item in conflicts)]
+        if not all_candidates:
+            return dict(accepted=0, held=0, rejection_reasons={}, held_identity_keys=[])
+        rows = [candidate.record for candidate in candidates]
+        source = all_candidates[0].record["source"]
+        if any(c.record["source"] != source for c in all_candidates):
             raise ValueError("mixed_parking_sources")
+        for payload_id in {
+            evidence.payload_id
+            for candidate in all_candidates
+            for evidence in (candidate, candidate.observation or candidate)
+        }:
+            self.validate_payload(source, scope, payload_id)
+        inputs = {candidate.record["identity_key"]: candidate for candidate in candidates}
+        if len(inputs) != len(candidates):
+            raise ValueError("unresolved_parking_duplicates")
         self.source(source)
         records = self.t("parking_source_records")
         facilities = self.t("parking_facilities")
-        existing = list(
-            self.session.execute(select(records).where(records.c.source == source)).mappings()
+        points = self.session.execute(
+            select(
+                records,
+                func.ST_X(records.c.location.cast(Geometry)).label("longitude"),
+                func.ST_Y(records.c.location.cast(Geometry)).label("latitude"),
+            )
+            .where(records.c.source == source)
+            .with_for_update()
+        ).mappings()
+        existing = [dict(old, position=(old["longitude"], old["latitude"])) for old in points]
+        resolved, reasons = resolve_parking_identities(rows, existing)
+        owners = dict(
+            self.session.execute(
+                select(records.c.parking_id, func.count()).group_by(records.c.parking_id)
+            ).all()
         )
-        by_hash = {r["legacy_record_id"]: r for r in existing}
-        by_code = {r["provider_record_id"] for r in existing}
         accepted = []
-        held = 0
+        held = sum(reasons.values())
         now = datetime.now(UTC)
-        for row in rows:
-            previous = by_hash.get(row["id"])
-            if previous is None and row["source_id"] in by_code:
-                held += 1
-                continue
-            if (
+        state = ParkingStateWriter(self, now)
+        spaces = defaultdict(set)
+        for old in existing:
+            spaces[old["provider_record_id"]].add(old["source_record_id"])
+        for row, previous in resolved:
+            spaces[row["source_id"]].add(
+                previous["source_record_id"] if previous else row["identity_key"]
+            )
+        ambiguous_codes = {code for code, ids in spaces.items() if len(ids) > 1}
+        state.invalidate_scope(
+            [
+                old["source_record_id"]
+                for old in existing
+                if old["provider_record_id"] in ambiguous_codes
+            ]
+        )
+        for row, previous in resolved:
+            evidence = inputs[row["identity_key"]]
+            payload_id, received_at = evidence.payload_id, evidence.received_at
+            static_is_current = not (
                 previous is not None
                 and previous["collected_at"]
                 and (received_at is None or received_at < previous["collected_at"])
-            ):
-                accepted.append(previous["source_record_id"])
-                continue
+            )
             parking_id = previous["parking_id"] if previous else uuid4()
             record_id = previous["source_record_id"] if previous else uuid4()
-            facility = (
-                self.session.execute(
-                    select(facilities).where(facilities.c.parking_id == parking_id)
+            if static_is_current:
+                facility = (
+                    self.session.execute(
+                        select(
+                            facilities,
+                            func.ST_X(facilities.c.location.cast(Geometry)).label("longitude"),
+                            func.ST_Y(facilities.c.location.cast(Geometry)).label("latitude"),
+                        )
+                        .where(facilities.c.parking_id == parking_id)
+                        .with_for_update()
+                    )
+                    .mappings()
+                    .first()
                 )
-                .mappings()
-                .first()
-            )
-            if facility is None:
+                if facility is None:
+                    self.upsert(
+                        "parking_facilities",
+                        dict(
+                            parking_id=parking_id,
+                            name=row["name"],
+                            location=row["location"],
+                            is_active=True,
+                        ),
+                        ["parking_id"],
+                    )
+                elif facility["identity_status"] == "unverified":
+                    representative = {}
+                    if not facility["is_active"]:
+                        representative["is_active"] = True
+                    if owners.get(parking_id) == 1:
+                        if facility["name"] != row["name"]:
+                            representative["name"] = row["name"]
+                        if (facility["longitude"], facility["latitude"]) != row["position"]:
+                            representative["location"] = row["location"]
+                    if representative:
+                        self.session.execute(
+                            update(facilities)
+                            .where(facilities.c.parking_id == parking_id)
+                            .values(**representative, updated_at=now)
+                        )
+                values = dict(
+                    source_record_id=record_id,
+                    parking_id=parking_id,
+                    legacy_record_id=(previous["legacy_record_id"] if previous else None)
+                    or row["identity_key"],
+                    source=source,
+                    location=row["location"],
+                    collected_at=received_at,
+                    last_payload_id=payload_id,
+                    is_active=True,
+                    processed_at=now,
+                    processor_version=PROCESSOR_VERSION,
+                    **parking_fields(row),
+                )
+                if row["fees"] is not None:
+                    values.update(
+                        operation_payload_id=payload_id,
+                        operation_received_at=received_at,
+                        operation_processed_at=now,
+                        operation_processor_version=PROCESSOR_VERSION,
+                    )
                 self.upsert(
-                    "parking_facilities",
-                    dict(
-                        parking_id=parking_id,
-                        name=row["name"],
-                        location=row["location"],
-                        is_active=True,
-                    ),
-                    ["parking_id"],
+                    "parking_source_records",
+                    values,
+                    ["source_record_id"],
+                    preserve=("location",)
+                    if previous and previous["position"] == row["position"]
+                    else (),
                 )
-            elif facility["identity_status"] == "unverified":
-                self.session.execute(
-                    update(facilities)
-                    .where(facilities.c.parking_id == parking_id)
-                    .values(is_active=True, updated_at=now)
-                )
-            values = dict(
-                source_record_id=record_id,
-                parking_id=parking_id,
-                legacy_record_id=row["id"],
-                source=source,
-                location=row["location"],
-                collected_at=received_at,
-                last_payload_id=payload_id,
-                is_active=True,
-                processed_at=now,
-                processor_version=PROCESSOR_VERSION,
-                reason_code="SOURCE_TIME_UNKNOWN",
-                **parking_fields(row),
+                state.registration(record_id, evidence)
+            state.availability(
+                record_id,
+                evidence.observation or evidence,
+                ambiguous_scope=row["source_id"] in ambiguous_codes,
             )
-            self.upsert("parking_source_records", values, ["source_record_id"])
             accepted.append(record_id)
+        # Conflicting candidates cannot change registration. Record their attempt only
+        # when an existing identity is unambiguous; otherwise raw/run evidence is retained.
+        for candidate, reason in sorted(
+            conflicts,
+            key=lambda item: (
+                item[0].received_at or datetime.min.replace(tzinfo=UTC),
+                item[0].origin,
+                str(item[0].payload_id),
+            ),
+        ):
+            matched, _ = resolve_parking_identities([candidate.record], existing)
+            if matched and matched[0][1] is not None:
+                old = matched[0][1]
+                state.availability(
+                    old["source_record_id"],
+                    candidate,
+                    conflict=reason.upper(),
+                    ambiguous_scope=candidate.record["source_id"] in ambiguous_codes,
+                )
         # A partial/ambiguous response is not evidence that a facility has closed.
-        if complete and not held and scope == "all":
+        if complete and not held and not conflicts and scope == "all":
             self.session.execute(
                 update(records)
                 .where(records.c.source == source, records.c.source_record_id.not_in(accepted))
@@ -194,4 +329,9 @@ class NormalizedWriter:
                 )
                 .values(is_active=False, updated_at=now)
             )
-        return dict(accepted=len(accepted), held=held)
+        return dict(
+            accepted=len(accepted),
+            held=held,
+            rejection_reasons=dict(reasons),
+            held_identity_keys=sorted(set(inputs) - {row["identity_key"] for row, _ in resolved}),
+        )

@@ -1,56 +1,6 @@
 """Supplemental field conversion and snapshot metadata without HTTP or SQL."""
 
 import math
-from datetime import datetime
-
-
-def sensor_locations(rows):
-    result = {}
-    for values in rows:
-        if not str(values.get("D", "")).startswith("서울"):
-            continue
-        try:
-            code = str(int(values["B"]))
-            lat, lng = float(values["E"]), float(values["F"])
-            if not (math.isfinite(lat) and math.isfinite(lng)):
-                continue
-            result[code] = {"id": code, "address": values["D"], "lat": lat, "lng": lng}
-        except KeyError, ValueError, TypeError:
-            continue
-    return result
-
-
-def latest_sensors(locations, rows):
-    from zoneinfo import ZoneInfo
-
-    result = {
-        code: {**value, "count_10min": None, "observed_at": None}
-        for code, value in locations.items()
-    }
-    conflicts = set()
-    seen = {}
-    for row in rows:
-        try:
-            code = str(int(row["SERIAL"]))
-            when = datetime.fromisoformat(row["SENSING_TIME"].replace("_", "T")).replace(
-                tzinfo=ZoneInfo("Asia/Seoul")
-            )
-            count = int(row["VISITOR_COUNT"])
-            if count < 0 or code not in result:
-                continue
-        except ValueError, KeyError, TypeError:
-            continue
-        key = (code, when.isoformat())
-        if key in seen and seen[key] != count:
-            conflicts.add(key)
-        seen[key] = count
-        item = result[code]
-        if not item["observed_at"] or when.isoformat() > item["observed_at"]:
-            item.update(count_10min=count, observed_at=when.isoformat())
-    for item in result.values():
-        if (item["id"], item["observed_at"]) in conflicts:
-            item.update(count_10min=None, observation_status="conflicting")
-    return list(result.values())
 
 
 def area_feature(district, row, geometry):
@@ -85,23 +35,6 @@ def boundary_snapshot(features):
         "boundary_year": 2025,
         "source": "SGIS",
         "notice": "2025 통계 경계 기준 서울 소재지 필터",
-    }
-
-
-def sdot_snapshot(locations, collected):
-    rows, total = collected["rows"], collected["provider_total"]
-    return {
-        "items": latest_sensors(locations, rows),
-        "source": "서울 S-DoT",
-        "installation_file_date": "2025-11-13",
-        "received": len(rows),
-        "provider_total": total,
-        "scope": "recent_10000_rows",
-        "complete_history": len(rows) >= total,
-        "notice": (
-            "센서 지점의 10분 통행량이며 주변 체류 인구나 혼잡 등급이 아닙니다. "
-            "최근 조회 창에 없는 관측은 미확인입니다."
-        ),
     }
 
 

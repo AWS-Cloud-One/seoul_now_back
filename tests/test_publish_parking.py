@@ -89,7 +89,7 @@ def test_no_geometry_does_not_publish_empty_ready_layer(normalized_database):
     asyncio.run(run())
 
 
-def test_changed_identity_is_held_and_verified_representative_is_preserved(normalized_database):
+def test_renamed_source_keeps_uuid_and_verified_representative(normalized_database):
     async def run():
         engine = create_async_engine(normalized_database)
         factory = async_sessionmaker(engine)
@@ -108,9 +108,7 @@ def test_changed_identity_is_held_and_verified_representative_is_preserved(norma
             await run_parking(engine, fetch, "seoul_getparkinfo")
             row["PKLT_NM"] = "B"
             result = await run_parking(engine, fetch, "seoul_getparkinfo")
-            assert result["status"] == "partial" and result["rejection_reasons"] == {
-                "identity_change_requires_review": 1
-            }
+            assert result["status"] == "success" and result["accepted"] == 1
             async with factory() as s:
                 facilities = list(await s.scalars(select(ParkingFacility)))
                 assert (
@@ -118,6 +116,7 @@ def test_changed_identity_is_held_and_verified_representative_is_preserved(norma
                     and facilities[0].parking_id == original
                     and facilities[0].name == "수동 확인 명칭"
                 )
+                assert (await s.scalar(select(ParkingSourceRecord))).name == "B"
         finally:
             await engine.dispose()
 
