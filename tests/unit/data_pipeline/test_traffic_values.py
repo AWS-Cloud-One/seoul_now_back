@@ -64,3 +64,34 @@ def test_provider_or_citydata_times_cannot_be_injected_into_topis_observed_time(
         }
     )
     assert result["observed_at"] is None
+
+
+@pytest.mark.parametrize(
+    "data", [None, {}, {"rows": []}, {"rows": [None]}, {"rows": [{"link_id": "other"}]}]
+)
+def test_unusable_response_shape_has_no_buffered_values(data):
+    from app.modules.data_pipeline.normalizers.topis import traffic_observation
+
+    result = traffic_observation("r1", data, None)
+    assert result["values"] is None and result["error_code"] == "invalid_link_response"
+
+
+def test_only_typed_fields_enter_buffer_and_missing_receipt_is_not_fabricated():
+    from datetime import UTC, datetime
+
+    from app.modules.data_pipeline.normalizers.topis import traffic_observation
+
+    receipt = datetime(2026, 11, 4, tzinfo=UTC)
+    data = {"rows": [{"link_id": "r1", "prcs_spd": "0", "prcs_trv_time": "2", "unused": "discard"}]}
+    result = traffic_observation("r1", data, receipt)
+    assert result["values"] == {
+        "speed_kmh": 0,
+        "travel_seconds": 2,
+        "observed_at": None,
+        "reason_code": "SOURCE_TIME_UNKNOWN",
+        "received_at": receipt,
+    }
+    assert traffic_observation("r1", data, None)["error_code"] == "missing_traffic_receipt"
+    data["rows"][0].update(prcs_spd="invalid", prcs_trv_time="")
+    invalid = traffic_observation("r1", data, None)
+    assert invalid["status"] == "failed" and invalid["error_code"] == "invalid_traffic_values"

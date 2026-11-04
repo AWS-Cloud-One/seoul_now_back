@@ -7,15 +7,14 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.clients.seoul import CollectionError
-from app.models import CollectionRun
+from app.modules.data_pipeline.normalizers.topis import traffic_observation
 from app.modules.data_pipeline.pipelines.publication import publish_result
 from app.modules.data_pipeline.pipelines.topis_rules import select_targets
 from app.modules.data_pipeline.pipelines.topis_storage import (
     CYCLE_LOCK,
-    checkpoint,
-    consolidate,
-    drain_file_deletions,
+    finish_cycle,
     recover_cycles,
+    store_batch,
     summary,
 )
 from app.repositories.collection import CollectionRepository
@@ -23,8 +22,8 @@ from app.repositories.reference import ReferenceRepository
 from app.repositories.topis import CYCLE_TARGET, KEEP_CYCLES, SOURCE, prune_history
 
 CONCURRENCY = 8
-CHECKPOINT_SIZE = 50
-CHECKPOINT_SECONDS = 1.0
+BATCH_SIZE = 50
+BATCH_SECONDS = 1.0
 REQUEST_INTERVAL = 0.05
 RETRY_DELAYS = (0.5, 1.0)
 RETRYABLE_ERRORS = {"provider_network_error", "provider_server_error"}
@@ -51,7 +50,7 @@ async def run_topis_network(engine, fetch_link, max_links, scheduled_batch=False
 
 
 async def run_topis(engine, fetch_link, links):
-    """One cycle log; bounded checkpoints preserve already committed successes on interruption."""
+    """One cycle log; committed typed batches survive interruption without replay files."""
     factory = async_sessionmaker(engine, expire_on_commit=False)
     unique = list(dict.fromkeys(links))
     async with engine.connect() as lease:
@@ -67,13 +66,6 @@ async def run_topis(engine, fetch_link, links):
                 repo = CollectionRepository(session)
                 run = await repo.start(SOURCE, CYCLE_TARGET)
                 run_id = run.id
-                await repo.archive(
-                    run_id,
-                    {"target": len(unique)},
-                    None,
-                    kind="derived_snapshot",
-                    part="topis:start",
-                )
                 await prune_history(session)
             queue = asyncio.Queue()
             for link in unique:
@@ -81,24 +73,24 @@ async def run_topis(engine, fetch_link, links):
             entries, pending = [], []
             stop = asyncio.Event()
             pace, storage_lock = asyncio.Lock(), asyncio.Lock()
-            checkpoint_index = 0
+            workers_finished = asyncio.Event()
 
             async def flush():
-                nonlocal checkpoint_index
                 async with storage_lock:
                     while pending:
-                        batch = pending[:CHECKPOINT_SIZE]
+                        batch = pending[:BATCH_SIZE]
                         async with factory.begin() as session:
-                            stored = await checkpoint(session, run_id, batch, checkpoint_index)
-                        # Remove only after commit, so cancellation cannot lose buffered responses.
+                            stored = await store_batch(session, run_id, batch)
+                        # Retain only compact outcomes after committing the typed values.
                         del pending[: len(batch)]
                         entries.extend(stored)
-                        checkpoint_index += 1
 
             async def periodic_flush():
-                while True:
-                    await asyncio.sleep(CHECKPOINT_SECONDS)
-                    await flush()
+                while not workers_finished.is_set():
+                    try:
+                        await asyncio.wait_for(workers_finished.wait(), BATCH_SECONDS)
+                    except TimeoutError:
+                        await flush()
 
             async def worker():
                 while not stop.is_set():
@@ -129,46 +121,50 @@ async def run_topis(engine, fetch_link, links):
                                 break
                     if not attempts:
                         return
-                    received_at = datetime.now(UTC)
+                    attempted_at = datetime.now(UTC)
+                    received_at = (
+                        data.get("received_at", attempted_at) if isinstance(data, dict) else None
+                    )
+                    entry = (
+                        traffic_observation(link, data, received_at)
+                        if error is None
+                        else dict(values=None, status="failed", error_code=error, processing={})
+                    )
+                    # Full provider responses never enter the buffer or the cycle report.
+                    data = None
+                    entry.update(link_id=link, attempted_at=attempted_at, attempts=attempts)
                     async with storage_lock:
-                        pending.append(
-                            {
-                                "link_id": link,
-                                "data": data,
-                                "error_code": error,
-                                "received_at": received_at,
-                                "attempts": attempts,
-                            }
-                        )
-                        full = len(pending) >= CHECKPOINT_SIZE
+                        pending.append(entry)
+                        full = len(pending) >= BATCH_SIZE
                     if full:
                         await flush()
 
-            interrupted = True
+            completed = False
+            pruned = 0
             try:
                 async with asyncio.TaskGroup() as group:
-                    timer = group.create_task(periodic_flush())
+                    group.create_task(periodic_flush())
                     try:
                         async with asyncio.TaskGroup() as workers:
                             for _ in range(CONCURRENCY):
                                 workers.create_task(worker())
                     finally:
-                        timer.cancel()
-                interrupted = False
-            finally:
-                # SIGKILL bypasses this block; the next source-lease owner consolidates checkpoints.
+                        workers_finished.set()
                 await flush()
-                result = summary(
-                    entries, len(unique), interrupted=interrupted, stopped=stop.is_set()
-                )
+                result = summary(entries, len(unique), stopped=stop.is_set())
                 async with factory.begin() as session:
-                    run = await session.get(CollectionRun, run_id)
-                    await consolidate(session, run, entries, result)
+                    pruned = await finish_cycle(session, run_id, result) or 0
+                completed = True
+            finally:
+                if not completed:
+                    # Discard uncommitted responses. DB counts are authoritative even if a
+                    # cancellation arrived during COMMIT; never replay a possibly committed batch.
+                    await recover_cycles(engine)
+                async with factory.begin() as session:
+                    retention = await prune_history(session)
+                retention["runs_removed"] += pruned
             result["run_id"] = str(run_id)
             result = await publish_result(engine, result, observations=("roads",))
-            async with factory.begin() as session:
-                retention = await prune_history(session)
-            retention["files_removed"] = await drain_file_deletions(engine)
             result["retention"] = {"keep_cycles": KEEP_CYCLES, **retention}
             return result
         finally:
