@@ -1,5 +1,6 @@
 """Replay both historical 0008 variants directly into the final 0009 schema."""
 
+import hashlib
 import io
 import json
 import os
@@ -18,7 +19,6 @@ from alembic.operations import Operations
 from sqlalchemy.engine import make_url
 
 from app.models import Base
-from app.storage.payloads import configured_store
 
 pytestmark = pytest.mark.integration
 ROOT = Path(__file__).resolve().parents[2]
@@ -26,7 +26,8 @@ LEGACY_MAP = ROOT / "tests/fixtures/migrations/legacy_0008_map_contract.py"
 
 
 @pytest.fixture
-def migration_database(monkeypatch):
+def migration_database(monkeypatch, tmp_path):
+    monkeypatch.setenv("LEGACY_TEST_ARCHIVE_DIR", str(tmp_path / "archives"))
     url = os.getenv("TEST_DATABASE_URL")
     if not url:
         pytest.skip("Set TEST_DATABASE_URL to an isolated PostGIS test server with CREATEDB")
@@ -51,8 +52,23 @@ def migration_database(monkeypatch):
         admin.dispose()
 
 
+def configured_store():
+    # Only inspect frozen 0009 exports; no application archive module is retained.
+    def read_bytes(ref, sha, size):
+        body = (Path(os.environ["LEGACY_TEST_ARCHIVE_DIR"]) / ref).read_bytes()
+        assert len(body) == size and hashlib.sha256(body).hexdigest() == sha
+        return body
+
+    return SimpleNamespace(
+        read_bytes=read_bytes,
+        load_json=lambda row: json.loads(read_bytes(row.file_ref, row.sha256, row.byte_size)),
+    )
+
+
 def config(script_location=None, output_buffer=None):
     result = Config(str(ROOT / "alembic.ini"), output_buffer=output_buffer)
+    if archive_dir := os.getenv("LEGACY_TEST_ARCHIVE_DIR"):
+        result.attributes["payload_storage_dir"] = archive_dir
     result.set_main_option("script_location", str(script_location or ROOT / "migrations"))
     return result
 
@@ -69,6 +85,7 @@ def prepare_history(engine, history, tmp_path):
         (scripts / "versions/0009_relational_storage.py").unlink()
         (scripts / "versions/0010_pipeline_storage.py").unlink()
         (scripts / "versions/0011_topis_cycle_retention.py").unlink()
+        (scripts / "versions/0012_direct_collection_storage.py").unlink()
         shutil.copyfile(LEGACY_MAP, scripts / "versions/0008_map_contract.py")
         command.upgrade(config(scripts), "0008")
     else:
@@ -170,16 +187,11 @@ def test_upgrade_converges_and_preserves_existing_rows(migration_database, tmp_p
     engine = migration_database
     prepare_history(engine, history, tmp_path)
     before = seed_existing_data(engine)
-    command.upgrade(config(), "head")
-    command.upgrade(config(), "head")
-    command.check(config())
+    command.upgrade(config(), "0009")
+    command.upgrade(config(), "0009")
     with engine.connect() as c:
-        assert c.exec_driver_sql("SELECT version_num FROM alembic_version").scalar_one() == "0011"
+        assert c.exec_driver_sql("SELECT version_num FROM alembic_version").scalar_one() == "0009"
         inspector = sa.inspect(c)
-        assert set(inspector.get_table_names(schema="public")) - {
-            "alembic_version",
-            "spatial_ref_sys",
-        } == set(Base.metadata.tables)
         assert not any(s.startswith("legacy_v") for s in inspector.get_schema_names())
         assert (
             c.exec_driver_sql("""SELECT count(*) FROM information_schema.columns
@@ -213,6 +225,14 @@ def test_upgrade_converges_and_preserves_existing_rows(migration_database, tmp_p
         )
     with pytest.raises(RuntimeError, match="restoring the DB"):
         command.downgrade(config(), "0008")
+
+    command.upgrade(config(), "head")
+    command.check(config())
+    with engine.connect() as c:
+        assert c.exec_driver_sql("SELECT version_num FROM alembic_version").scalar_one() == "0012"
+        assert set(sa.inspect(c).get_table_names()) - {"alembic_version", "spatial_ref_sys"} == set(
+            Base.metadata.tables
+        )
 
 
 def test_offline_upgrade_requires_the_existing_database():
@@ -349,8 +369,7 @@ def test_existing_parking_ids_zero_fees_and_source_time_are_preserved(migration_
             },
         )
     command.upgrade(config(), "0009")
-    command.upgrade(config(), "head")
-    command.check(config())
+    command.upgrade(config(), "0011")
     with engine.connect() as c:
         f = (
             c.execute(
@@ -387,6 +406,9 @@ def test_existing_parking_ids_zero_fees_and_source_time_are_preserved(migration_
         assert c.exec_driver_sql(
             "SELECT feature_id FROM map_features WHERE layer='parking'"
         ).scalar() == str(parking)
+
+    command.upgrade(config(), "head")
+    command.check(config())
 
 
 def seed_legacy_evidence(engine):
@@ -474,7 +496,7 @@ def test_failed_file_export_rolls_back_schema_data_and_version(
     _, json_id, _, before = seed_legacy_evidence(engine)
     blocked_root = tmp_path / "not-a-directory"
     blocked_root.write_text("keep this file")
-    monkeypatch.setenv("APP_PAYLOAD_STORAGE_DIR", str(blocked_root))
+    monkeypatch.setenv("LEGACY_TEST_ARCHIVE_DIR", str(blocked_root))
     with pytest.raises(Exception, match="원본 보관 파일을 저장할 수 없습니다"):
         command.upgrade(config(), "0009")
     with engine.connect() as c:

@@ -13,13 +13,8 @@ from sqlalchemy.engine import make_url
 ROOT = Path(__file__).resolve().parents[1]
 
 
-@pytest.fixture(autouse=True)
-def isolated_payload_storage(monkeypatch, tmp_path):
-    monkeypatch.setenv("APP_PAYLOAD_STORAGE_DIR", str(tmp_path / "payloads"))
-
-
 @pytest.fixture
-def normalized_database(monkeypatch):
+def normalized_database(monkeypatch, request, tmp_path):
     url = os.getenv("TEST_DATABASE_URL")
     if not url:
         pytest.skip("TEST_DATABASE_URL required (isolated server with CREATEDB)")
@@ -32,9 +27,41 @@ def normalized_database(monkeypatch):
     try:
         cfg = Config(str(ROOT / "alembic.ini"))
         cfg.set_main_option("script_location", str(ROOT / "migrations"))
-        command.upgrade(cfg, "head")
+        if getattr(request, "param", "head") != "head":
+            cfg.attributes["payload_storage_dir"] = tmp_path / "migration-archives"
+        command.upgrade(cfg, getattr(request, "param", "head"))
         yield test_url
     finally:
         with admin.connect() as c:
             c.exec_driver_sql(f'DROP DATABASE "{database}" WITH (FORCE)')
         admin.dispose()
+
+
+@pytest.fixture
+def no_response_archive(monkeypatch):
+    # Current schema has no archive tables or file-writing repository.
+    from app.models import Base
+    from app.repositories.collection import CollectionRepository
+
+    assert "raw_payloads" not in Base.metadata.tables
+    assert not hasattr(CollectionRepository, "archive")
+
+
+@pytest.fixture
+def no_runtime_files(no_response_archive, monkeypatch):
+    """Seed references in DB, then reject any runtime dependency on repo data files."""
+    import builtins
+    import io
+
+    def guarded(original):
+        def open_file(path, *args, **kwargs):
+            if isinstance(path, (str, os.PathLike)) and Path(path).resolve().is_relative_to(
+                ROOT / "data"
+            ):
+                pytest.fail("Runtime tried to read/write data files: " + str(path))
+            return original(path, *args, **kwargs)
+
+        return open_file
+
+    monkeypatch.setattr(builtins, "open", guarded(builtins.open))
+    monkeypatch.setattr(io, "open", guarded(io.open))

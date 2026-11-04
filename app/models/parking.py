@@ -60,7 +60,6 @@ class ParkingSourceRecord(AuditColumns, SourceColumns, Base):
     additional_fee_krw: Mapped[Decimal | None] = mapped_column(Numeric)
     daily_max_krw: Mapped[Decimal | None] = mapped_column(Numeric)
     daily_flat_fee_krw: Mapped[Decimal | None] = mapped_column(Numeric)
-    operation_payload_id: Mapped[UUID | None] = mapped_column(ForeignKey("raw_payloads.payload_id"))
     operation_received_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     operation_processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     operation_processor_version: Mapped[str | None] = mapped_column(Text)
@@ -135,7 +134,6 @@ class ParkingOperatingHour(Base):
     reason_code: Mapped[str | None] = mapped_column(Text)
     # Old strings are preserved as unconfirmed evidence, never guessed into intervals.
     source_text: Mapped[str | None] = mapped_column(Text)
-    payload_id: Mapped[UUID | None] = mapped_column(ForeignKey("raw_payloads.payload_id"))
     processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     processor_version: Mapped[str | None] = mapped_column(Text)
 
@@ -147,7 +145,6 @@ class ParkingFieldIssue(Base):
     )
     field_path: Mapped[str] = mapped_column(Text, primary_key=True)
     reason_code: Mapped[str] = mapped_column(Text)
-    payload_id: Mapped[UUID] = mapped_column(ForeignKey("raw_payloads.payload_id"))
     processed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     processor_version: Mapped[str] = mapped_column(Text)
 
@@ -166,7 +163,7 @@ class ParkingAvailabilityLatest(Base):
             "calculated_available_spaces BETWEEN 0 AND total_spaces", name="calculated"
         ),
         CheckConstraint(
-            "payload_id IS NULL OR (observed_at IS NOT NULL AND received_at IS NOT NULL "
+            "observed_at IS NULL OR (received_at IS NOT NULL "
             "AND total_spaces IS NOT NULL AND processed_at IS NOT NULL "
             "AND processor_version IS NOT NULL AND observed_at <= received_at AND "
             "((method = 'reported' AND reported_available_spaces IS NOT NULL "
@@ -176,7 +173,13 @@ class ParkingAvailabilityLatest(Base):
             "AND calculated_available_spaces = total_spaces - occupied_spaces)))",
             name="observation",
         ),
-        CheckConstraint("NOT usable OR payload_id IS NOT NULL", name="usable"),
+        CheckConstraint("NOT usable OR observed_at IS NOT NULL", name="usable"),
+        CheckConstraint(
+            "observed_at IS NOT NULL OR num_nonnulls(total_spaces, occupied_spaces, "
+            "reported_available_spaces, calculated_available_spaces, received_at, "
+            "processed_at, processor_version) = 0",
+            name="absent_observation",
+        ),
         CheckConstraint(
             "attempt_provision_state IN ('provided','not_provided','unknown')", name="provision"
         ),
@@ -198,12 +201,10 @@ class ParkingAvailabilityLatest(Base):
     calculated_available_spaces: Mapped[int | None] = mapped_column(Integer)
     observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     received_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    payload_id: Mapped[UUID | None] = mapped_column(ForeignKey("raw_payloads.payload_id"))
     processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     processor_version: Mapped[str | None] = mapped_column(Text)
     usable: Mapped[bool] = mapped_column(Boolean, server_default="false")
     reason_code: Mapped[str | None] = mapped_column(Text)
-    attempt_payload_id: Mapped[UUID] = mapped_column(ForeignKey("raw_payloads.payload_id"))
     attempt_received_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     attempt_observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     attempt_provision_code: Mapped[str | None] = mapped_column(Text)

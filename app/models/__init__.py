@@ -1,6 +1,12 @@
-"""Active normalized registry; schema is installed by Alembic through revision 0011."""
+"""Transition to revision 0012; apply only after all readers and writers are converted."""
 
-from .areas import AdministrativeArea, PopulationArea, PopulationLatest, RegionBoundary
+from .areas import (
+    AdministrativeArea,
+    PopulationArea,
+    PopulationAttemptLatest,
+    PopulationLatest,
+    RegionBoundary,
+)
 from .base import Base
 from .chat import (
     ChatConditionAgeGroup,
@@ -14,10 +20,8 @@ from .collection import (
     CollectionRejectionReason,
     CollectionRun,
     DataSource,
-    LegacyArchive,
-    PayloadFileDeletion,
-    RawPayload,
 )
+from .collection_progress import CollectionCursor, CollectionCursorPage
 from .map import MapFeature, MapLayerVersion, MapPopulationObservation, MapRoadObservation
 from .parking import (
     ParkingAvailabilityLatest,
@@ -47,8 +51,9 @@ __all__ = [
     "PlaceCategory",
     "AdministrativeArea",
     "CollectionRun",
+    "CollectionCursor",
+    "CollectionCursorPage",
     "CollectionRejectionReason",
-    "LegacyArchive",
     "DataSource",
     "MapFeature",
     "MapLayerVersion",
@@ -63,8 +68,7 @@ __all__ = [
     "PedestrianSensorLatest",
     "PopulationArea",
     "PopulationLatest",
-    "RawPayload",
-    "PayloadFileDeletion",
+    "PopulationAttemptLatest",
     "RegionBoundary",
     "RoadAreaMapping",
     "RoadLink",

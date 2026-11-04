@@ -86,7 +86,7 @@ def test_0010_preserves_legacy_hours_ids_and_rolls_back_atomically(migration_dat
             == 0
         )
         assert (
-            connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar() == "0011"
+            connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar() == "0012"
         )
 
 

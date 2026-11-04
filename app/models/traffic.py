@@ -59,9 +59,6 @@ class RoadLinkMapping(AuditColumns, Base):
     )
     source_version: Mapped[str] = mapped_column(Text)
     reference_date: Mapped[date | None] = mapped_column(Date)
-    last_payload_id: Mapped[UUID | None] = mapped_column(
-        ForeignKey("raw_payloads.payload_id", ondelete="RESTRICT"), index=True
-    )
     processor_version: Mapped[str | None] = mapped_column(Text)
     processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 

@@ -92,17 +92,18 @@ class PublishedObservation:
     source: Mapped[str | None] = mapped_column(
         Text, ForeignKey("data_sources.source_code", ondelete="RESTRICT")
     )
-    payload_id: Mapped[UUID | None] = mapped_column(
-        ForeignKey("raw_payloads.payload_id", ondelete="RESTRICT"), index=True
-    )
     has_observation: Mapped[bool] = mapped_column(Boolean, server_default="false")
     observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    received_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     processor_version: Mapped[str | None] = mapped_column(Text)
     reason_code: Mapped[str | None] = mapped_column(Text)
     last_attempt_id: Mapped[UUID | None] = mapped_column(
-        ForeignKey("collection_runs.id", ondelete="RESTRICT"), index=True
+        ForeignKey("collection_runs.id", ondelete="SET NULL"), index=True
     )
+    attempted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    attempt_status: Mapped[str | None] = mapped_column(Text)
+    attempt_error_code: Mapped[str | None] = mapped_column(Text)
     collection_failed: Mapped[bool] = mapped_column(Boolean, server_default="false")
     published_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
@@ -119,7 +120,7 @@ def published_checks(layer, identity, values):
         ),
         *nonblank("processor_version"),
         CheckConstraint(
-            "NOT has_observation OR (payload_id IS NOT NULL AND source IS NOT NULL "
+            "NOT has_observation OR (source IS NOT NULL "
             "AND processor_version IS NOT NULL AND processed_at IS NOT NULL)",
             name="observation_evidence",
         ),
@@ -127,7 +128,14 @@ def published_checks(layer, identity, values):
             "has_observation OR (" + " AND ".join(f"{v} IS NULL" for v in values) + ")",
             name="absent_values",
         ),
-        CheckConstraint("(payload_id IS NULL) = (source IS NULL)", name="source_payload_pair"),
+        CheckConstraint(
+            "num_nonnulls(source, processed_at, processor_version) IN (0,3)",
+            name="observation_provenance",
+        ),
+        CheckConstraint(
+            "attempt_status IN ('success','partial','failed','running')", name="attempt_status"
+        ),
+        CheckConstraint("(attempted_at IS NULL) = (attempt_status IS NULL)", name="attempt_pair"),
     )
 
 
@@ -142,10 +150,6 @@ class MapRoadObservation(PublishedObservation, Base):
     layer: Mapped[str] = mapped_column(Text, server_default="roads")
     speed_kmh: Mapped[Decimal | None] = mapped_column(Numeric)
     travel_seconds: Mapped[Decimal | None] = mapped_column(Numeric)
-    received_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    last_attempt_id: Mapped[UUID | None] = mapped_column(
-        ForeignKey("collection_runs.id", ondelete="SET NULL"), index=True
-    )
 
 
 class MapPopulationObservation(PublishedObservation, Base):
