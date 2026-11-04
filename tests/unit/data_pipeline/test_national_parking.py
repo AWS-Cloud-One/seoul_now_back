@@ -46,7 +46,7 @@ def test_one_method_failure_does_not_discard_other_responses(failed):
         ("total", "parking_total_changed"),
         ("echo", "parking_page_mismatch"),
         ("bad_count", "parking_invalid_page"),
-        ("xml", "parking_provider_error"),
+        ("xml", "parking_invalid_response"),
     ],
 )
 def test_incomplete_or_invalid_pages_never_claim_complete(mode, error):
@@ -194,7 +194,8 @@ def test_duplicates_and_conflicting_ids_are_order_independent():
         return SimpleNamespace(
             record={"prk_center_id": "a", "name": name},
             received_at=datetime(2020, 1, 1, tzinfo=UTC),
-            payload_id=name,
+            origin=name,
+            row_index=0,
         )
 
     rows = [candidate("one"), candidate("one"), candidate("two")]
@@ -202,3 +203,55 @@ def test_duplicates_and_conflicting_ids_are_order_independent():
         selected, duplicates, reasons, blocked = normalizer.select_records(ordered)
         assert not selected and duplicates == 1
         assert reasons == {"conflicting_management_id": 2} and blocked == {"a"}
+
+
+def test_selection_discards_unused_fields_and_preserves_operational_values():
+    row = {
+        "prk_center_id": "a",
+        "unused_provider_value": "discard",
+        "basic_info": {
+            "parking_chrge_bs_time": "30",
+            "parking_chrge_bs_chrge": "1200",
+            "parking_chrge_adit_unit_time": "10",
+            "parking_chrge_adit_unit_chrge": "0",
+            "unused": "discard",
+        },
+        "fxamt_info": {"parking_chrge_one_day_chrge": "10000", "monthly": "discard"},
+        "Monday": [
+            {"opertn_start_time": "090000", "opertn_end_time": "180000", "unused": "discard"}
+        ],
+    }
+    selected = normalizer.selected_fields("PrkOprInfo", row)
+    assert normalizer.operation(selected) == normalizer.operation(row)
+    assert "unused_provider_value" not in selected
+    assert "unused" not in selected["basic_info"] and "unused" not in selected["Monday"][0]
+    assert "monthly" not in selected["fxamt_info"]
+
+
+def test_collector_returns_selected_fields_and_short_errors_without_response_bodies():
+    def respond(request):
+        method = request.url.path.rsplit("/", 1)[1].removesuffix("_v1")
+        if method == METHODS[1]:
+            return httpx.Response(200, text="<private_response>discard</private_response>")
+        return httpx.Response(
+            200,
+            json={
+                "resultCode": "0",
+                "totalCount": 1,
+                method: [{"prk_center_id": "a", "unneeded": "discard"}],
+                "other_section": "discard",
+            },
+        )
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http:
+            data = await collect_national_parking(http, Settings(_env_file=None))
+        for method, dataset in data["datasets"].items():
+            assert all("body" not in page for page in dataset["pages"])
+            if method == METHODS[1]:
+                assert dataset["error_code"] == "parking_invalid_response"
+                assert not dataset["rows"]
+            else:
+                assert dataset["rows"] == [{"prk_center_id": "a"}]
+
+    asyncio.run(run())

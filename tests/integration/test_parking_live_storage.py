@@ -22,7 +22,7 @@ from app.repositories.parking import ParkingRepository
 from app.repositories.parking_detail import ParkingDetailRepository
 from app.services.parking_registration import registered_information
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("no_response_archive")]
 
 
 def city(**changes):
@@ -47,10 +47,8 @@ async def write(factory, row, receipt):
     async with factory.begin() as session:
         repo = CollectionRepository(session)
         run = await repo.start(CITYDATA_PARKING_SOURCE, "all")
-        payload = await repo.archive(run.id, [row], receipt)
         candidate = ParkingCandidate(
             normalize_parking(row, receipt, CITYDATA_PARKING_SOURCE),
-            payload.payload_id,
             receipt,
             "test",
         )
@@ -59,7 +57,7 @@ async def write(factory, row, receipt):
         )
         assert result["accepted"] == 1
         await repo.finish(run, status="success", received=1, accepted=1)
-        return payload.payload_id
+        return receipt
 
 
 def test_conditions_hours_quality_and_reader_roundtrip(normalized_database):
@@ -171,7 +169,7 @@ def test_reported_counts_do_not_turn_vacancies_into_occupied_counts(
                 assert live.usable == (status == "accepted")
                 assert live.method == "reported" and live.scope == "provider_record"
                 if status != "accepted":
-                    assert live.payload_id is live.observed_at is live.total_spaces is None
+                    assert live.observed_at is live.total_spaces is None
                     assert live.attempt_reason_code
         finally:
             await engine.dispose()
@@ -192,9 +190,9 @@ def test_last_good_observation_and_last_attempt_have_independent_clocks(normaliz
             good = await write(factory, city(), stamp(10))
             await write(factory, city(CUR_PRK_YN="N"), stamp(11))
             value = await state()
-            assert (value.payload_id, value.received_at, value.reported_available_spaces) == (
+            assert (value.received_at, value.observed_at, value.reported_available_spaces) == (
                 good,
-                stamp(10),
+                stamp(8),
                 0,
             )
             assert value.usable and value.attempt_status == "not_provided"
@@ -202,24 +200,24 @@ def test_last_good_observation_and_last_attempt_have_independent_clocks(normaliz
                 factory, city(CUR_PRK_TIME="2020-01-01T07:00:00Z", CUR_PRK_CNT="5"), stamp(12)
             )
             value = await state()
-            assert value.payload_id == good and value.attempt_status == "stale"
-            conflict = await write(factory, city(CUR_PRK_CNT="5"), stamp(13))
+            assert value.received_at == good and value.attempt_status == "stale"
+            await write(factory, city(CUR_PRK_CNT="5"), stamp(13))
             value = await state()
-            assert value.payload_id == good and not value.usable
+            assert value.received_at == good and not value.usable
             assert value.reason_code == "SAME_TIME_CONFLICT" and value.attempt_status == "conflict"
             # Replay of one side cannot silently resolve a same-time conflict.
             await write(factory, city(), stamp(13))
             assert not (await state()).usable
             # Observation can advance even when its response arrived before the latest attempt.
             newer = city(CUR_PRK_TIME="2020-01-01T09:00:00Z", CUR_PRK_CNT="2")
-            payload = await write(factory, newer, stamp(11))
+            receipt = await write(factory, newer, stamp(11))
             value = await state()
-            assert value.payload_id == payload and value.observed_at == stamp(9) and value.usable
+            assert value.received_at == receipt and value.observed_at == stamp(9) and value.usable
             assert value.attempt_received_at == stamp(13) and value.attempt_status == "conflict"
-            assert value.attempt_payload_id != conflict  # Most recent replay attempt retained.
+            assert value.attempt_reported_available_spaces == 0  # Most recent conflicting input.
             await write(factory, newer, stamp(14))
             value = await state()
-            assert value.payload_id == payload and value.received_at == stamp(11)
+            assert value.received_at == receipt and value.received_at == stamp(11)
             assert value.attempt_received_at == stamp(14) and value.attempt_status == "accepted"
             async with factory() as session:
                 issues = list(
@@ -297,13 +295,13 @@ def test_batch_conflicts_reach_attempt_state_without_overwriting_registration(no
             assert (await run_parking(engine, fetch, CITYDATA_PARKING_SOURCE))["accepted"] == 1
             async with factory() as session:
                 old = await session.scalar(select(ParkingAvailabilityLatest))
-                payload = old.payload_id
+                receipt = old.received_at
             rows = [city(), city(CUR_PRK_CNT="5")]
             result = await run_parking(engine, fetch, CITYDATA_PARKING_SOURCE)
             assert result["conflicts"] == 2 and result["accepted"] == 0
             async with factory() as session:
                 live = await session.scalar(select(ParkingAvailabilityLatest))
-                assert live.payload_id == payload and live.reported_available_spaces == 0
+                assert live.received_at == receipt and live.reported_available_spaces == 0
                 assert not live.usable and live.attempt_status == "conflict"
                 assert live.reason_code == "SAME_TIME_CONFLICT"
         finally:

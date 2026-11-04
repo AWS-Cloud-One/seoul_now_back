@@ -14,3 +14,13 @@ def test_runtime_models_use_relational_postgresql_schema():
         assert str(CreateTable(table).compile(dialect=postgresql.dialect()))
         for index in table.indexes:
             assert str(CreateIndex(index).compile(dialect=postgresql.dialect()))
+
+
+def test_business_models_have_no_raw_payload_foreign_keys():
+    assert not {"raw_payloads", "legacy_archives", "payload_file_deletions"} & set(
+        Base.metadata.tables
+    )
+    for table in Base.metadata.tables.values():
+        assert all(fk.column.table.name != "raw_payloads" for fk in table.foreign_keys)
+    assert "received_at" in Base.metadata.tables["population_latest"].c
+    assert "received_at" in Base.metadata.tables["map_population_observations"].c

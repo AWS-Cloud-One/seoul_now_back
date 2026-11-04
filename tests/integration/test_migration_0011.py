@@ -67,9 +67,8 @@ def test_0011_preserves_receipts_and_last_failure_before_pruning(migration_datab
         )
     fail_upgrade_at("CREATE TABLE payload_file_deletions")
     assert "source" not in {col["name"] for col in sa.inspect(engine).get_columns("raw_payloads")}
-    command.upgrade(config(), "head")
-    command.upgrade(config(), "head")
-    command.check(config())
+    command.upgrade(config(), "0011")
+    command.upgrade(config(), "0011")
     with engine.begin() as c:
         assert c.exec_driver_sql("SELECT received_at,speed_kmh FROM road_traffic_latest").one() == (
             receipt,
@@ -94,3 +93,6 @@ def test_0011_preserves_receipts_and_last_failure_before_pruning(migration_datab
         assert c.exec_driver_sql(
             "SELECT received_at,speed_kmh FROM map_road_observations"
         ).one() == (receipt, 25)
+
+    command.upgrade(config(), "head")
+    command.check(config())

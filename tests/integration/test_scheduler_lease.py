@@ -1,13 +1,14 @@
 import asyncio
 import os
+from dataclasses import replace
 from uuid import uuid4
 
 import pytest
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.core.config import Settings
 from app.db.session import create_engine
-from app.modules.data_pipeline.pipelines.snapshots import save_snapshot
 from jobs import scheduler
 
 
@@ -31,7 +32,7 @@ def test_db_lease_prevents_concurrent_workers_and_releases(monkeypatch, exit_cod
 
         monkeypatch.setattr(scheduler, "run_command", command)
         name = "test_" + uuid4().hex
-        task = scheduler.TASKS["citydata"]
+        task = replace(scheduler.TASKS["citydata"], prerequisites=())
         first = asyncio.create_task(scheduler.cycle(engine, name, task))
         try:
             await asyncio.wait_for(entered.wait(), 5)
@@ -78,24 +79,33 @@ def test_once_uses_boundary_after_selected_reference_attempt(
 
         async def store_boundary():
             async with factory.begin() as session:
-                result = await save_snapshot(
-                    session,
-                    "sgis_seoul_boundary",
-                    {
-                        "features": [
-                            {
-                                "geometry": {
-                                    "type": "Polygon",
-                                    "coordinates": [
-                                        [[127, 37.5], [127.1, 37.5], [127.1, 37.6], [127, 37.5]]
-                                    ],
-                                }
-                            }
-                        ],
-                        "boundary_year": 2025,
-                    },
+                await session.execute(
+                    text("""
+                    INSERT INTO data_sources(source_code,display_name,provider_name)
+                    VALUES ('sgis_seoul_boundary','test','test'),('sdot_people','test','test')
+                    ON CONFLICT DO NOTHING
+                """)
                 )
-                assert result.status == "success"
+                await session.execute(
+                    text("""
+                    INSERT INTO region_boundaries(code_system,region_code,name,source,
+                        source_version,boundary_version,geometry,processed_at,processor_version)
+                    VALUES ('sgis','11','Seoul','sgis_seoul_boundary','2025','v1',
+                        ST_GeomFromText('MULTIPOLYGON(((127 37.5,127.1 37.5,127.1 37.6,127 37.5)))',
+                            4326),now(),'test')
+                    ON CONFLICT DO NOTHING
+                """)
+                )
+                await session.execute(
+                    text("""
+                    INSERT INTO pedestrian_sensors(source,sensor_code,provider_sensor_id,
+                        device_serial,address,geometry,source_version,boundary_version,
+                        reference_checked_at,processed_at,processor_version)
+                    VALUES ('sdot_people','1','test','test','test',
+                            ST_SetSRID(ST_Point(127.01,37.51),4326),
+                        'v1','v1',now(),now(),'test') ON CONFLICT DO NOTHING
+                """)
+                )
 
         async def command(task):
             target = task.args[0]

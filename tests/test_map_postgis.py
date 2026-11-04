@@ -70,8 +70,7 @@ def test_spatial_selection_and_version_consistency(layer, normalized_database):
                             }
                         )
                         repo = CollectionRepository(session)
-                        run = await repo.start("spatial_fixture", "all")
-                        payload = await repo.archive(run.id, {}, datetime.now(UTC))
+                        await repo.ensure_source("spatial_fixture")
                         for feature_id, active in [(key, True), (key + "-inactive", False)]:
                             geom = func.ST_Multi(
                                 func.ST_SetSRID(func.ST_GeomFromGeoJSON(json.dumps(shape)), 4326)
@@ -118,7 +117,7 @@ def test_spatial_selection_and_version_consistency(layer, normalized_database):
                                 **value,
                                 has_observation=True,
                                 source="spatial_fixture",
-                                payload_id=payload.payload_id,
+                                received_at=datetime.now(UTC),
                                 observed_at=datetime.now(UTC),
                                 processed_at=datetime.now(UTC),
                                 processor_version="test",

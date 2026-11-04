@@ -33,7 +33,7 @@ def candidate(origin="a", receipt=NOW, **updates):
         receipt,
         CITYDATA_PARKING_SOURCE,
     )
-    return ParkingCandidate(record, "payload-" + origin, receipt, origin)
+    return ParkingCandidate(record, receipt, origin)
 
 
 def old_record(item, rid="first", **updates):
@@ -162,7 +162,7 @@ def test_complementary_citydata_rows_merge_with_original_field_and_live_evidence
         sources = merged.selection["inputs"]
         assert sources[merged.selection["field_sources"]["TIME_RATES"]]["origin"] == "registration"
         assert sources[merged.selection["field_sources"]["ROAD_ADDR"]]["origin"] == "current"
-        assert sources[merged.selection["observation_source"]]["payload_id"] == current.payload_id
+        assert sources[merged.selection["observation_source"]]["origin"] == current.origin
         assert expected is None or merged == expected
         expected = merged
     assert [registration, current] == original

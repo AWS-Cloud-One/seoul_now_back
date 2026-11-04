@@ -1,36 +1,22 @@
-"""Durable collection checkpoints, one consolidated cycle document and bounded cleanup."""
+"""Short atomic TOPIS batches and bounded run summaries; no response/checkpoint files."""
 
-import asyncio
 from collections import Counter
-from datetime import datetime
 
-from sqlalchemy import delete, select, text, update
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from app.models import (
-    Base,
-    CollectionRun,
-    LegacyArchive,
-    MapRoadObservation,
-    PayloadFileDeletion,
-    RawPayload,
-    RoadTrafficLatest,
-)
-from app.modules.data_pipeline.pipelines.snapshots import normalize_traffic
+from app.models import CollectionRun
 from app.modules.data_pipeline.pipelines.topis_rules import cycle_status
-from app.repositories.collection import CollectionRepository, lock_payload_file
-from app.repositories.map import lock_map_layer
-from app.repositories.normalization import NormalizedWriter
-from app.repositories.road_reference import lock_road_reference
+from app.repositories.collection import CollectionRepository
 from app.repositories.topis import (
-    CHECKPOINT_PREFIX,
-    CYCLE_PART,
     CYCLE_TARGET,
     SOURCE,
+    has_active_road,
     prune_history,
+    record_batch_counts,
     write_attempt,
+    write_observation,
 )
-from app.storage.payloads import configured_store
 
 CYCLE_LOCK = "topis-cycle"
 
@@ -38,21 +24,9 @@ CYCLE_LOCK = "topis-cycle"
 def summary(entries, target, *, interrupted=False, stopped=False):
     counts = Counter(e["error_code"] or e["status"] for e in entries)
     outcomes = Counter(e["status"] for e in entries)
-    failed = [
-        {
-            "link_id": e["link_id"],
-            "status": e["status"],
-            "error_code": e["error_code"],
-            "attempts": e["attempts"],
-        }
-        for e in entries
-        if e["status"] != "success"
-    ]
     status = cycle_status(counts, outcomes, stopped)
     if interrupted:
-        status = (
-            "partial" if any(e.get("processing", {}).get("updated") for e in entries) else "failed"
-        )
+        status = "partial" if any(e["processing"]["updated"] for e in entries) else "failed"
     return {
         "status": status,
         "cycle_complete": not (interrupted or stopped),
@@ -61,187 +35,109 @@ def summary(entries, target, *, interrupted=False, stopped=False):
         "remaining": target - len(entries),
         "counts": dict(counts),
         "retry_attempts": sum(e["attempts"] - 1 for e in entries),
-        "failed_links": failed,
+        "failed_links": [
+            {key: e[key] for key in ("link_id", "status", "error_code", "attempts")}
+            for e in entries
+            if e["status"] != "success"
+        ],
         **({"error_code": "collection_interrupted"} if interrupted else {}),
     }
 
 
-async def checkpoint(session, run_id, entries, index):
-    """One immutable file/transaction per batch; successes are durable before cycle completion."""
-    repo = CollectionRepository(session)
-    document = {
-        "contract": "topis-checkpoint-v1",
-        "source": SOURCE,
-        "run_id": str(run_id),
-        "entries": [{**e, "received_at": e["received_at"].isoformat()} for e in entries],
-    }
-    payload = await repo.archive(
-        run_id,
-        document,
-        None,
-        kind="derived_snapshot",
-        part=CHECKPOINT_PREFIX + str(index),
-    )
+async def store_batch(session, run_id, entries):
+    """Only selected/validated fields enter the batch; discard them after a successful commit."""
     processed = []
     for entry in entries:
-        entry = dict(entry)
-        if entry.get("data") is not None:
-            try:
-                async with session.begin_nested():
-                    result = await session.run_sync(
-                        lambda sync, entry=entry: normalize_traffic(
-                            NormalizedWriter(sync, Base.metadata),
-                            entry["link_id"],
-                            entry["data"],
-                            payload.payload_id,
-                            entry["received_at"],
+        outcome = {
+            key: entry[key]
+            for key in (
+                "link_id",
+                "status",
+                "error_code",
+                "attempted_at",
+                "attempts",
+            )
+        }
+        outcome["processing"] = {**entry["processing"], "updated": False}
+        try:
+            async with session.begin_nested():
+                if entry["values"] is not None:
+                    if not await has_active_road(session, entry["link_id"]):
+                        outcome.update(status="partial", error_code="missing_road_geometry")
+                    else:
+                        updated = await session.run_sync(
+                            lambda sync, entry=entry: write_observation(
+                                sync, entry["link_id"], entry["values"]
+                            )
                         )
-                    )
-                entry.update(
-                    status=result.status,
-                    error_code=result.error_code,
-                    processing={**result.counts.as_dict(), **result.details},
-                )
-            except Exception:
-                entry.update(status="failed", error_code="normalization_failed", processing={})
-        else:
-            entry.update(status="failed", processing={})
-        await write_attempt(session, run_id, entry)
-        processed.append(entry)
-    run = await session.get(CollectionRun, run_id)
-    run.received += len(processed)
-    run.accepted += sum(e.get("processing", {}).get("updated", False) for e in processed)
-    run.rejected = run.received - run.accepted
-    # Input is written before normalization; recovery uses the committed latest attempt
-    # columns to reconstruct outcomes without creating per-road report files.
+                        outcome["processing"]["updated"] = updated
+                        if not updated:
+                            outcome.update(status="partial", error_code="traffic_time_guard")
+                await write_attempt(session, run_id, outcome)
+        except Exception:
+            # Observation and attempt must not disagree if either write failed.
+            outcome.update(status="failed", error_code="normalization_failed")
+            outcome["processing"]["updated"] = False
+            await write_attempt(session, run_id, outcome)
+        processed.append(outcome)
+    await record_batch_counts(session, run_id, processed)
     return processed
 
 
-async def consolidate(session, run, entries, result):
-    """Replace temporary checkpoint references with a single cycle document atomically."""
+async def finish_cycle(session, run_id, result):
     repo = CollectionRepository(session)
-    payload = await repo.archive(
-        run.id,
-        {
-            "contract": "topis-cycle-v1",
-            "source": SOURCE,
-            "run_id": str(run.id),
-            "started_at": run.started_at.isoformat(),
-            "summary": result,
-            "entries": [{**e, "received_at": e["received_at"].isoformat()} for e in entries],
-        },
-        None,
-        kind="derived_snapshot",
-        part=CYCLE_PART,
-    )
-    chunks = select(RawPayload.payload_id).where(
-        RawPayload.run_id == run.id,
-        RawPayload.part_key.startswith(CHECKPOINT_PREFIX),
-    )
-    await session.run_sync(lock_road_reference)
-    await session.run_sync(lambda sync: lock_map_layer(sync, "roads"))
-    for model in (RoadTrafficLatest, MapRoadObservation):
-        await session.execute(
-            update(model).where(model.payload_id.in_(chunks)).values(payload_id=payload.payload_id)
-        )
-    accepted = sum(e.get("processing", {}).get("updated", False) for e in entries)
-    await repo.finish(
+    run = await session.get(CollectionRun, run_id)
+    reasons = (await repo.rejection_counts([run_id]))[run_id]
+    return await repo.finish(
         run,
         status="partial" if result["status"] == "paused_provider_limit" else result["status"],
-        error_code=result.get("error_code"),
+        error_code=result.get("error_code")
+        or (
+            next(
+                (
+                    code
+                    for code in reasons
+                    if code
+                    in {"provider_auth_error", "provider_quota_exceeded", "missing_topis_api_key"}
+                ),
+                None,
+            )
+            if result["status"] == "paused_provider_limit"
+            else None
+        ),
         completeness="complete" if result["cycle_complete"] else "partial",
-        received=len(entries),
-        accepted=accepted,
-        rejected=len(entries) - accepted,
-        rejection_reasons=dict(Counter(e["error_code"] for e in entries if e["error_code"])),
+        received=run.received,
+        accepted=run.accepted,
+        rejected=run.rejected,
+        rejection_reasons=reasons,
     )
-    return payload
 
 
 async def recover_cycles(engine):
-    """Caller holds the source lease; no active collection is mistaken for an interrupted one."""
-    from app.models import RoadTrafficAttemptLatest
-
-    factory = async_sessionmaker(engine)
-    async with factory() as session:
-        pending = list(
+    """Close abandoned runs from committed counts under the source lease, without replay."""
+    async with async_sessionmaker(engine).begin() as session:
+        runs = list(
             await session.scalars(
-                select(CollectionRun.id).where(
+                select(CollectionRun)
+                .where(
                     CollectionRun.source == SOURCE,
                     CollectionRun.target_key == CYCLE_TARGET,
                     CollectionRun.status == "running",
                 )
+                .with_for_update()
             )
         )
-    for run_id in pending:
-        async with factory.begin() as session:
-            run = await session.get(CollectionRun, run_id)
-            chunks = list(
-                await session.scalars(
-                    select(RawPayload)
-                    .where(
-                        RawPayload.run_id == run_id,
-                        RawPayload.part_key.startswith(CHECKPOINT_PREFIX),
-                    )
-                    .order_by(RawPayload.stored_at, RawPayload.part_key)
-                )
+        for run in runs:
+            await finish_cycle(
+                session,
+                run.id,
+                {
+                    "status": "partial" if run.accepted else "failed",
+                    "error_code": "collection_interrupted",
+                    "cycle_complete": False,
+                },
             )
-            states = {
-                s.link_id: s
-                for s in await session.scalars(
-                    select(RoadTrafficAttemptLatest).where(
-                        RoadTrafficAttemptLatest.run_id == run_id
-                    )
-                )
-            }
-            entries = []
-            for chunk in chunks:
-                data = await asyncio.to_thread(configured_store().load_json, chunk)
-                for entry in data["entries"]:
-                    entry["received_at"] = datetime.fromisoformat(entry["received_at"])
-                    state = states.get(entry["link_id"])
-                    entry.update(
-                        status=state.status if state else "partial",
-                        error_code=state.error_code if state else "missing_road_geometry",
-                        processing={"updated": state.observation_updated if state else False},
-                    )
-                    entries.append(entry)
-            # Target is stored once in a start document and consolidated on interruption.
-            initial = await session.scalar(
-                select(RawPayload).where(
-                    RawPayload.run_id == run_id,
-                    RawPayload.part_key == "topis:start",
-                )
-            )
-            target = (await asyncio.to_thread(configured_store().load_json, initial))["target"]
-            await consolidate(session, run, entries, summary(entries, target, interrupted=True))
-
-
-async def drain_file_deletions(engine):
-    factory = async_sessionmaker(engine)
-    removed = 0
-    async with factory() as session:
-        refs = list(await session.scalars(select(PayloadFileDeletion.file_ref)))
-    for ref in refs:
-        try:
-            async with factory.begin() as session:
-                await lock_payload_file(session, ref.rsplit("/", 1)[-1].removesuffix(".blob"))
-                used = await session.scalar(
-                    select(RawPayload.payload_id).where(RawPayload.file_ref == ref).limit(1)
-                )
-                archived = await session.scalar(
-                    select(LegacyArchive.file_ref).where(LegacyArchive.file_ref == ref).limit(1)
-                )
-                if used is None and archived is None:
-                    await asyncio.to_thread(configured_store().delete, ref)
-                    removed += 1
-                await session.execute(
-                    delete(PayloadFileDeletion).where(PayloadFileDeletion.file_ref == ref)
-                )
-        except Exception:
-            # The durable queue retains failed cleanup; the next cycle retries it.
-            continue
-    return removed
+    return len(runs)
 
 
 async def maintain_cycles(engine, *, recover=False):
@@ -253,12 +149,10 @@ async def maintain_cycles(engine, *, recover=False):
         if not locked:
             return {"status": "skipped", "error_code": "already_running"}
         try:
-            if recover:
-                await recover_cycles(engine)
+            recovered = await recover_cycles(engine) if recover else 0
             async with async_sessionmaker(engine).begin() as session:
                 result = await prune_history(session)
-            result["files_removed"] = await drain_file_deletions(engine)
-            return {"status": "success", **result}
+            return {"status": "success", "runs_recovered": recovered, **result}
         finally:
             await lease.execute(
                 text("SELECT pg_advisory_unlock(hashtext(:key))"), {"key": CYCLE_LOCK}

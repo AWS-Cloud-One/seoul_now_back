@@ -1,7 +1,9 @@
 """Distinct hotspot, administrative and regional boundaries; typed population values."""
 
+from datetime import datetime
+
 from geoalchemy2 import Geometry
-from sqlalchemy import Boolean, CheckConstraint, Double, ForeignKey, Integer, Text
+from sqlalchemy import Boolean, CheckConstraint, DateTime, Double, ForeignKey, Integer, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import (
@@ -63,6 +65,24 @@ class PopulationLatest(ObservationColumns, Base):
     max_people: Mapped[int | None] = mapped_column(Integer)
     congestion: Mapped[str | None] = mapped_column(Text)
     is_replacement: Mapped[bool | None] = mapped_column(Boolean)
+
+
+class PopulationAttemptLatest(Base):
+    """Latest area attempt survives log pruning without replacing good observations."""
+
+    __tablename__ = "population_attempt_latest"
+    __table_args__ = (
+        CheckConstraint("status IN ('success','partial','failed')", name="status"),
+        *nonblank("processor_version"),
+    )
+    area_code: Mapped[str] = mapped_column(
+        Text, ForeignKey("population_areas.area_code", ondelete="RESTRICT"), primary_key=True
+    )
+    attempted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    status: Mapped[str] = mapped_column(Text)
+    error_code: Mapped[str | None] = mapped_column(Text)
+    observation_updated: Mapped[bool] = mapped_column(Boolean)
+    processor_version: Mapped[str] = mapped_column(Text)
 
 
 class AdministrativeArea(AuditColumns, SourceColumns, Base):

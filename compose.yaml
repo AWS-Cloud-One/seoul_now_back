@@ -13,7 +13,6 @@ x-backend: &backend
     APP_DATABASE_URL: ${DOCKER_DATABASE_URL:-postgresql+psycopg://seoul:seoul_local@db:5432/seoul_now}
     APP_CORS_ORIGINS: '${APP_CORS_ORIGINS:-["http://localhost:5173","http://127.0.0.1:5173"]}'
     APP_DOCS_ENABLED: ${APP_DOCS_ENABLED:-true}
-    APP_PAYLOAD_STORAGE_DIR: /app/data/raw/payloads
     APP_DB_CONNECT_TIMEOUT_SECONDS: ${APP_DB_CONNECT_TIMEOUT_SECONDS:-3}
     # 설정된 키가 있는 제공처만 수집한다.
     APP_SEOUL_SDOT_API_KEY: ${APP_SEOUL_SDOT_API_KEY:-}
@@ -28,13 +27,11 @@ x-backend: &backend
     APP_SEOUL_CITYDATA_API_KEY: ${APP_SEOUL_CITYDATA_API_KEY:-}
     APP_HEALTH_TIMEOUT_SECONDS: ${APP_HEALTH_TIMEOUT_SECONDS:-5}
   volumes:
-    - ./app:/app/app
-    - ./jobs:/app/jobs
-    - ./migrations:/app/migrations
-    - ./tests:/app/tests
-    - ./data/reference:/app/data/reference:ro
-    - ./data/raw:/app/data/raw
-    - ./pyproject.toml:/app/pyproject.toml:ro
+    - &app-code ./app:/app/app
+    - &jobs-code ./jobs:/app/jobs
+    - &migration-code ./migrations:/app/migrations
+    - &test-code ./tests:/app/tests
+    - &project-config ./pyproject.toml:/app/pyproject.toml:ro
 
 services:
   db:
@@ -100,7 +97,27 @@ services:
       migrate:
         condition: service_completed_successfully
 
-  # Tests use a separate DB and never inherit provider keys or application files.
+  # Reference files are inputs to explicit imports, not runtime API/worker dependencies.
+  reference-import:
+    <<: *backend
+    profiles: ["reference"]
+    command: ["python", "-m", "jobs.import_place_boundaries", "--help"]
+    restart: "no"
+    healthcheck:
+      disable: true
+    volumes:
+      - *app-code
+      - *jobs-code
+      - *migration-code
+      - *project-config
+      - ./data:/app/data:ro
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  # Tests use a separate DB and never inherit provider keys or response files.
   test-db:
     <<: *postgis
     profiles: ["test"]
@@ -123,7 +140,8 @@ services:
     environment:
       APP_DATABASE_URL: postgresql+psycopg://validation:validation_local@test-db:5432/validation
       TEST_DATABASE_URL: postgresql+psycopg://validation:validation_local@test-db:5432/validation
-      APP_PAYLOAD_STORAGE_DIR: /tmp/payloads
+    volumes:
+      - ./data:/app/data:ro
     healthcheck:
       disable: true
     depends_on:

@@ -1,31 +1,20 @@
-"""Collection attempts and immutable evidence; no HTTP or provider-specific parsing."""
+"""Bounded collection summaries; no HTTP or provider-specific parsing."""
 
-import asyncio
-import hashlib
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
 from uuid import uuid4
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert
 
-from app.models import CollectionRejectionReason, CollectionRun, DataSource, RawPayload
+from app.models import CollectionRejectionReason, CollectionRun, DataSource
 from app.modules.data_pipeline.identity import PROCESSOR_VERSION
-from app.storage.payloads import configured_store
-from app.storage.redaction import redact
 
-
-async def lock_payload_file(session, sha256):
-    # Writers and post-commit cleanup use the same lock, including identical content
-    # shared by different providers. A collector must lock before creating the file.
-    await session.execute(
-        select(func.pg_advisory_xact_lock(func.hashtext("payload-file:" + sha256)))
-    )
+KEEP_RUNS = 20
 
 
 class CollectionRepository:
     def __init__(self, session):
         self.session = session
-        self.store = configured_store()
 
     async def ensure_source(self, source):
         await self.session.execute(
@@ -84,63 +73,72 @@ class CollectionRepository:
         await self.set_rejection_reasons(run.id, rejection_reasons or {})
         run.finished_at = datetime.now(UTC)
         await self.session.flush()
+        return await self.prune_history(run.source)
 
-    async def archive(
-        self, run_id, data, received_at, *, kind="provider_response", part="response", legacy=None
+    async def add_counts(
+        self, run_id, *, received=0, accepted=0, rejected=0, duplicates=0, rejection_reasons=None
     ):
-        data = redact(data)
-        body = self.store.encode_json(data)
-        await lock_payload_file(self.session, hashlib.sha256(body).hexdigest())
-        stored = await asyncio.to_thread(self.store.put_bytes, body)
-        run = await self.session.get(CollectionRun, run_id)
-        document_type = (
-            "object" if isinstance(data, dict) else "array" if isinstance(data, list) else "scalar"
+        """Commit a batch's counters in the same transaction as its typed writes."""
+        run = await self.session.scalar(
+            select(CollectionRun).where(CollectionRun.id == run_id).with_for_update()
         )
-        payload = RawPayload(
-            payload_id=uuid4(),
-            run_id=run_id,
-            source=run.source,
-            part_key=part,
-            format="json",
-            payload_kind=kind,
-            file_ref=stored.file_ref,
-            sha256=stored.sha256,
-            byte_size=stored.byte_size,
-            document_type=document_type,
-            received_at=received_at,
-            **(legacy or {}),
-        )
-        self.session.add(payload)
+        if run is None or run.status != "running":
+            raise ValueError("inactive_collection_cycle")
+        for key, value in dict(
+            received=received, accepted=accepted, rejected=rejected, duplicates=duplicates
+        ).items():
+            setattr(run, key, getattr(run, key) + value)
+        for reason, count in (rejection_reasons or {}).items():
+            if not count:
+                continue
+            stmt = insert(CollectionRejectionReason).values(
+                run_id=run_id, reason_code=reason, occurrence_count=count
+            )
+            await self.session.execute(
+                stmt.on_conflict_do_update(
+                    index_elements=["run_id", "reason_code"],
+                    set_={"occurrence_count": CollectionRejectionReason.occurrence_count + count},
+                )
+            )
         await self.session.flush()
-        return payload
 
-    async def archive_file(self, run_id, body, *, part, metadata):
-        """Preserve the exact official bytes used for parsing, without inventing receipt time."""
-        await lock_payload_file(self.session, hashlib.sha256(body).hexdigest())
-        stored = await asyncio.to_thread(self.store.put_bytes, body)
-        run = await self.session.get(CollectionRun, run_id)
-        if stored.sha256 != metadata["sha256"] or stored.byte_size != metadata["byte_size"]:
-            raise ValueError("source_file_evidence_mismatch")
-        payload = RawPayload(
-            payload_id=uuid4(),
-            run_id=run_id,
-            source=run.source,
-            part_key=part,
-            payload_kind="source_file",
-            format="xlsx",
-            document_type="binary",
-            file_ref=stored.file_ref,
-            sha256=stored.sha256,
-            byte_size=stored.byte_size,
-            received_at=None,
-            source_version=metadata["version"],
-            reference_date=date.fromisoformat(metadata["reference_date"])
-            if metadata.get("reference_date")
-            else None,
+    async def prune_history(self, source):
+        """Keep the latest finished summaries; current values/cursors never depend on them."""
+        await self.session.execute(
+            select(func.pg_advisory_xact_lock(func.hashtext("collection-history:" + source)))
         )
-        self.session.add(payload)
+        expired = (
+            select(CollectionRun.id)
+            .where(CollectionRun.source == source, CollectionRun.status != "running")
+            .order_by(CollectionRun.started_at.desc(), CollectionRun.id.desc())
+            .offset(KEEP_RUNS)
+        )
+        ids = list(await self.session.scalars(expired))
+        if not ids:
+            return 0
+        await self.session.execute(
+            delete(CollectionRejectionReason).where(CollectionRejectionReason.run_id.in_(ids))
+        )
+        result = await self.session.execute(delete(CollectionRun).where(CollectionRun.id.in_(ids)))
+        return result.rowcount
+
+    async def recover_interrupted(self, source):
+        """Caller holds the provider lease: close abandoned cycles from committed counters only."""
+        runs = list(
+            await self.session.scalars(
+                select(CollectionRun)
+                .where(CollectionRun.source == source, CollectionRun.status == "running")
+                .with_for_update()
+            )
+        )
+        for run in runs:
+            run.status = "partial" if run.accepted else "failed"
+            run.error_code = "collection_interrupted"
+            run.completeness = "partial"
+            run.finished_at = datetime.now(UTC)
         await self.session.flush()
-        return payload
+        await self.prune_history(source)
+        return len(runs)
 
     async def latest_run(self, source, target_key):
         return await self.session.scalar(

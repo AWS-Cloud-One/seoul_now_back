@@ -16,7 +16,7 @@ def registered_information(record):
     hours = operating_hours(record)
     # One legacy response timestamp cannot describe independently received method facts.
     collected = record.collected_at
-    if record.operation_payload_id and record.operation_received_at != collected:
+    if record.operation_processed_at is not None and record.operation_received_at != collected:
         collected = None
     return dict(
         value=dict(

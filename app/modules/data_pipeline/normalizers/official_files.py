@@ -4,6 +4,35 @@ import math
 import re
 
 
+def citydata_areas(rows):
+    """Reject conflicting codes instead of silently taking the last spreadsheet row."""
+    result = {}
+    for row in rows:
+        values = list(row.values())
+        for index, value in enumerate(values):
+            if not isinstance(value, str) or not re.fullmatch(r"POI\d{3}", value):
+                continue
+            name = values[index + 1] if index + 1 < len(values) else None
+            if not isinstance(name, str) or not name.strip():
+                raise ValueError("official_area_list_invalid")
+            name = name.strip()
+            if value in result and result[value] != name:
+                raise ValueError("conflicting_official_area")
+            result[value] = name
+    if not result or len(set(result.values())) != len(result):
+        raise ValueError("official_area_list_invalid")
+    return result
+
+
+def validate_place_reference(targets, shapes):
+    """The list and boundary archive must describe exactly the same places."""
+    codes = [values["AREA_CD"] for values, _ in shapes]
+    if len(codes) != len(set(codes)) or set(codes) != set(targets):
+        raise ValueError("place_reference_code_mismatch")
+    if any(values["AREA_NM"].strip() != targets[values["AREA_CD"]] for values, _ in shapes):
+        raise ValueError("place_reference_name_mismatch")
+
+
 def topis_vertices(rows):
     seen = {}
     for cells in rows:

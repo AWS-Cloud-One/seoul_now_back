@@ -6,12 +6,79 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.orm import selectinload
 
 from app.clients.seoul import CollectionError
-from app.models import CollectionRun, ParkingSourceRecord, RawPayload
+from app.models import CollectionRun, ParkingSourceRecord
 from app.modules.data_pipeline.pipelines.parking import run_parking
 from app.repositories.parking import ParkingRepository
 from app.services.parking_registration import registered_information
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("no_response_archive")]
+
+
+def test_partial_municipal_response_keeps_successes_and_does_not_close_missing_facilities(
+    normalized_database,
+):
+    from datetime import UTC, datetime, timedelta
+
+    from app.modules.data_pipeline.collectors.parking import ParkingSnapshot
+    from app.modules.data_pipeline.normalizers.parking import MUNICIPAL_PARKING_SOURCE, SOURCE
+    from app.modules.data_pipeline.pipelines.parking import run_municipal_parking
+
+    async def run():
+        engine = create_async_engine(normalized_database)
+        factory = async_sessionmaker(engine)
+        registered = [
+            {"PKLT_CD": code, "PKLT_NM": code, "LAT": 37.56, "LOT": 126.97} for code in ("a", "b")
+        ]
+        receipt = datetime(2026, 11, 5, tzinfo=UTC)
+        rows = [{"PKLT_CD": code, "PKLT_NM": code, "TPKCT": "100"} for code in ("a", "b")]
+
+        async def reference():
+            return registered
+
+        async def initial():
+            return ParkingSnapshot(rows, 2, receipt, True)
+
+        async def partial():
+            return ParkingSnapshot(
+                [{**rows[0], "TPKCT": "150"}, None],
+                3,
+                receipt + timedelta(minutes=10),
+                False,
+                "provider_server_error",
+            )
+
+        try:
+            assert (await run_parking(engine, reference, SOURCE))["status"] == "success"
+            assert (await run_municipal_parking(engine, initial))["accepted"] == 2
+            result = await run_municipal_parking(engine, partial)
+            assert (result["status"], result["accepted"], result["rejected"]) == ("partial", 1, 1)
+            async with factory() as session:
+                records = {
+                    r.provider_record_id: r
+                    for r in await session.scalars(
+                        select(ParkingSourceRecord).where(
+                            ParkingSourceRecord.source == MUNICIPAL_PARKING_SOURCE
+                        ),
+                    )
+                }
+                assert records["a"].registered_capacity == 150
+                assert records["b"].registered_capacity == 100
+                assert records["b"].collected_at == receipt
+                assert all(record.is_active for record in records.values())
+                assert (
+                    await session.scalar(
+                        select(func.count())
+                        .select_from(CollectionRun)
+                        .where(
+                            CollectionRun.source == MUNICIPAL_PARKING_SOURCE,
+                        )
+                    )
+                    == 2
+                )
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
 
 
 @pytest.mark.parametrize(
@@ -148,7 +215,7 @@ def test_atomic_runs_idempotency_spatial_lookup_and_failure_preservation(normali
                     and records[0].registered_capacity == 50
                     and records[0].base_fee_krw == 0
                 )
-                assert await s.scalar(select(func.count()).select_from(RawPayload)) == 3
+                assert await s.scalar(select(func.count()).select_from(CollectionRun)) == 3
                 assert await ParkingRepository(s).active_positions(source) == {
                     "001": {(37.5665, 126.978)}
                 }
@@ -199,13 +266,12 @@ def test_atomic_runs_idempotency_spatial_lookup_and_failure_preservation(normali
     asyncio.run(run())
 
 
-def test_municipal_pipeline_links_only_unique_active_positions_and_preserves_raw(
+def test_municipal_pipeline_links_unique_positions_and_records_one_run(
     normalized_database, monkeypatch
 ):
     from app.modules.data_pipeline.normalizers.parking import MUNICIPAL_PARKING_SOURCE, SOURCE
-    from app.modules.data_pipeline.pipelines import snapshots
     from app.modules.data_pipeline.pipelines.parking import run_municipal_parking
-    from app.storage.payloads import configured_store
+    from app.repositories.normalization import NormalizedWriter
 
     async def run():
         engine = create_async_engine(normalized_database)
@@ -253,23 +319,22 @@ def test_municipal_pipeline_links_only_unique_active_positions_and_preserves_raw
                 )
                 assert len(records) == 1 and records[0].provider_record_id == "unique"
                 assert records[0].registered_capacity == 100
-                original_payload = await session.scalar(
-                    select(RawPayload)
-                    .join(CollectionRun)
-                    .where(
-                        CollectionRun.source == MUNICIPAL_PARKING_SOURCE,
-                        RawPayload.document_type == "object",
+                assert (
+                    await session.scalar(
+                        select(func.count())
+                        .select_from(CollectionRun)
+                        .where(CollectionRun.source == MUNICIPAL_PARKING_SOURCE)
                     )
+                    == 1
                 )
-                assert configured_store().load_json(original_payload) == {"rows": rows}
 
             def fail(*args, **kwargs):
                 raise RuntimeError("private database error")
 
-            monkeypatch.setattr(snapshots, "normalize_snapshot", fail)
+            monkeypatch.setattr(NormalizedWriter, "parking", fail)
             rows[0]["TPKCT"] = "999"
             failed = await run_municipal_parking(engine, municipal)
-            assert failed["status"] == "failed" and failed["error_code"] == "normalization_failed"
+            assert failed["status"] == "failed" and failed["error_code"] == "internal_error"
             async with factory() as session:
                 record = await session.scalar(
                     select(ParkingSourceRecord).where(

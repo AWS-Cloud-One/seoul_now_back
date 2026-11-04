@@ -19,8 +19,4 @@ agent
 docs
 AGENTS.md
 **/AGENTS.md
-data/*
-!data/reference/
-data/reference/*
-!data/reference/*.xlsx
-!data/reference/*.zip
+data/

@@ -178,3 +178,27 @@ def test_http_errors_distinguish_retryable_server_failure_from_permanent_errors(
             assert str(error.value) == expected
 
     asyncio.run(run())
+
+
+def test_collector_selects_only_traffic_fields_and_captures_actual_receipt():
+    from datetime import UTC, datetime
+
+    async def run():
+        async def handler(request):
+            return httpx.Response(
+                200,
+                text=(
+                    "<TrafficInfo><RESULT><CODE>INFO-000</CODE></RESULT><row>"
+                    "<link_id>1000000000</link_id><prcs_spd>0</prcs_spd>"
+                    "<prcs_trv_time>10</prcs_trv_time><unused>discard</unused></row></TrafficInfo>"
+                ),
+            )
+
+        before = datetime.now(UTC)
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            data = await collect_topis(client, "test", "1000000000")
+        assert before <= data["received_at"] <= datetime.now(UTC)
+        assert data["rows"] == [{"link_id": "1000000000", "prcs_spd": "0", "prcs_trv_time": "10"}]
+        assert set(data) == {"rows", "received_at"}
+
+    asyncio.run(run())

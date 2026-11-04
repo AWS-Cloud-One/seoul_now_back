@@ -12,7 +12,6 @@ from app.modules.data_pipeline.normalizers.parking_merge import merge_citydata_c
 @dataclass(frozen=True)
 class ParkingCandidate:
     record: dict
-    payload_id: object
     received_at: datetime | None
     origin: str
     row_index: int | None = None
@@ -62,7 +61,7 @@ def select_parking_candidates(candidates, *, conflicts=None):
             key=lambda c: (
                 c.received_at or datetime.min.replace(tzinfo=UTC),
                 c.origin,
-                str(c.payload_id),
+                c.row_index if c.row_index is not None else -1,
             ),
             reverse=True,
         )

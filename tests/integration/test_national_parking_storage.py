@@ -14,7 +14,6 @@ from app.models import (
     ParkingAvailabilityLatest,
     ParkingFieldIssue,
     ParkingSourceRecord,
-    RawPayload,
 )
 from app.modules.data_pipeline.normalizers.national_parking import METHODS
 from app.modules.data_pipeline.pipelines.national_parking import save_national_parking
@@ -23,9 +22,8 @@ from app.repositories.national_parking import NationalParkingWriter
 from app.repositories.parking import ParkingRepository
 from app.repositories.parking_detail import ParkingDetailRepository
 from app.services.parking_registration import registered_information
-from app.storage.payloads import configured_store
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("no_response_archive")]
 
 
 def facility(code="a", **changes):
@@ -127,8 +125,8 @@ def test_methods_join_by_id_with_separate_provenance_and_unknown_live_time(norma
                 assert a.base_minutes == 30 and a.base_usable
                 assert a.additional_minutes == 10 and a.additional_usable
                 assert a.daily_max_krw is None and a.daily_flat_fee_krw == 10000
-                assert b.operation_payload_id is None
-                assert a.last_payload_id != a.operation_payload_id
+                assert b.operation_received_at is None
+                assert a.collected_at < a.operation_received_at
                 detail = (await ParkingDetailRepository(session).list_records(a.parking_id))[0]
                 assert registered_information(detail)["collected_at"] is None
                 assert (
@@ -137,18 +135,16 @@ def test_methods_join_by_id_with_separate_provenance_and_unknown_live_time(norma
                 )
                 monday = [h for h in detail.operating_hours if h.day_type == "monday"]
                 assert len(monday) == 2 and monday[0].opens_at.second == 30
-                assert all(h.payload_id == a.operation_payload_id for h in monday)
+                assert all(h.processor_version == a.operation_processor_version for h in monday)
                 state = await session.get(ParkingAvailabilityLatest, a.source_record_id)
                 assert (
                     state.attempt_reported_available_spaces == 0
                     and state.attempt_total_spaces == 10
                 )
-                assert (
-                    state.observed_at is state.reported_available_spaces is state.payload_id is None
-                )
+                assert state.observed_at is state.reported_available_spaces is None
                 assert not state.usable and state.attempt_status == "unknown"
                 assert state.attempt_reason_code == "SOURCE_TIME_UNKNOWN"
-                assert state.attempt_payload_id not in (a.last_payload_id, a.operation_payload_id)
+                assert state.attempt_received_at > a.operation_received_at
                 reader = ParkingRepository(session)
                 receipt = state.attempt_received_at
                 reading = await reader.availability(a.source_record_id, now=receipt)
@@ -175,11 +171,8 @@ def test_methods_join_by_id_with_separate_provenance_and_unknown_live_time(norma
                 assert ambiguous.reason_code == "AMBIGUOUS_AVAILABILITY_SCOPE"
                 issues = list(await session.scalars(select(ParkingFieldIssue)))
                 assert all(i.reason_code != "UNCONFIRMED_TIME_UNIT" for i in issues)
-                payloads = list(await session.scalars(select(RawPayload)))
-                assert len(payloads) == 4
-                assert sum(p.payload_kind == "provider_response" for p in payloads) == 3
-                report = next(p for p in payloads if p.part_key == "report")
-                assert configured_store().load_json(report)["datasets"] == result["datasets"]
+                assert await session.scalar(select(func.count()).select_from(CollectionRun)) == 1
+
         finally:
             await engine.dispose()
 
@@ -201,7 +194,7 @@ def test_missing_or_failed_methods_preserve_previous_facts_and_do_not_close_faci
                 a = await session.scalar(
                     select(ParkingSourceRecord).where(ParkingSourceRecord.provider_record_id == "a")
                 )
-                rid, old_operation = a.source_record_id, a.operation_payload_id
+                rid, old_operation = a.source_record_id, a.operation_received_at
             rows["PrkSttusInfo"] = [facility(prk_plce_nm="new name")]
             result = await collect(engine, rows, failed={"PrkOprInfo"})
             assert (
@@ -212,7 +205,7 @@ def test_missing_or_failed_methods_preserve_previous_facts_and_do_not_close_faci
                 a = await session.get(ParkingSourceRecord, rid)
                 assert (
                     a.name == "new name"
-                    and a.operation_payload_id == old_operation
+                    and a.operation_received_at == old_operation
                     and a.base_fee_krw == 1200
                 )
                 assert all(r.is_active for r in await session.scalars(select(ParkingSourceRecord)))
@@ -226,15 +219,15 @@ def test_missing_or_failed_methods_preserve_previous_facts_and_do_not_close_faci
             assert result["accepted"] == 1
             async with factory() as session:
                 a = await session.get(ParkingSourceRecord, rid)
-                assert a.base_fee_krw == 2400 and a.operation_payload_id != old_operation
+                assert a.base_fee_krw == 2400 and a.operation_received_at != old_operation
                 assert a.base_minutes is None and not a.base_usable
-                previous = a.operation_payload_id
+                previous = a.operation_received_at
             rows["PrkOprInfo"] = []
             await collect(engine, rows)
             async with factory() as session:
                 assert (
                     await session.get(ParkingSourceRecord, rid)
-                ).operation_payload_id == previous
+                ).operation_received_at == previous
             # An old replay cannot relabel an operational value with a newer receipt.
             data = {
                 "datasets": {
@@ -248,14 +241,14 @@ def test_missing_or_failed_methods_preserve_previous_facts_and_do_not_close_faci
                                 page=1,
                                 received_at="2020-01-01T00:00:00Z",
                                 usable=True,
-                                body={m: rows[m]},
+                                rows=rows[m],
                             )
                         ],
                     )
                     for m in METHODS
                 }
             }
-            data["datasets"]["PrkOprInfo"]["pages"][0]["body"]["PrkOprInfo"] = [operation()]
+            data["datasets"]["PrkOprInfo"]["pages"][0]["rows"] = [operation()]
             async with factory.begin() as session:
                 result = await save_national_parking(session, data)
             assert result["datasets"]["PrkOprInfo"]["rejection_reasons"] == {
@@ -302,7 +295,7 @@ def test_conflicting_facility_blocks_only_its_joins_and_all_failures_are_reporte
     asyncio.run(run())
 
 
-def test_typed_failure_rolls_back_all_methods_but_retains_page_evidence(
+def test_typed_failure_rolls_back_all_methods_and_retains_only_failure_summary(
     normalized_database, monkeypatch
 ):
     def fail(*args, **kwargs):
@@ -320,7 +313,6 @@ def test_typed_failure_rolls_back_all_methods_but_retains_page_evidence(
                 assert (
                     await session.scalar(select(func.count()).select_from(ParkingSourceRecord)) == 0
                 )
-                assert await session.scalar(select(func.count()).select_from(RawPayload)) == 4
                 stored = await session.scalar(select(CollectionRun))
                 assert stored.rejected == 3 and stored.accepted == 0
         finally:

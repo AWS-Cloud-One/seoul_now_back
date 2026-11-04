@@ -5,6 +5,7 @@ import re
 import struct
 import zipfile
 from io import BytesIO
+from pathlib import Path
 from xml.etree import ElementTree as ET
 
 
@@ -45,13 +46,12 @@ def read_topis_files(vertices_path, mapping_path):
             "filename": path.name,
             "sha256": hashlib.sha256(body).hexdigest(),
             "byte_size": len(body),
-            "body": body,
         }
     return result
 
 
 def read_shapes(path):
-    """Read the official 121-place WGS84 polygon archive, retaining every ring."""
+    """Read the current official WGS84 polygon archive, retaining every ring."""
     with zipfile.ZipFile(path) as archive:
 
         def read(suffix):
@@ -92,6 +92,39 @@ def read_shapes(path):
             if any(len(ring) < 4 or ring[0] != ring[-1] for ring in rings):
                 raise ValueError("invalid_ring")
             shapes.append(rings)
-        if len(records) != 121 or len(shapes) != 121 or len({r["AREA_CD"] for r in records}) != 121:
+        if (
+            not records
+            or len(records) != len(shapes)
+            or len({r["AREA_CD"] for r in records}) != len(records)
+        ):
             raise ValueError("incomplete_official_places")
         return list(zip(records, shapes, strict=True))
+
+
+def read_sensor_file(path):
+    path = Path(path)
+    body = path.read_bytes()
+    rows = read_xlsx_rows(BytesIO(body))
+    digest = hashlib.sha256(body).hexdigest()
+    return {
+        "filename": path.name,
+        "sha256": digest,
+        "byte_size": len(body),
+        "header": rows[0] if rows else {},
+        "rows": rows[1:],
+        "reference_date": "2025-11-13"
+        if digest == "aa3c0cd17abf6a561a86b8dbb2fbb9253f5991bb6361859a9573e96eef9c49b3"
+        else None,
+        "date_basis": "hash_pinned_repository_attachment"
+        if digest == "aa3c0cd17abf6a561a86b8dbb2fbb9253f5991bb6361859a9573e96eef9c49b3"
+        else "unconfirmed",
+        "source_url": "https://data.seoul.go.kr/dataList/OA-15964/S/1/datasetView.do",
+        "received_at": None,
+        "complete": digest == "aa3c0cd17abf6a561a86b8dbb2fbb9253f5991bb6361859a9573e96eef9c49b3",
+    }
+
+
+def read_citydata_areas(path):
+    from app.modules.data_pipeline.normalizers.official_files import citydata_areas
+
+    return citydata_areas(read_xlsx_rows(path))

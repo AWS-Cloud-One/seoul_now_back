@@ -4,36 +4,21 @@ import json
 
 from sqlalchemy import func, select
 
-from app.models import CollectionRun, RawPayload, RegionBoundary, RoadLink, RoadTrafficAttemptLatest
-
-
-def latest_payload_id(source, target):
-    """Select accepted import metadata, including legacy receipts, without loading the file."""
-    stamp = func.coalesce(
-        RawPayload.received_at, RawPayload.legacy_collected_at, RawPayload.stored_at
-    )
-    return (
-        select(RawPayload.payload_id)
-        .join(CollectionRun)
-        .where(
-            CollectionRun.source == source,
-            CollectionRun.target_key == target,
-            CollectionRun.status.in_(["success", "partial"]),
-            RawPayload.format == "json",
-            RawPayload.document_type.in_(["object", "array"]),
-            RawPayload.payload_kind.not_in(["legacy_observation", "processing_report"]),
-        )
-        .order_by(stamp.desc(), RawPayload.stored_at.desc())
-        .limit(1)
-        .scalar_subquery()
-    )
+from app.models import (
+    PedestrianSensor,
+    PopulationArea,
+    RegionBoundary,
+    RoadLink,
+    RoadTrafficAttemptLatest,
+)
 
 
 def current_roads():
     return (
         RoadLink.source == "topis_geometry",
         RoadLink.is_active.is_(True),
-        RoadLink.last_payload_id == latest_payload_id("topis_geometry", "file:topis_vertices"),
+        RoadLink.source_version.is_not(None),
+        RoadLink.processed_at.is_not(None),
     )
 
 
@@ -43,13 +28,66 @@ def current_seoul_boundary():
         RegionBoundary.region_code == "11",
         RegionBoundary.source == "sgis_seoul_boundary",
         RegionBoundary.is_active.is_(True),
-        RegionBoundary.last_payload_id == latest_payload_id("sgis_seoul_boundary", "all"),
+        RegionBoundary.boundary_version.is_not(None),
+        RegionBoundary.processed_at.is_not(None),
     )
 
 
 class ReferenceRepository:
     def __init__(self, session):
         self.session = session
+
+    async def citydata_areas(self):
+        rows = await self.session.execute(
+            select(PopulationArea.area_code, PopulationArea.name)
+            .where(PopulationArea.is_active.is_(True))
+            .order_by(PopulationArea.area_code)
+        )
+        return dict(rows.all())
+
+    async def sensor_reference(self):
+        rows = (
+            await self.session.execute(
+                select(
+                    PedestrianSensor,
+                    func.ST_X(PedestrianSensor.geometry),
+                    func.ST_Y(PedestrianSensor.geometry),
+                )
+                .where(
+                    PedestrianSensor.source == "sdot_people", PedestrianSensor.is_active.is_(True)
+                )
+                .order_by(PedestrianSensor.sensor_code)
+            )
+        ).all()
+        if not rows:
+            return None
+        versions = {sensor.source_version for sensor, _, _ in rows}
+        boundaries = {sensor.boundary_version for sensor, _, _ in rows}
+        if len(versions) != 1 or len(boundaries) != 1:
+            raise ValueError("inconsistent_sensor_reference")
+        return {
+            "locations": {
+                sensor.sensor_code: dict(
+                    id=sensor.sensor_code,
+                    provider_sensor_id=sensor.provider_sensor_id,
+                    device_serial=sensor.device_serial,
+                    address=sensor.address,
+                    lng=lng,
+                    lat=lat,
+                )
+                for sensor, lng, lat in rows
+            },
+            "metadata": {
+                "version": next(iter(versions)),
+                "boundary_version": next(iter(boundaries)),
+            },
+            "quality": {
+                "received": len(rows),
+                "accepted": len(rows),
+                "rejected": 0,
+                "duplicates": 0,
+            },
+        }
 
     async def topis_links(self):
         return list(
@@ -60,23 +98,9 @@ class ReferenceRepository:
 
     async def topis_attempt_times(self):
         rows = await self.session.execute(
-            select(
-                CollectionRun.target_key,
-                func.coalesce(CollectionRun.finished_at, CollectionRun.started_at),
-            )
-            .where(CollectionRun.source == "topis_traffic", CollectionRun.target_key.like("link:%"))
-            .distinct(CollectionRun.target_key)
-            .order_by(
-                CollectionRun.target_key, CollectionRun.started_at.desc(), CollectionRun.id.desc()
-            )
-        )
-        attempts = {target.removeprefix("link:"): when for target, when in rows}
-        for link, when in await self.session.execute(
             select(RoadTrafficAttemptLatest.link_id, RoadTrafficAttemptLatest.attempted_at)
-        ):
-            if link not in attempts or when >= attempts[link]:
-                attempts[link] = when
-        return {link: when.isoformat() for link, when in attempts.items()}
+        )
+        return {link: when.isoformat() for link, when in rows}
 
     async def seoul_boundary(self):
         row = (
@@ -84,7 +108,6 @@ class ReferenceRepository:
                 select(
                     func.ST_AsGeoJSON(RegionBoundary.geometry),
                     RegionBoundary.source_version,
-                    RegionBoundary.last_payload_id,
                     RegionBoundary.boundary_version,
                 ).where(*current_seoul_boundary())
             )
@@ -95,8 +118,7 @@ class ReferenceRepository:
         return {
             "geometry": json.loads(row[0]),
             "year": year,
-            "payload_id": str(row[2]),
-            "version": row[3],
+            "version": row[2],
         }
 
     async def has_prerequisite(self, source):
@@ -104,6 +126,18 @@ class ReferenceRepository:
             query = select(RoadLink.link_id).where(*current_roads())
         elif source == "sgis_seoul_boundary":
             query = select(RegionBoundary.region_code).where(*current_seoul_boundary())
+        elif source == "citydata_places":
+            query = select(PopulationArea.area_code).where(
+                PopulationArea.is_active.is_(True), PopulationArea.source_version.is_not(None)
+            )
+        elif source == "sdot_locations":
+            boundary = select(RegionBoundary.boundary_version).where(*current_seoul_boundary())
+            query = select(PedestrianSensor.sensor_code).where(
+                PedestrianSensor.source == "sdot_people",
+                PedestrianSensor.is_active.is_(True),
+                PedestrianSensor.source_version.is_not(None),
+                PedestrianSensor.boundary_version == boundary.scalar_subquery(),
+            )
         else:
             raise ValueError("unsupported_collection_prerequisite")
         return bool(await self.session.scalar(select(query.exists())))

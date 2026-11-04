@@ -1,7 +1,6 @@
 """Shared normalized storage constraints and provenance columns."""
 
 from datetime import date, datetime
-from uuid import UUID
 
 from sqlalchemy import Boolean, CheckConstraint, Date, DateTime, ForeignKey, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
@@ -43,9 +42,6 @@ class SourceColumns:
     )
     source_version: Mapped[str | None] = mapped_column(Text)
     reference_date: Mapped[date | None] = mapped_column(Date)
-    last_payload_id: Mapped[UUID | None] = mapped_column(
-        ForeignKey("raw_payloads.payload_id", ondelete="RESTRICT"), index=True
-    )
     # Legacy rows may lack processing provenance; new writers must supply both.
     processor_version: Mapped[str | None] = mapped_column(Text)
     processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -53,10 +49,8 @@ class SourceColumns:
 
 
 class ObservationColumns:
-    payload_id: Mapped[UUID] = mapped_column(
-        ForeignKey("raw_payloads.payload_id", ondelete="RESTRICT"), index=True
-    )
     observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    received_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     processed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     processor_version: Mapped[str] = mapped_column(Text)
     reason_code: Mapped[str | None] = mapped_column(Text)

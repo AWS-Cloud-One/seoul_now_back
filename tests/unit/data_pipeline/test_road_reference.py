@@ -15,7 +15,7 @@ from app.modules.data_pipeline.normalizers.road_reference import (
 from jobs.import_topis_geometry import arguments
 from tests.fixtures.road_reference import road_candidate
 
-DATA = Path(__file__).resolve().parents[3] / "data/reference"
+DATA = Path(__file__).resolve().parents[3] / "data"
 
 
 @pytest.fixture(scope="module")
@@ -25,10 +25,12 @@ def official_inputs():
     )
 
 
-def test_real_files_keep_independent_bytes_hashes_counts_and_mapping_ambiguity(official_inputs):
+def test_file_hashes_and_parsed_rows_are_returned_without_retaining_binary_copies(official_inputs):
     for file in official_inputs.values():
-        assert file["sha256"] == sha256(file["body"]).hexdigest()
-        assert file["byte_size"] == len(file["body"])
+        body = (DATA / file["filename"]).read_bytes()
+        assert file["sha256"] == sha256(body).hexdigest()
+        assert file["byte_size"] == len(body)
+        assert "body" not in file
     assert official_inputs["vertices"]["sha256"] != official_inputs["mapping"]["sha256"]
     points, mappings, report = prepare_reference(official_inputs)
     assert report["file_links"] == 5093 and report["geometry_links"] == 5092

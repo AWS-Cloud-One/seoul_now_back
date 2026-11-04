@@ -1,11 +1,11 @@
 """Atomic road/administrative references and their current spatial relations."""
 
 import json
-from datetime import UTC, date, datetime
+from datetime import date
 
 from sqlalchemy import delete, func, select, text, update
 
-from app.models import AdministrativeArea, RawPayload, RoadAreaMapping, RoadLink, RoadLinkMapping
+from app.models import AdministrativeArea, RoadAreaMapping, RoadLink, RoadLinkMapping
 from app.modules.data_pipeline.identity import PROCESSOR_VERSION, fingerprint
 from app.modules.data_pipeline.normalizers.storage_fields import road_link_fields
 
@@ -119,24 +119,20 @@ def replace_administrative_areas(writer, values, *, complete=False):
         rebuild_road_areas(session, ids)
 
 
-def replace_road_reference(writer, data, payload_id):
+def replace_road_reference(writer, data, imported_at):
     session = writer.session
     lock_road_reference(session)
     current_time = session.scalar(
-        select(func.max(RawPayload.stored_at))
-        .join(RoadLink, RoadLink.last_payload_id == RawPayload.payload_id)
-        .where(RoadLink.source == "topis_geometry", RoadLink.is_active.is_(True))
+        select(func.max(RoadLink.processed_at)).where(
+            RoadLink.source == "topis_geometry", RoadLink.is_active.is_(True)
+        )
     )
-    incoming_time = session.scalar(
-        select(RawPayload.stored_at).where(RawPayload.payload_id == payload_id)
-    )
-    if current_time is not None and incoming_time < current_time:
-        return False
+    if current_time is not None and imported_at < current_time:
+        raise ValueError("reference_time_guard")
     writer.source("topis_geometry")
     writer.source("topis_standard_mapping")
     ref = data["reference"]["inputs"]
-    now = datetime.now(UTC)
-    common = dict(last_payload_id=payload_id, processed_at=now, processor_version=PROCESSOR_VERSION)
+    common = dict(processed_at=imported_at, processor_version=PROCESSOR_VERSION)
     ids = [f["id"] for f in data["features"]]
     session.execute(
         update(RoadLink)
@@ -145,7 +141,7 @@ def replace_road_reference(writer, data, payload_id):
             RoadLink.is_active.is_(True),
             RoadLink.link_id.not_in(ids),
         )
-        .values(is_active=False)
+        .values(is_active=False, processed_at=imported_at)
     )
     for feature in data["features"]:
         writer.upsert_geometry(
@@ -161,7 +157,7 @@ def replace_road_reference(writer, data, payload_id):
             ),
             ["link_id"],
         )
-    # Relations are the current set; historical sets remain in immutable import evidence.
+    # Only the validated current mapping set is retained.
     session.execute(
         delete(RoadLinkMapping).where(RoadLinkMapping.source == "topis_standard_mapping")
     )

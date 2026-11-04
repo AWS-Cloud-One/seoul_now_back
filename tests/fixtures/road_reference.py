@@ -1,7 +1,6 @@
 """Synthetic reference evidence for unrelated integration tests; not provider validation."""
 
 from app.modules.data_pipeline.identity import fingerprint
-from app.modules.data_pipeline.pipelines.snapshots import save_snapshot
 
 
 def road_candidate(data, *, version="2025", mapping_version="2025-03-06", complete=True):
@@ -30,9 +29,3 @@ def road_candidate(data, *, version="2025", mapping_version="2025-03-06", comple
             },
         },
     }
-
-
-async def save_fixture_snapshot(session, source, data, **kwargs):
-    if source.startswith("topis_geometry:"):
-        data = road_candidate(data, version=source.split(":", 1)[1])
-    return await save_snapshot(session, source, data, **kwargs)

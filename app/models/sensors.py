@@ -1,7 +1,6 @@
 """Sensor installation facts and independent last-valid / latest-attempt state."""
 
 from datetime import date, datetime
-from uuid import UUID
 
 from geoalchemy2 import Geometry
 from sqlalchemy import (
@@ -49,16 +48,7 @@ class PedestrianSensor(AuditColumns, Base):
     geometry = mapped_column(Geometry("POINT", srid=4326), nullable=False)
     source_version: Mapped[str] = mapped_column(Text)
     reference_date: Mapped[date | None] = mapped_column(Date)
-    reference_payload_id: Mapped[UUID] = mapped_column(
-        ForeignKey("raw_payloads.payload_id", ondelete="RESTRICT")
-    )
-    boundary_payload_id: Mapped[UUID] = mapped_column(
-        ForeignKey("raw_payloads.payload_id", ondelete="RESTRICT")
-    )
     boundary_version: Mapped[str] = mapped_column(Text)
-    last_payload_id: Mapped[UUID] = mapped_column(
-        ForeignKey("raw_payloads.payload_id", ondelete="RESTRICT")
-    )
     reference_checked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     is_active: Mapped[bool] = mapped_column(Boolean, server_default="true")
     processed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
@@ -87,9 +77,9 @@ class PedestrianSensorLatest(AuditColumns, Base):
             name="attempt_status",
         ),
         CheckConstraint(
-            "num_nonnulls(count_10min, observed_at, payload_id, data_no, received_at, "
-            "provider_collected_at, reference_version, reference_payload_id, processed_at, "
-            "processor_version, provider_sensor_id) IN (0,11)",
+            "num_nonnulls(count_10min, observed_at, data_no, received_at, "
+            "provider_collected_at, reference_version, processed_at, "
+            "processor_version, provider_sensor_id) IN (0,9)",
             name="observation_provenance",
         ),
         CheckConstraint(
@@ -106,13 +96,7 @@ class PedestrianSensorLatest(AuditColumns, Base):
     data_no: Mapped[str | None] = mapped_column(Text)
     provider_sensor_id: Mapped[str | None] = mapped_column(Text)
     model_name: Mapped[str | None] = mapped_column(Text)
-    payload_id: Mapped[UUID | None] = mapped_column(
-        ForeignKey("raw_payloads.payload_id", ondelete="RESTRICT")
-    )
     reference_version: Mapped[str | None] = mapped_column(Text)
-    reference_payload_id: Mapped[UUID | None] = mapped_column(
-        ForeignKey("raw_payloads.payload_id", ondelete="RESTRICT")
-    )
     processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     processor_version: Mapped[str | None] = mapped_column(Text)
     attempt_status: Mapped[str] = mapped_column(Text)
@@ -122,9 +106,6 @@ class PedestrianSensorLatest(AuditColumns, Base):
     attempt_provider_collected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     attempt_received_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     attempt_data_no: Mapped[str | None] = mapped_column(Text)
-    attempt_payload_id: Mapped[UUID] = mapped_column(
-        ForeignKey("raw_payloads.payload_id", ondelete="RESTRICT")
-    )
     attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     attempt_processed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     attempt_processor_version: Mapped[str] = mapped_column(Text)

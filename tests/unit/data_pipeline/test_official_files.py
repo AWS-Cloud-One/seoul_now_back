@@ -7,12 +7,15 @@ from zipfile import ZipFile
 
 import pytest
 
+from app.core.config import Settings
 from app.modules.data_pipeline.collectors.official_files import read_xlsx_rows
 from app.modules.data_pipeline.normalizers.official_files import (
+    citydata_areas,
     complete_vertices,
     road_features,
     topis_mapping,
     topis_vertices,
+    validate_place_reference,
 )
 from jobs import import_place_boundaries, import_topis_geometry
 
@@ -101,7 +104,16 @@ def test_import_jobs_report_pipeline_outcome_and_dispose_engine(
     monkeypatch, capsys, job, status, code
 ):
     engine = AsyncMock()
-    monkeypatch.setattr(job, "Settings", lambda: None)
+    monkeypatch.setattr(
+        job, "Settings", lambda: Settings(_env_file=None, seoul_citydata_api_key="test")
+    )
+    if job is import_topis_geometry:
+        monkeypatch.setattr(job, "read_topis_files", lambda *args: {})
+        monkeypatch.setattr(job, "async_sessionmaker", lambda engine: lambda: AsyncMock())
+        monkeypatch.setattr(
+            job.ReferenceRepository, "citydata_areas", AsyncMock(return_value={"POI001": "test"})
+        )
+        monkeypatch.setattr(job, "collect_road_reference_inputs", AsyncMock(return_value=[]))
     monkeypatch.setattr(job, "create_engine", lambda settings: engine)
     pipeline_name = (
         "import_topis_geometry" if job is import_topis_geometry else "import_place_boundaries"
@@ -119,9 +131,17 @@ def test_official_place_file_has_unique_121_codes():
 
     from app.modules.data_pipeline.collectors.official_files import read_shapes
 
-    data = read_shapes(
-        Path(__file__).resolve().parents[3] / "data/reference/citydata_places_official.zip"
-    )
+    data = read_shapes(Path(__file__).resolve().parents[3] / "data/citydata_places_official.zip")
     assert len(data) == 121
     assert len({row[0]["AREA_CD"] for row in data}) == 121
     assert all(ring[0] == ring[-1] for _, rings in data for ring in rings)
+
+
+def test_replacement_place_lists_can_change_size_but_must_match_boundaries():
+    targets = citydata_areas([{"A": "POI001", "B": "장소"}, {"A": "POI002", "B": "추가 장소"}])
+    shapes = [({"AREA_CD": code, "AREA_NM": name}, []) for code, name in targets.items()]
+    validate_place_reference(targets, shapes)
+    with pytest.raises(ValueError, match="place_reference_code_mismatch"):
+        validate_place_reference(targets, shapes[:1])
+    with pytest.raises(ValueError, match="conflicting_official_area"):
+        citydata_areas([{"A": "POI001", "B": "장소"}, {"A": "POI001", "B": "다른 장소"}])

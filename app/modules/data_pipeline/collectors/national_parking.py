@@ -8,6 +8,7 @@ import httpx
 
 from app.clients.seoul import CollectionError
 from app.modules.data_pipeline.identity import fingerprint
+from app.modules.data_pipeline.normalizers.national_parking import selected_fields
 from app.modules.data_pipeline.normalizers.values import number
 
 METHODS = ("PrkSttusInfo", "PrkOprInfo", "PrkRealtimeInfo")
@@ -56,13 +57,13 @@ async def collect_national_parking(http, settings, *, page_size=1000, max_pages=
                     },
                 )
                 received = datetime.now(UTC).isoformat()
+                evidence = dict(page=page, received_at=received, rows=[], usable=False)
+                pages.append(evidence)
+                response.raise_for_status()
                 try:
                     body = response.json()
                 except ValueError:
-                    body = {"non_json_body": response.text}
-                evidence = dict(page=page, received_at=received, body=body, usable=False)
-                pages.append(evidence)
-                response.raise_for_status()
+                    raise CollectionError("parking_invalid_response") from None
                 if not isinstance(body, dict) or str(body.get("resultCode")) not in {"0", "00"}:
                     raise CollectionError("parking_provider_error")
                 count = number(body.get("totalCount"), integer=True)
@@ -80,10 +81,12 @@ async def collect_national_parking(http, settings, *, page_size=1000, max_pages=
                     state["consistent_total"] = False
                     warnings.append("parking_total_changed_between_batches")
                 state["provider_total"] = total
+                batch = [selected_fields(method, row) for row in batch]
                 digest = fingerprint(batch)
                 if batch and digest in state["page_hashes"].values():
                     raise CollectionError("parking_repeated_page")
                 evidence["usable"] = True
+                evidence["rows"] = batch
                 rows.extend(batch)
                 ids.update(
                     str(row["prk_center_id"]).strip()
@@ -121,6 +124,8 @@ async def collect_national_parking(http, settings, *, page_size=1000, max_pages=
                     break
             except (httpx.HTTPError, CollectionError) as exc:
                 error = str(exc) if isinstance(exc, CollectionError) else "parking_http_error"
+                if pages and pages[-1]["page"] == page:
+                    pages[-1]["error_code"] = error
                 break
         if not end_observed and error is None:
             error = "parking_page_limit"

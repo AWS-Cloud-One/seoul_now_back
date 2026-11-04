@@ -13,7 +13,6 @@ from starlette.exceptions import HTTPException
 from app.api.errors import api_error, error_status
 from app.core.exceptions import ServiceError
 from app.schemas.common import ApiError, ErrorResponse
-from app.storage.payloads import PayloadStorageError
 
 
 def envelope(data=None, error=None, *, request_id: UUID | str | None = None):
@@ -52,7 +51,7 @@ class ContractRoute(APIRoute):
                 error = api_error(exc)
                 status, code, message = error_status(exc), error.code, error.message
                 retryable, retry_after = error.retryable, error.retry_after_seconds
-            except SQLAlchemyError, PayloadStorageError:
+            except SQLAlchemyError:
                 status, code, message = 503, "DATA_UNAVAILABLE", "저장 자료를 조회할 수 없습니다."
                 retryable = True
             except HTTPException as exc:

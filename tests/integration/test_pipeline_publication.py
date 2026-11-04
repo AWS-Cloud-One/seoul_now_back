@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.clients.seoul import CollectionError
@@ -20,37 +20,36 @@ from app.models import (
 from app.modules.data_pipeline.collectors.citydata import CityDataDocument
 from app.modules.data_pipeline.pipelines import citydata, topis
 from app.modules.data_pipeline.pipelines.publication import publish_result
-from app.modules.data_pipeline.pipelines.snapshots import save_snapshot
 from app.repositories.collection import CollectionRepository
 from app.repositories.map import MapRepository
 from app.schemas.map import MapQuery
 from app.services.map import MapService
 from app.services.map_publication import MapPublicationService
-from tests.fixtures.road_reference import save_fixture_snapshot
+from tests.fixtures.citydata import boundary
+from tests.fixtures.topis import seed_roads
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("no_runtime_files")]
 LINK = "1000000000"
 QUERY = MapQuery(bbox=(126.9, 37.4, 127.2, 37.7), level=6)
 
 
 async def reference(factory, *, end=127.01):
+    async with factory() as s:
+        exists = await s.scalar(text("SELECT EXISTS(SELECT 1 FROM road_links)"))
+    if not exists:
+        await seed_roads(factory, [LINK])
     async with factory.begin() as s:
-        result = await save_fixture_snapshot(
-            s,
-            "topis_geometry:test",
+        await s.execute(
+            text("""
+            UPDATE road_links SET geometry=ST_GeomFromText(:geometry,4326), source_version=:version
+            WHERE link_id=:link
+        """),
             {
-                "features": [
-                    {
-                        "id": LINK,
-                        "geometry": {
-                            "type": "LineString",
-                            "coordinates": [[127, 37.5], [end, 37.5]],
-                        },
-                    }
-                ]
+                "geometry": f"MULTILINESTRING((127 37.5,{end} 37.5))",
+                "version": str(end),
+                "link": LINK,
             },
         )
-        assert result.status == "success"
 
 
 async def publish(engine, layer):
@@ -109,7 +108,7 @@ def test_traffic_collection_publishes_without_rebuilding_and_preserves_failure_s
                 assert response.items[0].traffic.observed_at is None
                 assert response.items[0].traffic.collected_at is not None
                 canonical = await s.get(RoadTrafficLatest, ("topis_traffic", LINK))
-                payload = canonical.payload_id
+                receipt = canonical.received_at
             # An unfinished newer attempt cannot replace the last completed attempt.
             async with factory.begin() as s:
                 await CollectionRepository(s).start("topis_traffic", "link:" + LINK)
@@ -131,11 +130,11 @@ def test_traffic_collection_publishes_without_rebuilding_and_preserves_failure_s
                     assert row.has_observation is has and row.collection_failed is failed
                     assert (
                         await s.get(RoadTrafficLatest, ("topis_traffic", LINK))
-                    ).payload_id == payload
+                    ).received_at == receipt
                     if has:
-                        assert row.payload_id == payload and row.speed_kmh == 0
+                        assert row.received_at == receipt and row.speed_kmh == 0
                     else:
-                        assert row.payload_id is None and row.speed_kmh is None
+                        assert row.received_at is None and row.speed_kmh is None
                 assert (await state(factory))[2] == original[2]
         finally:
             await engine.dispose()
@@ -245,25 +244,7 @@ def test_citydata_batch_publishes_population_and_parking_then_exposes_failed_att
         engine = create_async_engine(normalized_database)
         factory = async_sessionmaker(engine)
         try:
-            async with factory.begin() as s:
-                await save_snapshot(
-                    s,
-                    "citydata_place_boundaries",
-                    {
-                        "features": [
-                            {
-                                "id": "POI001",
-                                "properties": {"name": "test"},
-                                "geometry": {
-                                    "type": "Polygon",
-                                    "coordinates": [
-                                        [[127, 37.5], [127.1, 37.5], [127.1, 37.6], [127, 37.5]]
-                                    ],
-                                },
-                            }
-                        ]
-                    },
-                )
+            await boundary(factory)
             await publish(engine, "population")
             original = await state(factory, "population")
             now = datetime.now(UTC)

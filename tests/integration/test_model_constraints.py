@@ -1,7 +1,6 @@
 """Validate active model constraints in a disposable PostGIS database."""
 
 import os
-from dataclasses import asdict
 from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import uuid4
@@ -11,7 +10,6 @@ import sqlalchemy as sa
 from sqlalchemy.engine import make_url
 
 from app.models import Base
-from app.storage.payloads import configured_store
 
 pytestmark = pytest.mark.integration
 
@@ -58,7 +56,7 @@ def table(name):
 
 @pytest.fixture
 def evidence(db):
-    now, run_id, payload_id = datetime.now(UTC), uuid4(), uuid4()
+    now, run_id = datetime.now(UTC), uuid4()
     db.execute(
         table("data_sources")
         .insert()
@@ -70,26 +68,11 @@ def evidence(db):
         .values(id=run_id, source="fixture", target_key="all", status="success", started_at=now)
     )
     db.execute(
-        table("raw_payloads")
-        .insert()
-        .values(
-            payload_id=payload_id,
-            run_id=run_id,
-            part_key="response:1",
-            format="json",
-            payload_kind="provider_response",
-            **asdict(configured_store().put_bytes(b'{"value":0}')),
-            document_type="object",
-            received_at=now,
-        )
-    )
-    db.execute(
         table("road_links")
         .insert()
         .values(
             link_id="001",
             source="fixture",
-            last_payload_id=payload_id,
             geometry="SRID=4326;MULTILINESTRING((126.9 37.5,127.0 37.6))",
         )
     )
@@ -100,62 +83,17 @@ def evidence(db):
             area_code="AREA1",
             name="Area",
             source="fixture",
-            last_payload_id=payload_id,
             geometry="SRID=4326;MULTIPOLYGON(((126 37,128 37,128 39,126 39,126 37),"
             "(126.5 37.5,126.5 38,127 38,127 37.5,126.5 37.5)))",
         )
     )
-    return dict(run_id=run_id, payload_id=payload_id, now=now)
+    return dict(run_id=run_id, now=now)
 
 
 def rejects(db, statement, constraint):
     with pytest.raises(sa.exc.IntegrityError) as error, db.begin_nested():
         db.execute(statement)
     assert constraint in error.value.orig.diag.constraint_name
-
-
-@pytest.mark.parametrize(
-    "field,value,constraint",
-    [
-        ("sha256", "bad-hash", "sha256"),
-        ("byte_size", -1, "byte_size"),
-        ("document_type", "unknown", "document_type"),
-        ("file_ref", " ", "file_ref"),
-    ],
-)
-def test_raw_evidence_metadata_constraints(db, evidence, field, value, constraint):
-    values = dict(
-        run_id=evidence["run_id"],
-        part_key="bad",
-        format="json",
-        payload_kind="provider_response",
-        document_type="object",
-        **asdict(configured_store().put_bytes(b"{}")),
-    )
-    values[field] = value
-    rejects(db, table("raw_payloads").insert().values(**values), constraint)
-
-
-def test_legacy_timestamp_and_provenance_are_not_fabricated(db, evidence):
-    values = dict(
-        run_id=evidence["run_id"],
-        part_key="legacy",
-        format="json",
-        payload_kind="legacy_snapshot",
-        **asdict(configured_store().put_bytes(b"{}")),
-        document_type="object",
-        legacy_table="provider_snapshots",
-        legacy_key="topis:001@old-time",
-        legacy_collected_at=evidence["now"],
-    )
-    rejects(db, table("raw_payloads").insert().values(**values), "legacy_time_pair")
-    result = db.execute(
-        table("raw_payloads")
-        .insert()
-        .values(**values, legacy_time_basis="snapshot_saved")
-        .returning(table("raw_payloads").c.received_at)
-    ).scalar_one()
-    assert result is None
 
 
 @pytest.mark.parametrize("speed", [Decimal("-1"), Decimal("NaN"), Decimal("Infinity")])
@@ -167,7 +105,6 @@ def test_invalid_traffic_numbers_are_rejected(db, evidence, speed):
         .values(
             source="fixture",
             link_id="001",
-            payload_id=evidence["payload_id"],
             processed_at=evidence["now"],
             processor_version="test",
             speed_kmh=speed,
@@ -189,7 +126,6 @@ def test_zero_measurement_and_unknown_observed_time_are_preserved(db, evidence):
             .values(
                 source="fixture",
                 link_id="001",
-                payload_id=evidence["payload_id"],
                 processed_at=evidence["now"],
                 processor_version="test",
                 speed_kmh=0,
@@ -200,20 +136,12 @@ def test_zero_measurement_and_unknown_observed_time_are_preserved(db, evidence):
         .one()
     )
     assert row["speed_kmh"] == 0 and row["observed_at"] is None
-    rejects(
-        db,
-        table("raw_payloads")
-        .delete()
-        .where(table("raw_payloads").c.payload_id == evidence["payload_id"]),
-        "fk_",
-    )
 
 
 def test_population_range_and_source_relationship(db, evidence):
     values = dict(
         source="fixture",
         area_code="AREA1",
-        payload_id=evidence["payload_id"],
         processed_at=evidence["now"],
         processor_version="test",
     )
@@ -347,7 +275,6 @@ def test_publication_requires_matching_feature_and_evidence(db, evidence):
             link_id="001",
             has_observation=True,
             source="fixture",
-            payload_id=evidence["payload_id"],
             processed_at=evidence["now"],
             processor_version="test",
             speed_kmh=None,
