@@ -101,8 +101,11 @@ class RawPayload(Base):
     )
 
     payload_id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
-    run_id: Mapped[UUID] = mapped_column(
-        ForeignKey("collection_runs.id", ondelete="RESTRICT"), index=True
+    run_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("collection_runs.id", ondelete="SET NULL"), index=True
+    )
+    source: Mapped[str | None] = mapped_column(
+        Text, ForeignKey("data_sources.source_code", ondelete="RESTRICT"), index=True
     )
     part_key: Mapped[str] = mapped_column(Text)
     payload_kind: Mapped[str] = mapped_column(Text)
@@ -136,6 +139,14 @@ class CollectionRejectionReason(Base):
     )
     reason_code: Mapped[str] = mapped_column(Text, primary_key=True)
     occurrence_count: Mapped[int] = mapped_column(Integer)
+
+
+class PayloadFileDeletion(Base):
+    """Durable file cleanup after metadata deletion commits; empty after successful cleanup."""
+
+    __tablename__ = "payload_file_deletions"
+    file_ref: Mapped[str] = mapped_column(Text, primary_key=True)
+    queued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class LegacyArchive(Base):

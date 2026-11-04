@@ -1,4 +1,4 @@
-"""Active normalized SQLAlchemy registry, revision 0009."""
+"""Active normalized registry; schema is installed by Alembic through revision 0011."""
 
 from .areas import AdministrativeArea, PopulationArea, PopulationLatest, RegionBoundary
 from .base import Base
@@ -15,12 +15,26 @@ from .collection import (
     CollectionRun,
     DataSource,
     LegacyArchive,
+    PayloadFileDeletion,
     RawPayload,
 )
 from .map import MapFeature, MapLayerVersion, MapPopulationObservation, MapRoadObservation
-from .parking import ParkingFacility, ParkingSourceRecord
+from .parking import (
+    ParkingAvailabilityLatest,
+    ParkingFacility,
+    ParkingFieldIssue,
+    ParkingOperatingHour,
+    ParkingSourceRecord,
+)
 from .places import Place, PlaceCategory
-from .traffic import RoadAreaMapping, RoadLink, RoadLinkMapping, RoadTrafficLatest
+from .sensors import PedestrianSensor, PedestrianSensorLatest
+from .traffic import (
+    RoadAreaMapping,
+    RoadLink,
+    RoadLinkMapping,
+    RoadTrafficAttemptLatest,
+    RoadTrafficLatest,
+)
 
 __all__ = [
     "ChatConditionAgeGroup",
@@ -40,15 +54,22 @@ __all__ = [
     "MapLayerVersion",
     "MapPopulationObservation",
     "MapRoadObservation",
+    "ParkingAvailabilityLatest",
+    "ParkingFieldIssue",
+    "ParkingOperatingHour",
     "ParkingFacility",
     "ParkingSourceRecord",
+    "PedestrianSensor",
+    "PedestrianSensorLatest",
     "PopulationArea",
     "PopulationLatest",
     "RawPayload",
+    "PayloadFileDeletion",
     "RegionBoundary",
     "RoadAreaMapping",
     "RoadLink",
     "RoadLinkMapping",
     "RoadTrafficLatest",
+    "RoadTrafficAttemptLatest",
     "Base",
 ]

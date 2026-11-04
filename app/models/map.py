@@ -142,6 +142,10 @@ class MapRoadObservation(PublishedObservation, Base):
     layer: Mapped[str] = mapped_column(Text, server_default="roads")
     speed_kmh: Mapped[Decimal | None] = mapped_column(Numeric)
     travel_seconds: Mapped[Decimal | None] = mapped_column(Numeric)
+    received_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_attempt_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("collection_runs.id", ondelete="SET NULL"), index=True
+    )
 
 
 class MapPopulationObservation(PublishedObservation, Base):

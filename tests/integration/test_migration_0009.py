@@ -67,6 +67,8 @@ def prepare_history(engine, history, tmp_path):
         shutil.copytree(ROOT / "migrations", scripts, ignore=shutil.ignore_patterns("__pycache__"))
         (scripts / "versions/0008_collection_history.py").unlink()
         (scripts / "versions/0009_relational_storage.py").unlink()
+        (scripts / "versions/0010_pipeline_storage.py").unlink()
+        (scripts / "versions/0011_topis_cycle_retention.py").unlink()
         shutil.copyfile(LEGACY_MAP, scripts / "versions/0008_map_contract.py")
         command.upgrade(config(scripts), "0008")
     else:
@@ -172,7 +174,7 @@ def test_upgrade_converges_and_preserves_existing_rows(migration_database, tmp_p
     command.upgrade(config(), "head")
     command.check(config())
     with engine.connect() as c:
-        assert c.exec_driver_sql("SELECT version_num FROM alembic_version").scalar_one() == "0009"
+        assert c.exec_driver_sql("SELECT version_num FROM alembic_version").scalar_one() == "0011"
         inspector = sa.inspect(c)
         assert set(inspector.get_table_names(schema="public")) - {
             "alembic_version",
@@ -347,6 +349,7 @@ def test_existing_parking_ids_zero_fees_and_source_time_are_preserved(migration_
             },
         )
     command.upgrade(config(), "0009")
+    command.upgrade(config(), "head")
     command.check(config())
     with engine.connect() as c:
         f = (
