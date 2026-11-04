@@ -60,7 +60,7 @@ SECTION_KEYS = {
 
 
 def unwrap_citydata(body, *, expected_code=None, expected_name=None, require_envelope=False):
-    """Also accept previously stored inner CITYDATA objects; never invent an envelope."""
+    """Validate provider identity and envelope before selecting any fields."""
     if require_envelope and (not isinstance(body, dict) or "RESULT" not in body):
         raise CityDataError("provider_invalid_response")
     if isinstance(body, dict) and ("CITYDATA" in body or "RESULT" in body):
@@ -98,7 +98,7 @@ def section_state(city, section):
         return {"state": "invalid", "rows": 0}
     if not rows:
         return {"state": "empty", "rows": 0}
-    if any(not isinstance(r, dict) or not r for r in rows):
+    if all(not isinstance(r, dict) or not r for r in rows):
         return {"state": "invalid", "rows": len(rows)}
     return {"state": "usable", "rows": len(rows)}
 
@@ -112,13 +112,17 @@ def selected_rows(value, fields):
     return None
 
 
-def select_citydata(city, received_at=None):
+def select_citydata(city, received_at=None, *, include_road_geometry=True):
     selected = {k: city[k] for k in ("AREA_CD", "AREA_NM")}
-    sections = {name: section_state(city, name) for name in SECTION_KEYS}
+    sections = {
+        name: section_state(city, name)
+        for name in SECTION_KEYS
+        if include_road_geometry or name != "road_geometry"
+    }
     for key, fields in (("LIVE_PPLTN_STTS", POPULATION_FIELDS), ("PRK_STTS", PARKING_FIELDS)):
         if key in city:
             selected[key] = selected_rows(city[key], fields)
-    if "ROAD_TRAFFIC_STTS" in city:
+    if include_road_geometry and "ROAD_TRAFFIC_STTS" in city:
         road = city["ROAD_TRAFFIC_STTS"]
         selected["ROAD_TRAFFIC_STTS"] = (
             {"ROAD_TRAFFIC_STTS": selected_rows(road["ROAD_TRAFFIC_STTS"], ROAD_FIELDS)}
@@ -132,6 +136,8 @@ def select_citydata(city, received_at=None):
                 road["AVG_ROAD_DATA"], ("ROAD_TRAFFIC_TIME",)
             )
     for name in ("parking", "road_geometry"):
+        if name not in sections:
+            continue
         section = sections[name]
         if section["state"] != "usable":
             continue
@@ -145,10 +151,10 @@ def select_citydata(city, received_at=None):
             if name == "parking":
                 try:
                     normalize_parking(row, received_at, CITYDATA_PARKING_SOURCE)
-                except ValueError, TypeError, KeyError:
+                except ValueError, TypeError, KeyError, AttributeError:
                     reasons["invalid_parking_row"] += 1
             else:
-                link = row.get("LINK_ID")
+                link = row.get("LINK_ID") if isinstance(row, dict) else None
                 error = (
                     citydata_line(row)[1]
                     if isinstance(link, str) and link.strip()

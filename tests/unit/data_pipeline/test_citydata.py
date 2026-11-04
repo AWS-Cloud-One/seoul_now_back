@@ -2,7 +2,6 @@ import asyncio
 from copy import deepcopy
 from datetime import UTC, datetime
 from unittest.mock import patch
-from uuid import UUID
 
 import httpx
 import pytest
@@ -11,7 +10,7 @@ from app.clients.seoul import CollectionError
 from app.modules.data_pipeline.collectors.citydata import collect_citydata, resolve_citydata_area
 from app.modules.data_pipeline.normalizers.citydata import CityDataError, population_row
 from app.modules.data_pipeline.normalizers.storage_fields import population
-from app.modules.data_pipeline.pipelines import snapshots
+from app.modules.data_pipeline.pipelines import citydata_storage as storage
 
 
 def city():
@@ -150,12 +149,12 @@ def test_population_identity_and_conflict_are_rejected_before_any_write():
     for change in ({"AREA_CD": "POI010"}, {"AREA_NM": "서울역"}, {"AREA_CD": None}):
         data = city()
         data["LIVE_PPLTN_STTS"][0].update(change)
-        with patch.object(snapshots, "NormalizedWriter") as writer:
+        with patch.object(storage, "PopulationWriter") as writer:
             assert (
-                snapshots.normalize_snapshot(None, "seoul_citydata", data, UUID(int=1)).error_code
+                storage.normalize_population(None, data["AREA_CD"], data, None).error_code
                 == "population_area_mismatch"
             )
-            writer.return_value.upsert.assert_not_called()
+            writer.return_value.observation.assert_not_called()
 
     data = city()
     data["LIVE_PPLTN_STTS"].append({**data["LIVE_PPLTN_STTS"][0], "AREA_PPLTN_MAX": "20"})
@@ -183,15 +182,14 @@ def test_equal_population_observations_ignore_unselected_forecast_differences():
 def test_bad_observation_time_does_not_become_a_new_unknown_time_write(stamp, error):
     data = city()
     data["LIVE_PPLTN_STTS"][0]["PPLTN_TIME"] = stamp
-    with patch.object(snapshots, "NormalizedWriter") as writer:
+    with patch.object(storage, "PopulationWriter") as writer:
         assert (
-            snapshots.normalize_snapshot(
+            storage.normalize_population(
                 None,
-                "seoul_citydata",
+                data["AREA_CD"],
                 data,
-                UUID(int=1),
                 received_at=datetime(2026, 11, 4, tzinfo=UTC),
             ).error_code
             == error
         )
-        writer.return_value.upsert.assert_not_called()
+        writer.return_value.observation.assert_not_called()

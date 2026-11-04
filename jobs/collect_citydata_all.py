@@ -4,12 +4,14 @@ import argparse
 import asyncio
 
 import httpx
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.core.config import Settings
 from app.db.session import create_engine
-from app.modules.data_pipeline.collectors.citydata import collect_citydata, read_citydata_areas
+from app.modules.data_pipeline.collectors.citydata import collect_citydata
 from app.modules.data_pipeline.pipelines.citydata import run_citydata_batch
-from jobs.runtime import REFERENCE_DATA, finish, report, run_cli
+from app.repositories.reference import ReferenceRepository
+from jobs.runtime import finish, report, run_cli
 
 
 async def execute(interval=0) -> int:
@@ -17,11 +19,16 @@ async def execute(interval=0) -> int:
     key = settings.seoul_citydata_api_key.get_secret_value()
     if not key:
         return finish({"status": "failed", "error_code": "missing_citydata_api_key"})
-    targets = read_citydata_areas(REFERENCE_DATA / "seoul_areas.xlsx")
     engine = create_engine(settings)
     try:
         async with httpx.AsyncClient() as client:
             while True:
+                async with async_sessionmaker(engine)() as session:
+                    targets = await ReferenceRepository(session).citydata_areas()
+                if not targets:
+                    return finish(
+                        {"status": "failed", "error_code": "import_place_reference_first"}
+                    )
                 result = await run_citydata_batch(
                     engine,
                     lambda code, name: collect_citydata(client, key, name, expected_code=code),
