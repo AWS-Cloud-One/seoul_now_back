@@ -24,14 +24,14 @@ async def execute(interval=0) -> int:
             while True:
                 result = await run_citydata_batch(
                     engine,
-                    lambda name: collect_citydata(client, key, name),
+                    lambda code, name: collect_citydata(client, key, name, expected_code=code),
                     targets,
                     report=report,
                 )
                 code = finish(result)
                 if not interval:
                     return code
-                await asyncio.sleep(interval)
+                await asyncio.sleep(max(interval, 3600) if code == 4 else interval)
     finally:
         await engine.dispose()
 

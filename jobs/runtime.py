@@ -16,7 +16,10 @@ def report(result: dict) -> None:
 
 def finish(result: dict) -> int:
     report(result)
-    return EXIT_CODES.get(result["status"], 1)
+    code = EXIT_CODES.get(result["status"], 1)
+    if code == 0 and result.get("publication", {}).get("status") in {"failed", "deferred"}:
+        return EXIT_CODES["partial"]
+    return code
 
 
 def run_cli(operation, *args) -> None:

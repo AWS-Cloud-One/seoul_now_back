@@ -4,6 +4,19 @@ from unittest.mock import AsyncMock
 import pytest
 
 from jobs import collect_citydata_all, collect_supplemental
+from jobs.runtime import finish
+
+
+@pytest.mark.parametrize("publication", ["failed", "deferred"])
+@pytest.mark.parametrize(
+    "status, code", [("success", 2), ("failed", 1), ("paused_provider_limit", 4)]
+)
+def test_publication_outcome_controls_exit_without_relabeling_collection(
+    capsys, publication, status, code
+):
+    result = {"status": status, "publication": {"status": publication}}
+    assert finish(result) == code
+    assert json.loads(capsys.readouterr().out) == result
 
 
 @pytest.mark.parametrize(
