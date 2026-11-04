@@ -11,11 +11,10 @@ from app.modules.data_pipeline.normalizers.road_geometry import (
 )
 
 
-def source(rows, payload="p1"):
+def source(rows, area="POI001"):
     return {
         "data": {"ROAD_TRAFFIC_STTS": {"ROAD_TRAFFIC_STTS": rows}},
-        "area_code": "POI001",
-        "payload_id": payload,
+        "area_code": area,
         "received_at": None,
     }
 
@@ -51,7 +50,7 @@ def test_identical_coordinates_coalesce_without_overwriting_evidence():
     )
     assert not issues and index["1"]["state"] == "valid"
     assert len(index["1"]["geometry_hashes"]) == 1
-    assert {s["payload_id"] for s in index["1"]["sources"]} == {"a", "b"}
+    assert {s["area_code"] for s in index["1"]["sources"]} == {"a", "b"}
 
 
 @pytest.mark.parametrize("other", ["127_37.5|127.02_37.5", "127.01_37.5|127_37.5"])

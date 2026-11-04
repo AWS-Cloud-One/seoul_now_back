@@ -1,5 +1,4 @@
 import asyncio
-import json
 from datetime import UTC, datetime
 
 import httpx
@@ -8,28 +7,6 @@ import pytest
 from app.clients.seoul import CollectionError
 from app.core.config import Settings
 from app.modules.data_pipeline.collectors import supplemental as collectors
-from app.modules.data_pipeline.normalizers import supplemental as normalizers
-
-
-def test_cctv_conversion_preserves_filtered_order_and_does_not_invent_observations():
-    rows = [
-        {
-            "roadsectionid": "a",
-            "coordx": "127",
-            "coordy": "37.5",
-            "cctvurl": "https://example.com/a",
-        },
-        {"roadsectionid": "bad", "coordx": "NaN", "coordy": "37.5"},
-        {"roadsectionid": "b", "coordx": "127.1", "coordy": "37.6"},
-    ]
-    candidates = normalizers.cctv_candidates(rows)
-    snapshot = normalizers.cctv_snapshot(
-        candidates[1:], {"rows": rows, "fetched_at": datetime(2026, 10, 25, tzinfo=UTC)}
-    )
-    assert snapshot["received"] == 3 and snapshot["items"][0]["id"] == "b:0"
-    assert snapshot["items"][0]["direction"] is None
-    assert snapshot["items"][0]["playback_status"] == "unverified"
-    assert candidates[1]["roadsectionid"] == "b"
 
 
 def test_sdot_does_not_expand_beyond_ten_thousand_rows():
@@ -137,18 +114,31 @@ def test_sgis_uses_current_host_and_preserves_missing_polygon_for_per_row_valida
     assert len(calls) == 4
 
 
-def test_cctv_probe_reuses_file_time_without_an_http_call(tmp_path):
-    path = tmp_path / "probe.json"
-    rows = [{"roadsectionid": "test", "coordx": 127, "coordy": 37.5}]
-    path.write_text(json.dumps({"response": {"data": rows}}))
-
+def test_sgis_failed_district_keeps_successful_rows_and_continues_boundary():
     def response(request):
-        pytest.fail("a reused probe must not spend ITS quota")
+        if request.url.path.endswith("authentication.json"):
+            return httpx.Response(200, json={"result": {"accessToken": "test"}})
+        if request.url.path.endswith("stage.json"):
+            code = request.url.params["cd"]
+            if code == "11":
+                rows = [{"cd": "11010"}, {"cd": "11020"}]
+            elif code == "11010":
+                return httpx.Response(503)
+            else:
+                rows = [{"cd": "11020510", "pg": "current geometry"}]
+            return httpx.Response(200, json={"errCd": 0, "result": rows})
+        return httpx.Response(200, json={"errCd": 0, "features": []})
 
     async def run():
         async with httpx.AsyncClient(transport=httpx.MockTransport(response)) as http:
-            result = await collectors.collect_cctv(http, Settings(_env_file=None), probe_path=path)
-            assert result["rows"] == rows
-            assert result["fetched_at"] == datetime.fromtimestamp(path.stat().st_mtime, UTC)
+            result = await collectors.collect_areas(http, Settings(_env_file=None))
+            assert result["complete"] is False
+            assert [row["cd"] for _, row in result["areas"]] == ["11020510"]
+            assert result["issues"] == [
+                {
+                    "district": "11010",
+                    "error_code": "sgis_district_collection_failed",
+                }
+            ]
 
     asyncio.run(run())

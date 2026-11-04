@@ -1,12 +1,20 @@
 """Import a complete official OA-15060 road / OA-15061 mapping reference."""
 
 import argparse
+import asyncio
+from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
 
+import httpx
+from sqlalchemy.ext.asyncio import async_sessionmaker
+
 from app.core.config import Settings
 from app.db.session import create_engine
+from app.modules.data_pipeline.collectors.citydata import collect_road_reference_inputs
+from app.modules.data_pipeline.collectors.official_files import read_topis_files
 from app.modules.data_pipeline.pipelines.official_files import import_topis_geometry
+from app.repositories.reference import ReferenceRepository
 from jobs.runtime import REFERENCE_DATA, finish, run_cli
 
 
@@ -25,7 +33,7 @@ def arguments(argv=None):
     parser.add_argument(
         "--partial",
         action="store_true",
-        help="Record a partial candidate without replacing the active reference",
+        help="Validate a partial candidate without replacing the active reference",
     )
     parser.add_argument(
         "--allow-excluded-link",
@@ -55,12 +63,26 @@ def arguments(argv=None):
 
 async def execute(options=None) -> int:
     options = options or arguments([])
-    engine = create_engine(Settings())
+    settings = Settings()
+    engine = create_engine(settings)
     try:
+        started_at = datetime.now(UTC)
+        data = await asyncio.to_thread(
+            read_topis_files, options.vertices_file, options.mapping_file
+        )
+        async with async_sessionmaker(engine)() as session:
+            targets = await ReferenceRepository(session).citydata_areas()
+        async with httpx.AsyncClient() as http:
+            road_inputs = await collect_road_reference_inputs(
+                http,
+                settings.seoul_citydata_api_key.get_secret_value(),
+                targets,
+            )
         result = await import_topis_geometry(
             engine,
-            options.vertices_file,
-            options.mapping_file,
+            data,
+            road_inputs=road_inputs,
+            started_at=started_at,
             vertices_version=options.vertices_version,
             mapping_version=options.mapping_version,
             vertices_date=options.vertices_date,

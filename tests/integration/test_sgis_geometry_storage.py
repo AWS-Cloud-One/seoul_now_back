@@ -1,19 +1,20 @@
-"""SGIS polygon quality is checked before writes; rejected replacements retain prior boundaries."""
+"""SGIS geometry validation and atomic canonical writes without response archives."""
 
 import asyncio
+from unittest.mock import AsyncMock
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from app.models import AdministrativeArea, RawPayload, RegionBoundary
-from app.modules.data_pipeline.pipelines.snapshots import save_snapshot
-from app.modules.data_pipeline.pipelines.supplemental import prepare_areas
+from app.models import AdministrativeArea
+from app.modules.data_pipeline.pipelines import supplemental
+from app.modules.data_pipeline.pipelines.boundaries import prepare_areas, save_areas
+from app.repositories import boundaries as repository
 from app.repositories.reference import ReferenceRepository
 from app.repositories.spatial import SpatialRepository
-from app.storage.payloads import configured_store
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("no_response_archive")]
 
 VALID = "POLYGON((953000 1950000,954000 1950000,954000 1951000,953000 1951000,953000 1950000))"
 AREA_CHANGE = (
@@ -54,41 +55,45 @@ def collected(rows, boundary=BOUNDARY):
 
 async def store(factory, source):
     async with factory.begin() as session:
-        data, boundary = await prepare_areas(SpatialRepository(session), source)
-        boundary_result = await save_snapshot(session, "sgis_seoul_boundary", boundary)
-        area_result = await save_snapshot(session, "sgis_areas", data)
-    return data, boundary, area_result, boundary_result
+        return await save_areas(session, source)
 
 
-def test_valid_polygon_and_repeated_input_keep_geometry_identity_and_evidence(normalized_database):
+def test_repeated_input_skips_geometry_update_and_road_relation_rebuild(
+    normalized_database, monkeypatch
+):
     async def run():
         engine = create_async_engine(normalized_database)
         factory = async_sessionmaker(engine)
+        statements = []
+        event.listen(
+            engine.sync_engine,
+            "before_cursor_execute",
+            lambda conn, cursor, sql, *args: statements.append(sql),
+        )
         source = collected([("11010510", VALID)])
         try:
-            data, boundary, first, _ = await store(factory, source)
-            assert data["features"][0]["geometry"]["type"] == "Polygon"
-            assert boundary["features"][0]["geometry"]["type"] == "Polygon"
-            assert first.status == "success"
-            assert data["geometry_quality"]["accepted"] == 1
-            assert data["geometry_quality"]["repaired"] == 0
+            monkeypatch.setattr(
+                supplemental.collectors, "collect_areas", AsyncMock(return_value=source)
+            )
+            result = await supplemental.run_supplemental(engine, None, None, "areas")
+            assert result["status"] == "success"
             async with factory() as session:
-                old = await session.get(AdministrativeArea, "11010510")
-                previous_version = old.boundary_version
-                previous_geometry = str(old.geometry)
-                raw = await session.get(RawPayload, first.payload_id)
-                stored = configured_store().load_json(raw)
-                assert stored["source_input"] == source["areas"]
-                assert stored["geometry_quality"]["rows"][0]["status"] == "valid"
-            _, _, repeated, _ = await store(factory, source)
-            assert repeated.status == "success"
+                previous = await session.get(AdministrativeArea, "11010510")
+                before = (previous.boundary_version, str(previous.geometry))
+            statements.clear()
+            assert (await store(factory, source))["status"] == "success"
+            writes = [
+                sql
+                for sql in statements
+                if sql.startswith(("UPDATE administrative_areas", "UPDATE region_boundaries"))
+            ]
+            assert len(writes) == 2 and all(
+                "geometry=" not in sql.split("WHERE")[0] for sql in writes
+            )
+            assert not any(sql.startswith("DELETE FROM road_area_mappings") for sql in statements)
             async with factory() as session:
-                assert (
-                    await session.scalar(select(func.count()).select_from(AdministrativeArea)) == 1
-                )
                 current = await session.get(AdministrativeArea, "11010510")
-                assert current.boundary_version == previous_version
-                assert str(current.geometry) == previous_geometry
+                assert (current.boundary_version, str(current.geometry)) == before
                 assert await ReferenceRepository(session).has_prerequisite("sgis_seoul_boundary")
         finally:
             await engine.dispose()
@@ -106,7 +111,7 @@ def test_valid_polygon_and_repeated_input_keep_geometry_identity_and_evidence(no
         (AREA_CHANGE, "polygon_repair_changes_area"),
     ],
 )
-def test_rejected_replacement_keeps_old_area_and_accepts_other_rows(
+def test_rejected_replacement_keeps_old_area_and_stores_other_rows(
     normalized_database, replacement, reason
 ):
     async def run():
@@ -116,64 +121,139 @@ def test_rejected_replacement_keeps_old_area_and_accepts_other_rows(
             await store(factory, collected([("11010510", VALID)]))
             async with factory() as session:
                 previous = await session.get(AdministrativeArea, "11010510")
-                original_payload = previous.last_payload_id
-                original_geometry = str(previous.geometry)
-            source = collected([("11010510", replacement), ("11010520", VALID)])
-            data, _, result, _ = await store(factory, source)
-            assert result.status == "partial" and result.error_code == "partial_boundary_geometry"
-            assert result.processing["received"] == 2
-            assert result.processing["accepted"] == result.processing["rejected"] == 1
-            rejected = data["geometry_quality"]["rows"][0]
-            assert rejected["code"] == "11010510" and rejected["reason"] == reason
-            if replacement == AREA_CHANGE:
-                assert rejected["relative_area_change"] == 2.0
-                assert rejected["area_before_m2"] == 125000.0
-                assert rejected["area_after_m2"] == 375000.0
+                before = (previous.boundary_version, str(previous.geometry))
+            result = await store(
+                factory, collected([("11010510", replacement), ("11010520", VALID)])
+            )
+            assert result["status"] == "partial" and result["records"] == 2  # one dong + Seoul
+            assert result["geometry_quality"]["rows"][0]["reason"] == reason
             async with factory() as session:
                 previous = await session.get(AdministrativeArea, "11010510")
-                assert previous.last_payload_id == original_payload
-                assert str(previous.geometry) == original_geometry
-                added = await session.get(AdministrativeArea, "11010520")
-                assert added.last_payload_id == result.payload_id
-                assert (
-                    await session.scalar(select(func.count()).select_from(AdministrativeArea)) == 2
-                )
-                raw = await session.get(RawPayload, result.payload_id)
-                archived = configured_store().load_json(raw)
-                assert archived["source_input"][0][1]["pg"] == replacement
-                assert archived["geometry_quality"]["rows"][0]["reason"] == reason
+                assert (previous.boundary_version, str(previous.geometry)) == before
+                assert previous.is_active and await session.get(AdministrativeArea, "11010520")
         finally:
             await engine.dispose()
 
     asyncio.run(run())
 
 
-def test_unusable_seoul_boundary_preserves_prior_boundary_and_new_valid_area(normalized_database):
+def test_invalid_seoul_boundary_keeps_previous_and_accepts_current_dongs(normalized_database):
     async def run():
         engine = create_async_engine(normalized_database)
         factory = async_sessionmaker(engine)
         try:
             await store(factory, collected([("11010510", VALID)]))
             async with factory() as session:
-                prior = await ReferenceRepository(session).seoul_boundary()
-            invalid_boundary = {
-                "type": "LineString",
-                "coordinates": [[953000, 1950000], [954000, 1951000]],
-            }
-            _, data, area_result, boundary_result = await store(
-                factory, collected([("11010520", VALID)], invalid_boundary)
+                before = await ReferenceRepository(session).seoul_boundary()
+            result = await store(
+                factory,
+                collected(
+                    [("11010520", VALID)], {"type": "Point", "coordinates": [953000, 1950000]}
+                ),
             )
-            assert area_result.status == "success"
-            assert (
-                boundary_result.status == "failed"
-                and boundary_result.error_code == "no_usable_boundary"
-            )
-            assert data["geometry_quality"]["rejected"] == 1 and not data["features"]
+            assert result["status"] == "partial" and result["boundary_quality"]["rejected"] == 1
             async with factory() as session:
-                assert await ReferenceRepository(session).seoul_boundary() == prior
-                current = await session.get(RegionBoundary, ("sgis", "11"))
-                assert str(current.last_payload_id) == prior["payload_id"]
-                assert await session.get(AdministrativeArea, "11010520") is not None
+                assert await ReferenceRepository(session).seoul_boundary() == before
+                assert await session.get(AdministrativeArea, "11010520")
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_boundary_relation_failure_rolls_back_both_and_readers_keep_committed_values(
+    normalized_database, monkeypatch
+):
+    async def run():
+        engine = create_async_engine(normalized_database)
+        factory = async_sessionmaker(engine)
+        try:
+            await store(factory, collected([("11010510", VALID)]))
+            async with factory.begin() as session:
+                await session.execute(
+                    text("""
+                    INSERT INTO data_sources(source_code,display_name,provider_name)
+                    VALUES ('topis_geometry','test','test') ON CONFLICT DO NOTHING
+                """)
+                )
+                await session.execute(
+                    text("""
+                    INSERT INTO road_links
+                        (link_id,source,source_version,geometry,processed_at,processor_version)
+                    SELECT 'road','topis_geometry','test',
+                        ST_Transform(ST_GeomFromText(
+                            'LINESTRING(953100 1950100,953900 1950900)',5179),4326),now(),'test'
+                """)
+                )
+            # A changed canonical polygon creates relations to the road.
+            changed = collected([("11010510", VALID), ("11010520", VALID)])
+            assert (await store(factory, changed))["status"] == "success"
+            async with factory() as session:
+                before = await ReferenceRepository(session).seoul_boundary()
+                mappings = (
+                    await session.execute(
+                        text(
+                            "SELECT link_id,dong_code,boundary_version "
+                            "FROM road_area_mappings ORDER BY dong_code"
+                        )
+                    )
+                ).all()
+                assert len(mappings) == 2
+            replacement = collected([("11010530", VALID)])
+            original = repository.replace_administrative_areas
+
+            def fail_after_mapping(*args, **kwargs):
+                original(*args, **kwargs)
+                raise RuntimeError("injected after relation rebuild")
+
+            monkeypatch.setattr(repository, "replace_administrative_areas", fail_after_mapping)
+            result = await store(factory, replacement)
+            assert (
+                result["status"] == "failed" and result["error_code"] == "boundary_storage_failed"
+            )
+            async with factory() as session:
+                assert await ReferenceRepository(session).seoul_boundary() == before
+                assert await session.get(AdministrativeArea, "11010530") is None
+                assert (
+                    await session.execute(
+                        text(
+                            "SELECT link_id,dong_code,boundary_version "
+                            "FROM road_area_mappings ORDER BY dong_code"
+                        )
+                    )
+                ).all() == mappings
+            monkeypatch.setattr(repository, "replace_administrative_areas", original)
+            async with factory.begin() as writer:
+                result = await save_areas(writer, replacement)
+                assert result["status"] == "success"
+                async with factory() as reader:
+                    assert await reader.get(AdministrativeArea, "11010530") is None
+                    assert (await reader.get(AdministrativeArea, "11010510")).is_active
+            async with factory() as reader:
+                assert (await reader.get(AdministrativeArea, "11010530")).is_active
+                assert not (await reader.get(AdministrativeArea, "11010510")).is_active
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_duplicate_identity_is_rejected_without_deactivating_prior_areas(normalized_database):
+    async def run():
+        engine = create_async_engine(normalized_database)
+        factory = async_sessionmaker(engine)
+        try:
+            await store(factory, collected([("11010510", VALID)]))
+            source = collected([("11010520", VALID), ("11010520", VALID), ("11010530", VALID)])
+            async with factory() as session:
+                data, boundary_data = await prepare_areas(SpatialRepository(session), source)
+                assert "source_input" not in data and "source_input" not in boundary_data
+            result = await store(factory, source)
+            assert result["status"] == "partial" and result["geometry_quality"]["rejected"] == 2
+            async with factory() as session:
+                assert (await session.get(AdministrativeArea, "11010510")).is_active
+                assert await session.get(AdministrativeArea, "11010520") is None
+                assert await session.get(AdministrativeArea, "11010530")
         finally:
             await engine.dispose()
 

@@ -46,7 +46,7 @@ def citydata_geometry_index(inputs):
     variants, issues, sources = defaultdict(dict), defaultdict(set), defaultdict(list)
     section_issues = []
     for item in inputs:
-        evidence = {k: item.get(k) for k in ("area_code", "payload_id", "received_at")}
+        evidence = {k: item.get(k) for k in ("area_code", "received_at")}
         traffic = item["data"].get("ROAD_TRAFFIC_STTS")
         rows = traffic.get("ROAD_TRAFFIC_STTS") if isinstance(traffic, dict) else None
         if not isinstance(rows, list):
@@ -78,7 +78,7 @@ def citydata_geometry_index(inputs):
             "sources": sorted(
                 sources[link],
                 key=lambda s: (
-                    str(s["payload_id"]),
+                    str(s["received_at"]),
                     str(s["area_code"]),
                     s["row"],
                     str(s["geometry_hash"]),

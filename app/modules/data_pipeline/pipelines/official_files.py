@@ -1,11 +1,13 @@
-"""Validate and import official files using caller-owned execution resources."""
+"""Validate parsed reference values and atomically replace current DB reference sets."""
 
-import asyncio
+import re
+from datetime import UTC, datetime
 
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from app.modules.data_pipeline.collectors import official_files as collectors
+from app.models import Base
+from app.modules.data_pipeline.identity import fingerprint
 from app.modules.data_pipeline.normalizers import official_files as normalizers
 from app.modules.data_pipeline.normalizers.road_geometry import (
     MATCH_POLICY,
@@ -18,133 +20,143 @@ from app.modules.data_pipeline.normalizers.road_reference import (
     reference_error,
     reference_metadata,
 )
+from app.modules.data_pipeline.normalizers.sdot import sensor_locations
 from app.modules.data_pipeline.pipelines.publication import publish_result
-from app.modules.data_pipeline.pipelines.snapshots import save_snapshot
-from app.repositories.citydata import CityDataRepository
+from app.repositories.collection import CollectionRepository
+from app.repositories.normalization import NormalizedWriter
+from app.repositories.reference import ReferenceRepository
+from app.repositories.reference_import import ReferenceImportWriter
+from app.repositories.road_reference import replace_road_reference
 from app.repositories.spatial import SpatialRepository
+
+
+async def apply_reference(engine, source, target, started_at, received, operation):
+    """One import transaction; validation/storage failures roll back the whole reference set."""
+    async with async_sessionmaker(engine).begin() as session:
+        repo = CollectionRepository(session)
+        run = await repo.start(source, target, started_at=started_at, kind="import")
+        try:
+            async with session.begin_nested():
+                result = await operation(session)
+                await session.flush()
+        except (ValueError, KeyError, TypeError, SQLAlchemyError) as exc:
+            error = str(exc) if isinstance(exc, ValueError) else "reference_validation_failed"
+            if not re.fullmatch(r"[a-z][a-z0-9_]*", error):
+                error = "reference_validation_failed"
+            result = dict(status="failed", error_code=error, records=0)
+        accepted = result["records"]
+        await repo.finish(
+            run,
+            status=result["status"],
+            error_code=result.get("error_code"),
+            received=received,
+            accepted=accepted,
+            rejected=received - accepted,
+            completeness="complete" if result["status"] != "failed" else "unknown",
+        )
+    return {"source": source, **result}
 
 
 async def import_topis_geometry(
     engine,
-    vertices_path,
-    mapping_path,
+    data,
     *,
     vertices_version,
     mapping_version,
+    road_inputs,
     vertices_date=None,
     mapping_date=None,
     complete=True,
     allowed_exclusions=(),
     expected_hashes=None,
+    started_at=None,
 ):
-    data = await asyncio.to_thread(collectors.read_topis_files, vertices_path, mapping_path)
-    reference = reference_metadata(
-        data,
-        vertices_version=vertices_version,
-        mapping_version=mapping_version,
-        vertices_date=vertices_date,
-        mapping_date=mapping_date,
-        complete=complete,
-        allowed_exclusions=allowed_exclusions,
-    )
-    candidate = {"type": "FeatureCollection", "features": [], "reference": reference}
-    try:
-        points, mapping_rows, report = prepare_reference(data)
-        candidate.update(mapping_rows=mapping_rows, report=report)
+    started_at = started_at or datetime.now(UTC)
+
+    async def apply(session):
+        reference = reference_metadata(
+            data,
+            vertices_version=vertices_version,
+            mapping_version=mapping_version,
+            vertices_date=vertices_date,
+            mapping_date=mapping_date,
+            complete=complete,
+            allowed_exclusions=allowed_exclusions,
+        )
         if any(data[name]["sha256"] != digest for name, digest in (expected_hashes or {}).items()):
-            candidate["validation_error"] = "reference_file_changed_requires_version"
-    except (ValueError, KeyError, TypeError) as exc:
-        candidate["validation_error"] = (
-            str(exc) if isinstance(exc, ValueError) else "invalid_reference_row"
+            raise ValueError("reference_file_changed_requires_version")
+        points, mapping_rows, report = prepare_reference(data)
+        spatial = SpatialRepository(session)
+        mapping = {}
+        for row in mapping_rows:
+            mapping.setdefault(row["service_link_id"], []).append(row["standard_link_id"])
+        candidate = dict(
+            reference=reference,
+            report=report,
+            mapping_rows=mapping_rows,
+            features=normalizers.road_features(
+                await spatial.road_lines(points, 5181),
+                mapping,
+                version=vertices_version,
+                source_srid=5181,
+            ),
         )
-    async with async_sessionmaker(engine).begin() as session:
-        if not candidate.get("validation_error"):
-            spatial = SpatialRepository(session)
-            mapping = {}
-            for row in mapping_rows:
-                service, standard = row["service_link_id"], row["standard_link_id"]
-                mapping.setdefault(service, []).append(standard)
-            try:
-                async with session.begin_nested():
-                    candidate["features"] = normalizers.road_features(
-                        await spatial.road_lines(points, 5181),
-                        mapping,
-                        version=vertices_version,
-                        source_srid=5181,
-                    )
-            except ValueError, SQLAlchemyError:
-                candidate["validation_error"] = "invalid_road_geometry"
-            error = reference_error(candidate)
-            if error:
-                candidate["validation_error"] = error
-            else:
-                snapshots = await CityDataRepository(session).list_latest(section="road_geometry")
-                try:
-                    async with session.begin_nested():
-                        spatial_report = await check_road_geometry(
-                            spatial, candidate["features"], mapping_rows, snapshots
-                        )
-                except ValueError, SQLAlchemyError:
-                    spatial_report = {
-                        "status": "held",
-                        "error_code": "spatial_validation_failed",
-                        "policy": dict(MATCH_POLICY),
-                        "all_roads_verified": False,
-                    }
-                spatial_report["section_inputs"] = [s.evidence for s in snapshots]
-                if any(s.evidence["latest_attempt"]["state"] == "invalid" for s in snapshots):
-                    spatial_report.update(status="held", error_code="invalid_latest_road_section")
-                report["spatial_validation"] = spatial_report
-                if spatial_report["error_code"]:
-                    candidate["validation_error"] = spatial_report["error_code"]
-                else:
-                    quarantined = set(spatial_report.get("quarantined_service_ids", []))
-                    report["quarantined_service_ids"] = sorted(quarantined)
-                    report["quarantined_features"] = [
-                        f for f in candidate["features"] if f["id"] in quarantined
-                    ]
-                    report["quarantined_mapping_rows"] = [
-                        r for r in candidate["mapping_rows"] if r["service_link_id"] in quarantined
-                    ]
-                    candidate["features"] = [
-                        f for f in candidate["features"] if f["id"] not in quarantined
-                    ]
-                    candidate["mapping_rows"] = [
-                        r
-                        for r in candidate["mapping_rows"]
-                        if r["service_link_id"] not in quarantined
-                    ]
-                    report["accepted_geometry_links"] = len(candidate["features"])
-                    active_ids = {f["id"] for f in candidate["features"]}
-                    report["accepted_mapping_rows"] = sum(
-                        r["service_link_id"] in active_ids for r in candidate["mapping_rows"]
-                    )
-        result = await save_snapshot(
-            session,
-            "topis_geometry:" + vertices_version,
-            candidate,
-            source_files={name: file["body"] for name, file in data.items()},
+        error = reference_error(candidate)
+        if error:
+            raise ValueError(error)
+        spatial_report = await check_road_geometry(
+            spatial,
+            candidate["features"],
+            mapping_rows,
+            road_inputs,
         )
-    report = {
-        "status": result.status,
-        "error_code": result.error_code,
-        "reference": reference,
-        "processing": result.processing,
-        **candidate.get("report", {}),
-    }
-    return await publish_result(engine, report, geometry=("roads",))
+        report["spatial_validation"] = spatial_report
+        if spatial_report["error_code"]:
+            raise ValueError(spatial_report["error_code"])
+        quarantined = set(spatial_report.get("quarantined_service_ids", []))
+        report["quarantined_service_ids"] = sorted(quarantined)
+        candidate["features"] = [f for f in candidate["features"] if f["id"] not in quarantined]
+        candidate["mapping_rows"] = [
+            r for r in mapping_rows if r["service_link_id"] not in quarantined
+        ]
+        error = reference_error(candidate, require_spatial=True)
+        if error:
+            raise ValueError(error)
+        await session.run_sync(
+            lambda sync: replace_road_reference(
+                NormalizedWriter(sync, Base.metadata),
+                candidate,
+                started_at,
+            )
+        )
+        warnings = any(
+            report.get(key)
+            for key in (
+                "excluded_sequence_gap_links",
+                "unmatched_mapping_rows",
+                "geometry_without_mapping",
+                "ambiguous_mapping_positions",
+                "unknown_sequence_rows",
+                "quarantined_service_ids",
+            )
+        )
+        return dict(
+            status="partial" if warnings else "success",
+            error_code=None,
+            records=len(candidate["features"]),
+            excluded_links=report["excluded_sequence_gap_links"],
+            quarantined_links=sorted(quarantined),
+        )
+
+    # Count unique IDs only; full row validation remains inside the import savepoint.
+    count = len({r.get("A") for r in data["vertices"]["rows"] if r})
+    result = await apply_reference(
+        engine, "topis_geometry", "file:topis_vertices", started_at, count, apply
+    )
+    return await publish_result(engine, result, geometry=("roads",))
 
 
-async def check_road_geometry(spatial, features, mapping_rows, snapshots):
-    inputs = [
-        {
-            "data": snapshot.data,
-            "area_code": snapshot.area_code,
-            "payload_id": str(snapshot.payload_id),
-            "received_at": snapshot.received_at.isoformat() if snapshot.received_at else None,
-        }
-        for snapshot in snapshots
-    ]
+async def check_road_geometry(spatial, features, mapping_rows, inputs):
     index, issues = citydata_geometry_index(inputs)
     official = {f["id"]: f["geometry"] for f in features}
     # Deduplicate repeated ordinals, but retain every explicitly mapped service/standard pair.
@@ -173,27 +185,70 @@ async def check_road_geometry(spatial, features, mapping_rows, snapshots):
     )
 
 
-async def import_place_boundaries(engine, path):
-    shapes = await asyncio.to_thread(collectors.read_shapes, path)
-    async with async_sessionmaker(engine).begin() as session:
-        spatial = SpatialRepository(session)
-        features = []
+async def import_place_boundaries(engine, targets, shapes, *, started_at=None):
+    started_at = started_at or datetime.now(UTC)
+
+    async def apply(session):
+        normalizers.validate_place_reference(targets, shapes)
+        spatial, features = SpatialRepository(session), []
         for values, rings in shapes:
             geometry, repaired = await spatial.polygon_from_rings(normalizers.rings_wkt(rings))
             features.append(normalizers.place_feature(values, geometry, repaired))
-        result = await save_snapshot(
-            session,
-            "citydata_place_boundaries",
-            {
-                "type": "FeatureCollection",
-                "features": features,
-                "source_url": "https://data.seoul.go.kr/dataVisual/seoul/guide.do",
-                "crs": "EPSG:4326",
-                "notice": (
-                    "서울시 공식 121장소 관측 경계. 행정동 경계와 다릅니다. "
-                    "파일의 기준일은 별도 확인 필요."
-                ),
-            },
+        version = fingerprint({"targets": targets, "features": features})
+        await session.run_sync(
+            lambda sync: ReferenceImportWriter(sync).places(
+                features,
+                version,
+                started_at,
+            )
         )
-    report = {"status": result.status, "error_code": result.error_code, "records": len(features)}
-    return await publish_result(engine, report, geometry=("population",))
+        return dict(
+            status="success", error_code=None, records=len(features), source_version=version
+        )
+
+    result = await apply_reference(
+        engine,
+        "citydata_place_boundaries",
+        "file:places",
+        started_at,
+        len(shapes),
+        apply,
+    )
+    return await publish_result(engine, result, geometry=("population",))
+
+
+async def import_sensor_locations(engine, file, *, reference_date=None, started_at=None):
+    started_at = started_at or datetime.now(UTC)
+
+    async def apply(session):
+        reference = sensor_locations(file)
+        if reference["quality"]["rejected"] or not reference["locations"]:
+            raise ValueError("invalid_sensor_reference")
+        boundary = await ReferenceRepository(session).seoul_boundary()
+        if boundary is None:
+            raise ValueError("collect_sgis_boundary_first")
+        spatial = SpatialRepository(session)
+        selected = [
+            item
+            for item in reference["locations"].values()
+            if await spatial.covers(boundary["geometry"], item["lng"], item["lat"])
+        ]
+        await session.run_sync(
+            lambda sync: ReferenceImportWriter(sync).sensors(
+                selected,
+                version=file["sha256"],
+                reference_date=reference_date or file.get("reference_date"),
+                boundary_version=boundary["version"],
+                imported_at=started_at,
+            )
+        )
+        return dict(
+            status="success",
+            error_code=None,
+            records=len(selected),
+            excluded_outside_seoul=len(reference["locations"]) - len(selected),
+        )
+
+    return await apply_reference(
+        engine, "sdot_people", "file:installation", started_at, len(file["rows"]), apply
+    )

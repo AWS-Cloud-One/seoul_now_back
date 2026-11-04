@@ -1,45 +1,15 @@
 """Bounded supplemental HTTP and file reads; no database access or scheduling."""
 
-import asyncio
-import hashlib
-import json
 from datetime import UTC, datetime, timedelta
-from io import BytesIO
-from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from app.clients.seoul import CollectionError, SeoulClient
 from app.modules.data_pipeline.collectors.national_parking import (
     collect_national_parking as collect_national_parking,
 )
-from app.modules.data_pipeline.collectors.official_files import read_xlsx_rows
 from app.modules.data_pipeline.identity import fingerprint
 
 SGIS_API_BASE = "https://sgisapi.mods.go.kr/OpenAPI3/"
-
-
-def read_sensor_file(path):
-    path = Path(path)
-    body = path.read_bytes()
-    rows = read_xlsx_rows(BytesIO(body))
-    digest = hashlib.sha256(body).hexdigest()
-    return {
-        "body": body,
-        "filename": path.name,
-        "sha256": digest,
-        "byte_size": len(body),
-        "header": rows[0] if rows else {},
-        "rows": rows[1:],
-        "reference_date": "2025-11-13"
-        if digest == "aa3c0cd17abf6a561a86b8dbb2fbb9253f5991bb6361859a9573e96eef9c49b3"
-        else None,
-        "date_basis": "hash_pinned_repository_attachment"
-        if digest == "aa3c0cd17abf6a561a86b8dbb2fbb9253f5991bb6361859a9573e96eef9c49b3"
-        else "unconfirmed",
-        "source_url": "https://data.seoul.go.kr/dataList/OA-15964/S/1/datasetView.do",
-        "received_at": None,
-        "complete": digest == "aa3c0cd17abf6a561a86b8dbb2fbb9253f5991bb6361859a9573e96eef9c49b3",
-    }
 
 
 async def sgis_json(http, token, path, params):
@@ -69,22 +39,39 @@ async def collect_areas(http, settings):
     districts = (await sgis_json(http, token, "addr/stage.json", {"cd": "11", "pg_yn": "0"}))[
         "result"
     ]
-    areas = []
+    areas, issues = [], []
     complete = bool(districts) and len({d["cd"] for d in districts}) == len(districts)
     for district in districts:
-        rows = (
-            await sgis_json(http, token, "addr/stage.json", {"cd": district["cd"], "pg_yn": "1"})
-        )["result"]
+        try:
+            rows = (
+                await sgis_json(
+                    http, token, "addr/stage.json", {"cd": district["cd"], "pg_yn": "1"}
+                )
+            )["result"]
+            if not isinstance(rows, list):
+                raise CollectionError("sgis_invalid_area_response")
+        except Exception:
+            complete = False
+            issues.append(
+                {"district": district["cd"], "error_code": "sgis_district_collection_failed"}
+            )
+            continue
         complete = complete and bool(rows)
         for row in rows:
             areas.append((district, row))
-    boundary = await sgis_json(
-        http,
-        token,
-        "boundary/hadmarea.geojson",
-        {"adm_cd": "11", "year": "2025", "low_search": "0"},
-    )
-    return {"areas": areas, "boundary": boundary, "complete": complete}
+    try:
+        boundary = await sgis_json(
+            http,
+            token,
+            "boundary/hadmarea.geojson",
+            {"adm_cd": "11", "year": "2025", "low_search": "0"},
+        )
+        if not isinstance(boundary.get("features"), list):
+            raise CollectionError("sgis_invalid_boundary_response")
+    except Exception:
+        boundary = {"features": []}
+        issues.append({"error_code": "sgis_boundary_collection_failed"})
+    return {"areas": areas, "boundary": boundary, "complete": complete, "issues": issues}
 
 
 async def collect_sdot(http, settings, *, now=None):
@@ -191,38 +178,3 @@ async def collect_sdot(http, settings, *, now=None):
         },
         "query_complete": not issues and all(w["complete"] for w in windows),
     }
-
-
-def read_cctv_probe(path):
-    path = Path(path)
-    return (
-        json.loads(path.read_text(encoding="utf-8")),
-        datetime.fromtimestamp(path.stat().st_mtime, UTC),
-    )
-
-
-async def collect_cctv(http, settings, *, probe_path=None):
-    if probe_path is not None:
-        payload, fetched = await asyncio.to_thread(read_cctv_probe, probe_path)
-    else:
-        # One request per run; do not retry against the provider's limited quota.
-        response = await http.get(
-            "https://openapi.its.go.kr:9443/cctvInfo",
-            params={
-                "apiKey": settings.its_api_key.get_secret_value(),
-                "type": "all",
-                "cctvType": 1,
-                "minX": 126.7,
-                "maxX": 127.25,
-                "minY": 37.4,
-                "maxY": 37.75,
-                "getType": "json",
-            },
-        )
-        response.raise_for_status()
-        payload = response.json()
-        fetched = datetime.now(UTC)
-    rows = payload.get("response", {}).get("data")
-    if not isinstance(rows, list):
-        raise CollectionError("its_invalid_response")
-    return {"rows": rows, "fetched_at": fetched}

@@ -6,7 +6,8 @@ import pytest
 
 from app.clients.seoul import CollectionError, SeoulClient
 from app.core.config import Settings
-from app.modules.data_pipeline.collectors.supplemental import collect_sdot, read_sensor_file
+from app.modules.data_pipeline.collectors.official_files import read_sensor_file
+from app.modules.data_pipeline.collectors.supplemental import collect_sdot
 from app.modules.data_pipeline.normalizers.sdot import sensor_locations
 from tests.fixtures.sdot import observation
 

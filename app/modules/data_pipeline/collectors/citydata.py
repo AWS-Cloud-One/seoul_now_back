@@ -1,7 +1,6 @@
 """Fetch the complete integrated Seoul Real-Time City Data payload for one hotspot."""
 
 import asyncio
-import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from urllib.parse import quote
@@ -9,9 +8,9 @@ from urllib.parse import quote
 import httpx
 
 from app.clients.seoul import CollectionError
-from app.modules.data_pipeline.collectors.official_files import read_xlsx_rows
 from app.modules.data_pipeline.normalizers.citydata import CityDataError
 from app.modules.data_pipeline.normalizers.citydata_sections import unwrap_citydata
+from app.modules.data_pipeline.normalizers.road_geometry import citydata_line
 
 
 @dataclass(frozen=True)
@@ -80,18 +79,6 @@ async def collect_citydata(
     raise CollectionError("provider_unavailable")
 
 
-def read_citydata_areas(path):
-    result = {}
-    for row in read_xlsx_rows(path):
-        values = list(row.values())
-        for index, value in enumerate(values):
-            if re.fullmatch(r"POI\d{3}", value) and index + 1 < len(values):
-                result[value] = values[index + 1]
-    if len(result) != 121:
-        raise ValueError("official_area_list_invalid")
-    return result
-
-
 def resolve_citydata_area(value, targets):
     """Resolve the CLI's official name or code before making any provider request."""
     value = value.strip()
@@ -99,3 +86,38 @@ def resolve_citydata_area(value, targets):
     if len(matches) != 1:
         raise CollectionError("unknown_or_ambiguous_area")
     return matches[0]
+
+
+async def collect_road_reference_inputs(client, key, targets):
+    """Keep only road IDs/coordinates in memory during an explicit reference import."""
+    if not targets:
+        raise CollectionError("import_place_reference_first")
+    inputs = []
+    for code, name in targets.items():
+        document = await collect_citydata(client, key, name, expected_code=code)
+        city = unwrap_citydata(document.body, expected_code=code, expected_name=name)
+        traffic = city.get("ROAD_TRAFFIC_STTS")
+        rows = traffic.get("ROAD_TRAFFIC_STTS") if isinstance(traffic, dict) else None
+        if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+            raise CollectionError("invalid_road_reference_response")
+        if rows and not any(
+            isinstance(row.get("LINK_ID"), str)
+            and row["LINK_ID"].strip()
+            and citydata_line(row)[1] is None
+            for row in rows
+        ):
+            raise CollectionError("invalid_road_reference_response")
+        inputs.append(
+            {
+                "area_code": code,
+                "received_at": document.received_at.isoformat() if document.received_at else None,
+                "data": {
+                    "ROAD_TRAFFIC_STTS": {
+                        "ROAD_TRAFFIC_STTS": [
+                            {key: row.get(key) for key in ("LINK_ID", "XYLIST")} for row in rows
+                        ]
+                    }
+                },
+            }
+        )
+    return inputs
