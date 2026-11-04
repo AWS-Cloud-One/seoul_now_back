@@ -30,10 +30,11 @@ def test_preserves_sections_and_unknowns():
     now = datetime.now(UTC)
     a = normalize_parking(row(), now)
     b = normalize_parking(row(LOT="126.971"), now)
-    assert a["id"] != b["id"]  # Same code is not necessarily the same section.
-    assert a["details"]["PRK_CRG"] == ""
+    assert a["identity_key"] != b["identity_key"]  # Same code is not necessarily the same section.
+    assert a["fees"]["base_fee_krw"] is None
+    assert a["field_issues"]["fees.base_fee_krw"] == "MISSING_VALUE"
     assert a["source_updated_at"] is None
-    assert "availability" not in a
+    assert a["availability"] is None
 
 
 def test_complete_pagination():
@@ -56,7 +57,8 @@ def test_complete_pagination():
 
     async def check():
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
-            assert len(await collect_parking(SeoulClient(http, "test"), page_size=1)) == 2
+            result = await collect_parking(SeoulClient(http, "test"), page_size=1)
+            assert len(result.rows) == 2 and result.complete and result.error_code is None
 
     asyncio.run(check())
     assert len(calls) == 2
@@ -73,14 +75,14 @@ def test_auth_errors_are_not_retried_or_leaked():
 
     async def check():
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
-            with pytest.raises(CollectionError, match="^provider_result_error$"):
+            with pytest.raises(CollectionError, match="^provider_auth_error$"):
                 await collect_parking(SeoulClient(http, "secret-key"))
 
     asyncio.run(check())
     assert len(calls) == 1
 
 
-def test_truncated_snapshot_fails():
+def test_truncated_snapshot_is_explicitly_partial():
     def handler(request):
         return httpx.Response(
             200,
@@ -95,7 +97,8 @@ def test_truncated_snapshot_fails():
 
     async def check():
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
-            with pytest.raises(CollectionError, match="snapshot_incomplete"):
-                await collect_parking(SeoulClient(http, "test"))
+            result = await collect_parking(SeoulClient(http, "test"))
+            assert len(result.rows) == 1 and not result.complete
+            assert result.total == 2 and result.error_code == "snapshot_incomplete"
 
     asyncio.run(check())

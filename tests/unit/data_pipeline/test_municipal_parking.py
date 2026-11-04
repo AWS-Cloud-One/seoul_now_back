@@ -34,8 +34,11 @@ def test_municipal_occupancy_is_subtracted_not_exposed_as_vacancy():
         "PRK_STTS_YN": "1",
     }
     record = normalize_parking(row, now, MUNICIPAL_PARKING_SOURCE)
-    assert record["details"]["CUR_PRK_CNT"] == 125
-    assert record["details"]["CUR_PRK_YN"] == "Y"
+    assert record["availability"]["calculated_available_spaces"] == 125
+    assert record["availability"]["occupied_spaces"] == 75
+    assert record["availability"]["provision_state"] == "provided"
+    assert record["source_updated_at"] is None
     row["NOW_PRK_VHCL_CNT"] = 201
     invalid = normalize_parking(row, now, MUNICIPAL_PARKING_SOURCE)
-    assert invalid["details"]["CUR_PRK_CNT"] is None
+    assert invalid["availability"]["calculated_available_spaces"] is None
+    assert invalid["availability"]["reason_code"] == "COUNT_EXCEEDS_CAPACITY"

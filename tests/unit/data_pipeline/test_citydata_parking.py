@@ -26,6 +26,8 @@ def test_normalizes_current_parking_fields_and_marks_source_time():
     }
     normalized = normalize_parking(row, datetime.now(UTC), CITYDATA_PARKING_SOURCE)
     assert normalized["source_id"] == "3202173"
-    assert normalized["details"]["CUR_PRK_CNT"] == "7"
-    assert normalized["details"]["CUR_PRK_YN"] == "Y"
-    assert normalized["source_updated_at"].isoformat().startswith("2026-10-22T12:00:00")
+    assert normalized["availability"]["reported_available_spaces"] == 7
+    assert normalized["availability"]["calculated_available_spaces"] is None
+    assert normalized["availability"]["provision_state"] == "provided"
+    assert normalized["availability"]["observed_at"].isoformat().startswith("2026-10-22T12:00:00")
+    assert normalized["source_updated_at"] is None
