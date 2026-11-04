@@ -5,22 +5,22 @@ from typing import Protocol
 
 from pydantic import ValidationError
 
-from app.api.contract import ContractError
 from app.clients.kakao import KakaoError, KakaoLocalClient
+from app.core.exceptions import ServiceError
 from app.schemas.location import Coordinates, Location
 from app.schemas.locations import LocationResolveData, LocationSearchData
 
 
 def provider_error():
-    return ContractError(502, "PROVIDER_ERROR", "출발지 검색 자료를 확인할 수 없습니다.")
+    return ServiceError("PROVIDER_ERROR", "출발지 검색 자료를 확인할 수 없습니다.")
 
 
-def provider_failure(exc: KakaoError) -> ContractError:
+def provider_failure(exc: KakaoError) -> ServiceError:
     code = {429: "RATE_LIMITED", 504: "PROVIDER_TIMEOUT", 503: "SERVICE_UNAVAILABLE"}.get(
         exc.status,
         "PROVIDER_ERROR",
     )
-    return ContractError(exc.status, code, exc.message, retry_after_seconds=exc.retry_after_seconds)
+    return ServiceError(code, exc.message, retry_after_seconds=exc.retry_after_seconds)
 
 
 def documents(body):
@@ -152,8 +152,7 @@ class LocationSearchService:
 
     @staticmethod
     def pagination_unavailable():
-        return ContractError(
-            503,
+        return ServiceError(
             "SERVICE_UNAVAILABLE",
             "다음 페이지 처리가 아직 연결되지 않았습니다. 검색어를 더 구체적으로 입력해 주세요.",
             retryable=False,

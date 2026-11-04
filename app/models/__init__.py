@@ -1,28 +1,75 @@
-"""Register SQLAlchemy models here so Alembic can discover their metadata."""
+"""Active normalized registry; schema is installed by Alembic through revision 0011."""
 
-from app.db.base import Base
-from app.models.citydata import CityDataSnapshot
-from app.models.map import (
-    MapFeature,
-    MapLayerVersion,
-    MapObservation,
+from .areas import AdministrativeArea, PopulationArea, PopulationLatest, RegionBoundary
+from .base import Base
+from .chat import (
+    ChatConditionAgeGroup,
+    ChatConditionPurpose,
+    ChatConditionVersion,
+    ChatExcludedPlace,
+    ChatMessage,
+    ChatSession,
+)
+from .collection import (
+    CollectionRejectionReason,
+    CollectionRun,
+    DataSource,
+    LegacyArchive,
+    PayloadFileDeletion,
+    RawPayload,
+)
+from .map import MapFeature, MapLayerVersion, MapPopulationObservation, MapRoadObservation
+from .parking import (
+    ParkingAvailabilityLatest,
     ParkingFacility,
+    ParkingFieldIssue,
+    ParkingOperatingHour,
     ParkingSourceRecord,
 )
-from app.models.parking import CollectionRun, ParkingRecord
-from app.models.population import FloatingPopulationHistory, PopulationArea
-from app.models.provider import ProviderSnapshot
+from .places import Place, PlaceCategory
+from .sensors import PedestrianSensor, PedestrianSensorLatest
+from .traffic import (
+    RoadAreaMapping,
+    RoadLink,
+    RoadLinkMapping,
+    RoadTrafficAttemptLatest,
+    RoadTrafficLatest,
+)
 
-__all__ = ["Base", "ProviderSnapshot", "CityDataSnapshot", "CollectionRun", "ParkingRecord"]
-
-from app.models.external_api import ExternalApiObservation, ExternalApiResponse
-
-__all__ += ["ExternalApiResponse", "ExternalApiObservation"]
-__all__ += ["PopulationArea", "FloatingPopulationHistory"]
-__all__ += [
+__all__ = [
+    "ChatConditionAgeGroup",
+    "ChatConditionPurpose",
+    "ChatConditionVersion",
+    "ChatExcludedPlace",
+    "ChatMessage",
+    "ChatSession",
+    "Place",
+    "PlaceCategory",
+    "AdministrativeArea",
+    "CollectionRun",
+    "CollectionRejectionReason",
+    "LegacyArchive",
+    "DataSource",
     "MapFeature",
     "MapLayerVersion",
-    "MapObservation",
+    "MapPopulationObservation",
+    "MapRoadObservation",
+    "ParkingAvailabilityLatest",
+    "ParkingFieldIssue",
+    "ParkingOperatingHour",
     "ParkingFacility",
     "ParkingSourceRecord",
+    "PedestrianSensor",
+    "PedestrianSensorLatest",
+    "PopulationArea",
+    "PopulationLatest",
+    "RawPayload",
+    "PayloadFileDeletion",
+    "RegionBoundary",
+    "RoadAreaMapping",
+    "RoadLink",
+    "RoadLinkMapping",
+    "RoadTrafficLatest",
+    "RoadTrafficAttemptLatest",
+    "Base",
 ]

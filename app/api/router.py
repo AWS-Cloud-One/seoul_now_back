@@ -1,37 +1,7 @@
 from fastapi import APIRouter
 
-from app.api.routes import (
-    citydata,
-    health,
-    kakao,
-    locations,
-    map_contract,
-    parking,
-    recommendations,
-    collections,
-    health,
-    kakao,
-    parking,
-    supplemental,
-    team_contract,
-    traffic,
-)
+from app.api.routes import health, locations, map, parking, recommendations
 
 router = APIRouter(prefix="/api/v1")
-router.include_router(health.router)
-router.include_router(parking.router)
-router.include_router(citydata.router)
-router.include_router(collections.router)
-
-router.include_router(traffic.router)
-
-router.include_router(kakao.router)
-
-
-router.include_router(team_contract.router)
-
-
-router.include_router(supplemental.router)
-router.include_router(map_contract.router)
-router.include_router(recommendations.router)
-router.include_router(locations.router)
+for module in (health, map, locations, parking, recommendations):
+    router.include_router(module.router)

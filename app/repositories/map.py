@@ -1,11 +1,20 @@
-"""Map DB access. Geometry and status share one locked version and selection rule."""
+"""Spatial lookup within the API's committed snapshot; no reader row locks."""
 
 from dataclasses import dataclass
 
 from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.map import MapFeature, MapLayerVersion, MapObservation
+from app.models import (
+    MapFeature,
+    MapLayerVersion,
+    MapPopulationObservation,
+    MapRoadObservation,
+    RawPayload,
+)
+
+
+def lock_map_layer(session, layer):
+    session.execute(select(func.pg_advisory_xact_lock(func.hashtext("map-publish:" + layer))))
 
 
 @dataclass(frozen=True)
@@ -15,23 +24,29 @@ class SelectedFeature:
     geometry: str | None
 
 
+@dataclass(frozen=True)
+class Observation:
+    value: dict | None
+    observed_at: object
+    collected_at: object
+    collection_failed: bool
+
+
 class MapRepository:
-    def __init__(self, session: AsyncSession):
+    def __init__(self, session):
         self.session = session
 
-    async def get_version(self, layer: str) -> MapLayerVersion | None:
-        # Publisher takes FOR UPDATE on this row. Keep this shared lock until
-        # the request session closes, including subsequent observation queries.
+    async def get_version(self, layer):
         return await self.session.scalar(
-            select(MapLayerVersion).where(MapLayerVersion.layer == layer).with_for_update(read=True)
+            select(MapLayerVersion).where(MapLayerVersion.layer == layer)
         )
 
     async def select_features(self, layer, bbox, max_features, *, include_geometry):
-        columns = [MapFeature.feature_id, MapFeature.properties]
+        cols = [MapFeature]
         if include_geometry:
-            columns.append(func.ST_AsGeoJSON(MapFeature.geometry))
+            cols.append(func.ST_AsGeoJSON(MapFeature.geometry))
         rows = await self.session.execute(
-            select(*columns)
+            select(*cols)
             .where(
                 MapFeature.layer == layer,
                 MapFeature.is_active.is_(True),
@@ -40,17 +55,52 @@ class MapRepository:
             .order_by(MapFeature.feature_id)
             .limit(max_features + 1)
         )
-        return [
-            SelectedFeature(row[0], row[1], row[2] if include_geometry else None) for row in rows
-        ]
+        results = []
+        for row in rows:
+            f = row[0]
+            properties = {"name": f.name}
+            if layer == "roads":
+                properties.update(link_id=f.road_link_id, direction=f.direction)
+            elif layer == "population":
+                properties["area_code"] = f.population_area_code
+            else:
+                properties.update(parking_id=str(f.parking_id), identity_status=f.identity_status)
+            results.append(
+                SelectedFeature(f.feature_id, properties, row[1] if include_geometry else None)
+            )
+        return results
 
     async def get_observations(self, layer, ids):
         if not ids:
             return {}
-        rows = await self.session.scalars(
-            select(MapObservation).where(
-                MapObservation.layer == layer,
-                MapObservation.feature_id.in_(ids),
+        cls = MapRoadObservation if layer == "roads" else MapPopulationObservation
+        key = cls.link_id if layer == "roads" else cls.area_code
+        rows = await self.session.execute(
+            select(
+                cls,
+                func.coalesce(cls.received_at, RawPayload.received_at)
+                if layer == "roads"
+                else RawPayload.received_at,
             )
+            .outerjoin(RawPayload, cls.payload_id == RawPayload.payload_id)
+            .where(key.in_(ids))
         )
-        return {row.feature_id: row for row in rows}
+        result = {}
+        for r, collected in rows:
+            value = None
+            if r.has_observation:
+                value = (
+                    {
+                        k: float(getattr(r, k)) if getattr(r, k) is not None else None
+                        for k in ("speed_kmh", "travel_seconds")
+                    }
+                    if layer == "roads"
+                    else {
+                        k: getattr(r, k)
+                        for k in ("min_people", "max_people", "congestion", "is_replacement")
+                    }
+                )
+            result[r.link_id if layer == "roads" else r.area_code] = Observation(
+                value, r.observed_at, collected, r.collection_failed
+            )
+        return result

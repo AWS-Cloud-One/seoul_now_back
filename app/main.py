@@ -3,11 +3,10 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.api.router import router
 from app.core.config import Settings
-from app.db.session import create_engine
+from app.db.session import create_engine, read_session_factory
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -16,7 +15,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         engine = create_engine(config)
-        app.state.session_factory = async_sessionmaker(engine, expire_on_commit=False)
+        app.state.session_factory = read_session_factory(engine)
         try:
             yield
         finally:
@@ -30,6 +29,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         redoc_url=None,
         openapi_url="/openapi.json" if config.docs_enabled else None,
     )
+
     app.state.settings = config
     app.add_middleware(
         CORSMiddleware,

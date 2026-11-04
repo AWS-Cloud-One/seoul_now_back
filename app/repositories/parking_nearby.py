@@ -3,8 +3,9 @@
 from geoalchemy2 import Geography
 from sqlalchemy import String, cast, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
-from app.models.map import MapFeature, MapLayerVersion, ParkingFacility, ParkingSourceRecord
+from app.models import MapFeature, MapLayerVersion, ParkingFacility, ParkingSourceRecord
 
 
 class ParkingNearbyRepository:
@@ -13,11 +14,7 @@ class ParkingNearbyRepository:
 
     async def get_version(self):
         return await self.session.scalar(
-            select(MapLayerVersion)
-            .where(
-                MapLayerVersion.layer == "parking",
-            )
-            .with_for_update(read=True)
+            select(MapLayerVersion).where(MapLayerVersion.layer == "parking")
         )
 
     @staticmethod
@@ -37,7 +34,7 @@ class ParkingNearbyRepository:
                 MapFeature,
                 (
                     (MapFeature.layer == "parking")
-                    & (MapFeature.feature_id == cast(ParkingFacility.id, String))
+                    & (MapFeature.feature_id == cast(ParkingFacility.parking_id, String))
                 ),
             )
             .where(
@@ -52,7 +49,7 @@ class ParkingNearbyRepository:
         statement, distance = self.spatial_query(coordinates, radius)
         result = await self.session.execute(
             statement.with_only_columns(
-                func.count(ParkingFacility.id),
+                func.count(ParkingFacility.parking_id),
                 func.min(distance),
             )
         )
@@ -62,13 +59,13 @@ class ParkingNearbyRepository:
         statement, distance = self.spatial_query(coordinates, radius)
         rows = await self.session.execute(
             statement.with_only_columns(
-                ParkingFacility.id,
+                ParkingFacility.parking_id,
                 ParkingFacility.identity_status,
-                MapFeature.properties,
+                func.jsonb_build_object("name", MapFeature.name),
                 func.ST_Y(MapFeature.geometry),
                 func.ST_X(MapFeature.geometry),
                 distance,
-            ).order_by(distance, ParkingFacility.id)
+            ).order_by(distance, ParkingFacility.parking_id)
         )
         return rows.all()
 
@@ -77,11 +74,12 @@ class ParkingNearbyRepository:
             return {}
         rows = await self.session.scalars(
             select(ParkingSourceRecord)
+            .options(selectinload(ParkingSourceRecord.operating_hours))
             .where(
                 ParkingSourceRecord.parking_id.in_(ids),
                 ParkingSourceRecord.is_active.is_(True),
             )
-            .order_by(ParkingSourceRecord.source, ParkingSourceRecord.id)
+            .order_by(ParkingSourceRecord.source, ParkingSourceRecord.source_record_id)
         )
         grouped = {key: [] for key in ids}
         for record in rows:

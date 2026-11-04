@@ -1,11 +1,11 @@
 import asyncio
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from app.api.routes.locations import get_location_search_service
+from app.api.dependencies import get_location_search_service
 from app.clients.kakao import KakaoError, kakao_get
 from app.core.config import Settings
 from app.main import create_app
@@ -222,7 +222,7 @@ def test_shared_transport_does_not_leak_key_or_response(status, expected):
 def test_openapi_and_existing_kakao_route(api):
     client, _, _ = api
     schema = client.get("/openapi.json").json()
-    assert "/api/v1/kakao/places" in schema["paths"]
+    assert "/api/v1/kakao/places" not in schema["paths"]
     operation = schema["paths"]["/api/v1/locations/search"]["get"]
     assert operation["tags"] == ["locations"]
     assert {"200", "422", "429", "502", "503", "504"} <= operation["responses"].keys()
@@ -261,34 +261,3 @@ def test_timeout_is_504_without_automatic_retry():
         assert len(calls) == 1
 
     asyncio.run(check())
-
-
-@pytest.mark.parametrize("provider_status,http_status", [(200, 200), (429, 503)])
-def test_legacy_kakao_contract_is_preserved(provider_status, http_status):
-    from app.api.dependencies import get_settings
-
-    settings = Settings(
-        _env_file=None,
-        kakao_rest_api_key="test-key",
-        database_url="postgresql+psycopg://test:test@127.0.0.1:1/test",
-    )
-    app = create_app(settings)
-    app.dependency_overrides[get_settings] = lambda: settings
-    provider = httpx.AsyncClient(
-        transport=httpx.MockTransport(
-            lambda request: httpx.Response(
-                provider_status,
-                json={"documents": [], "meta": {}},
-            )
-        )
-    )
-    with (
-        TestClient(app) as client,
-        patch("app.api.routes.kakao.httpx.AsyncClient", return_value=provider),
-    ):
-        response = client.get("/api/v1/kakao/places?query=서울역")
-    assert response.status_code == http_status
-    if provider_status == 200:
-        assert response.json() == {"documents": [], "meta": {}}
-    else:
-        assert "detail" in response.json()

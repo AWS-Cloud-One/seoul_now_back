@@ -32,7 +32,7 @@ class RegisteredParking(ContractModel):
     operating_hours: OperatingHours | None = None
 
 
-class ParkingSourceResponse(ContractModel):
+class ParkingSourceRecord(ContractModel):
     source_record_id: UUID
     source: str
     reference_date: date | None
@@ -53,7 +53,7 @@ class ParkingDetail(ContractModel):
     parking_id: UUID
     identity_status: Literal["verified", "unverified"]
     checked_at: AwareDatetime
-    records: list[ParkingSourceResponse]
+    records: list[ParkingSourceRecord]
     availability: UnsupportedAvailability = Field(default_factory=UnsupportedAvailability)
 
 

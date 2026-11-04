@@ -8,11 +8,11 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.exc import OperationalError
 
-from app.api.routes.map_contract import get_map_service
+from app.api.dependencies import get_map_service
 from app.core.config import Settings
 from app.main import create_app
 from app.repositories.map import SelectedFeature
-from app.services.map_contract import MapService, information
+from app.services.map import MapService, information
 
 QUERY = "bbox=126.95,37.54,127.03,37.59&level=6"
 

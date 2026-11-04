@@ -5,7 +5,7 @@ from xml.etree import ElementTree as ET
 
 import httpx
 
-from app.clients.seoul import CollectionError
+from app.clients.seoul import CollectionError, seoul_result_error
 
 
 async def collect_topis(client, key, link_id):
@@ -21,21 +21,21 @@ async def collect_topis(client, key, link_id):
         )
         if response.status_code == 429:
             raise CollectionError("provider_quota_exceeded")
+        if response.status_code in {401, 403}:
+            raise CollectionError("provider_auth_error")
+        if response.status_code >= 500:
+            raise CollectionError("provider_server_error")
         if response.status_code != 200:
             raise CollectionError("provider_http_error")
         root = ET.fromstring(response.content)
         code = root.findtext(".//CODE")
-        if code == "ERROR-337":
-            raise CollectionError("provider_quota_exceeded")
-        if code in {"INFO-100", "INFO-101"}:
-            raise CollectionError("provider_auth_error")
-        if root.findtext(".//CODE") == "INFO-200":
-            raise CollectionError("provider_no_observation")
-        if root.findtext(".//CODE") != "INFO-000":
-            raise CollectionError("provider_result_error")
+        if code != "INFO-000":
+            raise CollectionError(seoul_result_error(code))
         rows = [{node.tag: node.text for node in row} for row in root.findall("row")]
         if not rows or any(row.get("link_id") != link_id for row in rows):
             raise CollectionError("invalid_link_response")
         return {"rows": rows, "source_time": None}
-    except httpx.RequestError, ET.ParseError:
-        raise CollectionError("provider_network_or_xml_error") from None
+    except httpx.RequestError:
+        raise CollectionError("provider_network_error") from None
+    except ET.ParseError:
+        raise CollectionError("provider_invalid_xml") from None

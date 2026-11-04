@@ -37,12 +37,7 @@ def test_postgis_connection_and_spatial_query() -> None:
 
 
 @pytest.mark.integration
-def test_migrations_match_database_schema(monkeypatch: pytest.MonkeyPatch) -> None:
-    url = os.getenv("TEST_DATABASE_URL")
-    if not url:
-        pytest.skip("Set TEST_DATABASE_URL to run the PostgreSQL/PostGIS integration test")
-
-    monkeypatch.setenv("APP_DATABASE_URL", url)
+def test_migrations_match_database_schema(normalized_database) -> None:
     # Includes a regression check: PostGIS extension tables must not appear as
     # application tables to remove, even with tiger/topology in DB search_path.
     command.check(Config("alembic.ini"))

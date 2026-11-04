@@ -5,14 +5,14 @@ from uuid import uuid4
 import pytest
 from fastapi.testclient import TestClient
 
+from app.api.dependencies import get_recommendation_service
 from app.core.config import Settings
 from app.main import create_app
-from app.schemas.recommendations import Conditions, ConditionUpdate, RecommendationData, Stages
+from app.schemas.recommendations import Conditions, ConditionUpdate, RecommendationResponse, Stages
 from app.services.recommendations import (
     RecommendationFailure,
     RecommendationService,
     ValidationDecision,
-    get_recommendation_service,
 )
 
 
@@ -114,7 +114,7 @@ def adapters(client, payload):
 
 def test_adapter_receives_exclusions_and_result_is_forwarded(client, payload):
     validator, engine, update = adapters(client, payload)
-    engine.recommend.return_value = RecommendationData(
+    engine.recommend.return_value = RecommendationResponse(
         trip_id=payload["trip_id"],
         base_condition_version=0,
         kind="no_candidates",
@@ -136,7 +136,9 @@ def test_adapter_receives_exclusions_and_result_is_forwarded(client, payload):
 
 def test_failure_after_acceptance_preserves_accepted_conditions(client, payload):
     _, engine, update = adapters(client, payload)
-    engine.recommend.side_effect = RecommendationFailure(429, "RATE_LIMITED", "호출 제한", 30)
+    engine.recommend.side_effect = RecommendationFailure(
+        "RATE_LIMITED", "호출 제한", retry_after_seconds=30
+    )
     response = client.post("/api/v1/recommendations", json=payload)
     assert response.status_code == 429
     assert response.headers["retry-after"] == "30"

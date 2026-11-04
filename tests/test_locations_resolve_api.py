@@ -5,7 +5,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from app.api.routes.locations import get_kakao_local_client
+from app.api.dependencies import get_kakao_local_client
 from app.clients.kakao import KakaoError, KakaoLocalClient
 from app.core.config import Settings
 from app.main import create_app

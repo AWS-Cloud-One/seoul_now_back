@@ -1,93 +1,42 @@
-"""Collect every hotspot from Seoul's official OA-21285 workbook."""
+"""CLI for collecting every official hotspot and projecting its parking data."""
 
 import argparse
 import asyncio
-import json
-import re
-import zipfile
-from pathlib import Path
-from xml.etree import ElementTree as ET
 
 import httpx
 
 from app.core.config import Settings
 from app.db.session import create_engine
-from app.modules.data_pipeline.collectors.citydata import collect_citydata
-from app.modules.data_pipeline.pipelines.citydata import run_citydata
-from jobs.project_citydata_parking import project
+from app.modules.data_pipeline.collectors.citydata import collect_citydata, read_citydata_areas
+from app.modules.data_pipeline.pipelines.citydata import run_citydata_batch
+from jobs.runtime import REFERENCE_DATA, finish, report, run_cli
 
 
-def areas():
-    ns = {"s": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
-    with zipfile.ZipFile(Path(__file__).parent / "data/seoul_areas.xlsx") as book:
-        strings = [
-            "".join(si.itertext()) for si in ET.fromstring(book.read("xl/sharedStrings.xml"))
-        ]
-        sheet = ET.fromstring(book.read("xl/worksheets/sheet1.xml"))
-        result = {}
-        for row in sheet.findall(".//s:row", ns):
-            values = []
-            for cell in row.findall("s:c", ns):
-                value = cell.find("s:v", ns)
-                if value is not None:
-                    values.append(strings[int(value.text)] if cell.get("t") == "s" else value.text)
-            for index, value in enumerate(values):
-                if re.fullmatch(r"POI\d{3}", value) and index + 1 < len(values):
-                    result[value] = values[index + 1]
-        if len(result) != 121:
-            raise ValueError("official_area_list_invalid")
-        return result
-
-
-async def main_async(interval):
+async def execute(interval=0) -> int:
     settings = Settings()
     key = settings.seoul_citydata_api_key.get_secret_value()
     if not key:
-        raise ValueError("missing_citydata_api_key")
-    targets = areas()
+        return finish({"status": "failed", "error_code": "missing_citydata_api_key"})
+    targets = read_citydata_areas(REFERENCE_DATA / "seoul_areas.xlsx")
     engine = create_engine(settings)
     try:
         async with httpx.AsyncClient() as client:
             while True:
-                success = 0
-                for code, name in targets.items():
-                    result = await run_citydata(
-                        engine, lambda name=name: collect_citydata(client, key, name), name
-                    )
-                    success += result["status"] == "success"
-                    print(
-                        json.dumps(
-                            {
-                                "area_code": code,
-                                "area_name": name,
-                                "status": result["status"],
-                                "error_code": result.get("error_code"),
-                            },
-                            ensure_ascii=False,
-                        ),
-                        flush=True,
-                    )
-                    await asyncio.sleep(0.25)
-                print(
-                    json.dumps(
-                        {
-                            "cycle_complete": True,
-                            "total": len(targets),
-                            "success": success,
-                            "failed": len(targets) - success,
-                        }
-                    ),
-                    flush=True,
+                result = await run_citydata_batch(
+                    engine,
+                    lambda code, name: collect_citydata(client, key, name, expected_code=code),
+                    targets,
+                    report=report,
                 )
-                print(json.dumps(await project(engine), ensure_ascii=False), flush=True)
+                code = finish(result)
                 if not interval:
-                    return success == len(targets)
-                await asyncio.sleep(interval)
+                    return code
+                await asyncio.sleep(max(interval, 3600) if code == 4 else interval)
     finally:
         await engine.dispose()
 
 
-if __name__ == "__main__":
+def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--interval",
@@ -98,5 +47,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if args.interval and args.interval < 300:
         parser.error("interval must be at least 300 seconds")
-    if not asyncio.run(main_async(args.interval)):
-        raise SystemExit(1)
+    run_cli(execute, args.interval)
+
+
+if __name__ == "__main__":
+    main()
