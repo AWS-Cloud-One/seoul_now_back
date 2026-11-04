@@ -15,7 +15,7 @@ from app.modules.data_pipeline.normalizers.road_reference import (
 from jobs.import_topis_geometry import arguments
 from tests.fixtures.road_reference import road_candidate
 
-DATA = Path(__file__).resolve().parents[3] / "data/reference"
+DATA = Path(__file__).resolve().parents[3] / "data"
 
 
 @pytest.fixture(scope="module")

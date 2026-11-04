@@ -132,7 +132,7 @@ def test_page_total_does_not_silently_truncate(total):
 def test_real_installation_file_has_hash_pinned_date_and_device_serials():
     from pathlib import Path
 
-    path = Path(__file__).resolve().parents[3] / "data/reference/sdot_locations_20251113.xlsx"
+    path = Path(__file__).resolve().parents[3] / "data/sdot_locations_20251113.xlsx"
     file = read_sensor_file(path)
     reference = sensor_locations(file)
     assert file["reference_date"] == "2025-11-13"

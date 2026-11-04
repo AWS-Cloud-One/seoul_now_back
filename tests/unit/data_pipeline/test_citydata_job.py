@@ -39,7 +39,7 @@ def test_jobs_propagate_pipeline_exit_status_and_close_engine(monkeypatch, job, 
 
 
 def test_official_citydata_area_file_still_reads_all_121_targets():
-    path = Path(__file__).resolve().parents[3] / "data/reference/seoul_areas.xlsx"
+    path = Path(__file__).resolve().parents[3] / "data/seoul_areas.xlsx"
     targets = read_citydata_areas(path)
     assert len(targets) == 121
     assert all(code.startswith("POI") and name.strip() for code, name in targets.items())

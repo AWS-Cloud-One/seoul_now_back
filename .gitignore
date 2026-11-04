@@ -20,9 +20,5 @@ AGENTS.md
 
 # Share official inputs only; exclude runtime data and local artifacts.
 /data/*
-!/data/reference/
-/data/reference/*
-!/data/reference/*.xlsx
-!/data/reference/*.zip
-
-# Provider probes and temporary source notes belong under /data/raw/ (ignored above).
+!/data/*.xlsx
+!/data/*.zip

@@ -131,9 +131,7 @@ def test_official_place_file_has_unique_121_codes():
 
     from app.modules.data_pipeline.collectors.official_files import read_shapes
 
-    data = read_shapes(
-        Path(__file__).resolve().parents[3] / "data/reference/citydata_places_official.zip"
-    )
+    data = read_shapes(Path(__file__).resolve().parents[3] / "data/citydata_places_official.zip")
     assert len(data) == 121
     assert len({row[0]["AREA_CD"] for row in data}) == 121
     assert all(ring[0] == ring[-1] for _, rings in data for ring in rings)

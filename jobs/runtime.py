@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-REFERENCE_DATA = PROJECT_ROOT / "data/reference"
+REFERENCE_DATA = PROJECT_ROOT / "data"
 EXIT_CODES = {"success": 0, "failed": 1, "partial": 2, "skipped": 3, "paused_provider_limit": 4}
 
 

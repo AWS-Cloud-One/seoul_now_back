@@ -44,7 +44,7 @@ def test_places_validate_list_and_boundaries_before_any_replacement(
 ):
     from pathlib import Path
 
-    folder = Path(__file__).resolve().parents[2] / "data/reference"
+    folder = Path(__file__).resolve().parents[2] / "data"
     targets = read_citydata_areas(folder / "seoul_areas.xlsx")
     shapes = read_shapes(folder / "citydata_places_official.zip")
 

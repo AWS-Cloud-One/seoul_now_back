@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     api_port: int = Field(default=8000, validation_alias="API_PORT", ge=1, le=65535)
     db_port: int = Field(default=5432, validation_alias="DB_PORT", ge=1, le=65535)
 
-    # 향후 외부 제공처 연동용. 빈 값은 정상이며 수집기는 아직 미구현입니다.
+    # 빈 키를 가진 제공처의 정기 수집은 실행하지 않습니다.
     seoul_sdot_api_key: SecretStr = SecretStr("")
     its_api_key: SecretStr = SecretStr("")
     sgis_consumer_key: SecretStr = SecretStr("")
@@ -41,7 +41,6 @@ class Settings(BaseSettings):
     database_url: SecretStr = SecretStr(
         "postgresql+psycopg://seoul:seoul_local@127.0.0.1:5432/seoul_now"
     )
-    payload_storage_dir: Path = PROJECT_ROOT / "data/raw/payloads"
     db_connect_timeout_seconds: int = Field(default=3, ge=1, le=30)
     health_timeout_seconds: float = Field(default=5, gt=0, le=30)
 
