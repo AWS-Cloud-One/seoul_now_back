@@ -24,7 +24,7 @@ def get_settings(request: Request) -> Settings:
 
 
 async def get_session(request: Request) -> AsyncIterator[AsyncSession]:
-    # One session per request. Closing it rolls back unfinished transactions.
+    # The API factory uses REPEATABLE READ / READ ONLY. Closing releases the request snapshot.
     async with request.app.state.session_factory() as session:
         yield session
 
