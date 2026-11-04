@@ -87,7 +87,12 @@ def test_mapping_keeps_explicit_ids_order_and_one_to_many_relations():
 
 def test_transformed_coordinates_outside_expected_region_are_rejected():
     with pytest.raises(ValueError, match="transformed_geometry_out_of_region"):
-        road_features([("1000000000", {"coordinates": [[200000, 450000], [200100, 450100]]})], {})
+        road_features(
+            [("1000000000", {"coordinates": [[200000, 450000], [200100, 450100]]})],
+            {},
+            version="2026",
+            source_srid=5181,
+        )
 
 
 @pytest.mark.parametrize("job", [import_topis_geometry, import_place_boundaries])

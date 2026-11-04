@@ -35,12 +35,19 @@ def read_xlsx_rows(source):
 
 def read_topis_files(vertices_path, mapping_path):
     # Hash the same bytes that were parsed, even if the file is replaced during import.
-    vertices = vertices_path.read_bytes()
-    return {
-        "vertices": read_xlsx_rows(BytesIO(vertices))[1:],
-        "mapping": read_xlsx_rows(mapping_path)[1:],
-        "source_sha256": hashlib.sha256(vertices).hexdigest(),
-    }
+    result = {}
+    for name, path in (("vertices", vertices_path), ("mapping", mapping_path)):
+        body = path.read_bytes()
+        rows = read_xlsx_rows(BytesIO(body))
+        result[name] = {
+            "rows": rows[1:],
+            "header": rows[0] if rows else {},
+            "filename": path.name,
+            "sha256": hashlib.sha256(body).hexdigest(),
+            "byte_size": len(body),
+            "body": body,
+        }
+    return result
 
 
 def read_shapes(path):

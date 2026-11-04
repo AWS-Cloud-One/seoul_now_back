@@ -47,23 +47,40 @@ def complete_vertices(points):
 
 
 def topis_mapping(rows):
-    services = {}
+    pairs = {}
+    groups = {}
     for values in rows:
         if not values:
             continue
-        service, standard = values["A"], values["C"]
-        seq = int(values.get("B") or 0)
+        service, standard = values.get("A", ""), values.get("C", "")
+        original = values.get("B")
+        unknown = original is None or (isinstance(original, str) and not original.strip())
+        try:
+            seq = 0 if unknown else int(original)
+        except ValueError, TypeError:
+            raise ValueError("invalid_official_mapping_sequence") from None
         if not re.fullmatch(r"\d{10}", service) or not re.fullmatch(r"\d{10}", standard) or seq < 0:
             raise ValueError("invalid_official_mapping")
-        services.setdefault(service, []).append((seq, standard))
+        key = (service, seq, standard)
+        pairs[key] = pairs.get(key, False) or unknown
+        if not unknown:
+            groups.setdefault((service, seq), set()).add(standard)
     return [
-        {"service_link_id": service, "sequence": seq, "standard_link_id": standard}
-        for service, pairs in services.items()
-        for seq, standard in sorted(set(pairs))
+        {
+            "service_link_id": service,
+            "sequence": seq,
+            "standard_link_id": standard,
+            "sequence_status": "unknown"
+            if unknown
+            else "ambiguous"
+            if len(groups[service, seq]) > 1
+            else "known",
+        }
+        for (service, seq, standard), unknown in sorted(pairs.items())
     ]
 
 
-def road_features(lines, mapping):
+def road_features(lines, mapping, *, version, source_srid):
     features = []
     for link, geometry in lines:
         if not all(126 <= x <= 128 and 37 <= y <= 38 for x, y in geometry["coordinates"]):
@@ -77,31 +94,12 @@ def road_features(lines, mapping):
                     "service_link_id": link,
                     "standard_link_ids": mapping.get(link, []),
                     "geometry_source": "OA-15060",
-                    "source_year": 2025,
-                    "source_crs": "EPSG:5181",
+                    "source_version": version,
+                    "source_crs": f"EPSG:{source_srid}",
                 },
             }
         )
     return features
-
-
-def citydata_links(payloads):
-    links = {}
-    for data in payloads:
-        traffic = data.get("ROAD_TRAFFIC_STTS") or {}
-        if isinstance(traffic, dict):
-            for row in traffic.get("ROAD_TRAFFIC_STTS") or []:
-                if isinstance(row, dict) and row.get("LINK_ID"):
-                    links[str(row["LINK_ID"])] = row
-    return links
-
-
-def citydata_line(row):
-    try:
-        xy = [[float(v) for v in p.split("_")] for p in row["XYLIST"].split("|")]
-        return {"type": "LineString", "coordinates": xy} if len(xy) >= 2 else None
-    except KeyError, ValueError, TypeError:
-        return None
 
 
 def rings_wkt(rings):
