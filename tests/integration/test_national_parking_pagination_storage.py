@@ -2,18 +2,23 @@ import asyncio
 
 import httpx
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.core.config import Settings
-from app.models import ParkingSourceRecord
+from app.models import (
+    CollectionCursorPage,
+    CollectionRejectionReason,
+    CollectionRun,
+    ParkingSourceRecord,
+)
 from app.modules.data_pipeline.collectors.national_parking import METHODS, collect_national_parking
 from app.modules.data_pipeline.pipelines.national_parking import save_national_parking
 from app.repositories.national_parking_progress import load_national_parking_progress
 from app.repositories.normalization import NormalizedWriter
 from tests.integration.test_national_parking_storage import facility, live, operation
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("no_response_archive")]
 
 
 async def batch(factory, *, fail=None, invalid_names=False, empty=False):
@@ -64,15 +69,52 @@ def test_committed_batches_resume_after_restart_and_old_replay_does_not_rewind(n
             first, calls = await batch(factory)
             await persist(factory, first)
             assert (await progress(factory))[METHODS[0]]["next_page"] == 3
+            async with factory.begin() as session:
+                assert (
+                    await session.scalar(select(func.count()).select_from(CollectionCursorPage))
+                    == 4
+                )
+                await session.execute(delete(CollectionRejectionReason))
+                await session.execute(delete(CollectionRun))
             second, calls = await batch(factory)
             assert calls == [(METHODS[0], 3), (METHODS[1], 3), (METHODS[2], 1)]
             report = await persist(factory, second)
             assert report["datasets"][METHODS[0]]["pagination"]["scan_complete"]
             state = await progress(factory)
             assert state[METHODS[0]]["next_page"] == 1
+            async with factory() as session:
+                assert (
+                    await session.scalar(select(func.count()).select_from(CollectionCursorPage))
+                    == 0
+                )
+                receipts = dict(
+                    (
+                        await session.execute(
+                            select(
+                                ParkingSourceRecord.source_record_id,
+                                ParkingSourceRecord.collected_at,
+                            )
+                        )
+                    ).all()
+                )
             replay = await persist(factory, first)
+            assert replay["status"] == "failed" and replay["error_code"] == "stale_parking_batch"
             assert replay["pagination_progress"]["results"][METHODS[0]] == "held_stale_batch"
             assert await progress(factory) == state
+            async with factory() as session:
+                assert (
+                    dict(
+                        (
+                            await session.execute(
+                                select(
+                                    ParkingSourceRecord.source_record_id,
+                                    ParkingSourceRecord.collected_at,
+                                )
+                            )
+                        ).all()
+                    )
+                    == receipts
+                )
             third, calls = await batch(factory)
             assert calls[0] == (METHODS[0], 1)
             await persist(factory, third)
@@ -122,6 +164,23 @@ def test_storage_failure_and_outer_rollback_never_advance_cursor(normalized_data
                 result = await persist(factory, data)
             assert result["error_code"] == "normalization_failed"
             assert await progress(factory) == {}
+            # A failure after typed writes, while persisting the cursor, rolls back both.
+            with monkeypatch.context() as patch:
+
+                async def fail_cursor(*args, **kwargs):
+                    raise RuntimeError("synthetic cursor failure")
+
+                patch.setattr(
+                    "app.modules.data_pipeline.pipelines.national_parking.save_national_parking_progress",
+                    fail_cursor,
+                )
+                result = await persist(factory, data)
+                assert result["error_code"] == "normalization_failed"
+            assert await progress(factory) == {}
+            async with factory() as session:
+                assert (
+                    await session.scalar(select(func.count()).select_from(ParkingSourceRecord)) == 0
+                )
             retried, calls = await batch(factory)
             assert calls[0] == (METHODS[0], 1)
             with pytest.raises(RuntimeError, match="outer rollback"):

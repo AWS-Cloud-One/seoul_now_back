@@ -22,6 +22,11 @@ def attach_municipal_positions(rows, positions):
     """Use registration coordinates only when a provider ID identifies one position."""
     enriched = []
     for row in rows:
+        if not isinstance(row, dict):
+            # Keep a malformed row for the normalizer's rejection count, without
+            # discarding other valid facilities from the same response.
+            enriched.append(row)
+            continue
         record = dict(row)
         candidates = positions.get(str(row.get("PKLT_CD")), set())
         if len(candidates) == 1:

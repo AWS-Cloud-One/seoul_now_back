@@ -18,7 +18,7 @@ class ParkingStateWriter:
     def __init__(self, writer, now):
         self.writer, self.session, self.now = writer, writer.session, now
 
-    def issues(self, record_id, issues, payload_id, *, live=False, section=None):
+    def issues(self, record_id, issues, *, live=False, section=None):
         table = self.writer.t("parking_field_issues")
 
         def belongs(path):
@@ -49,7 +49,6 @@ class ParkingStateWriter:
                         source_record_id=record_id,
                         field_path=path,
                         reason_code=reason,
-                        payload_id=payload_id,
                         processed_at=self.now,
                         processor_version=PROCESSOR_VERSION,
                     )
@@ -60,7 +59,6 @@ class ParkingStateWriter:
             self.issues(
                 record_id,
                 candidate.record["field_issues"],
-                candidate.payload_id,
                 section="registration",
             )
             return
@@ -79,7 +77,6 @@ class ParkingStateWriter:
                     end_day_offset=period["end_day_offset"],
                     state=period["state"],
                     reason_code=period["reason_code"],
-                    payload_id=candidate.payload_id,
                     processed_at=self.now,
                     processor_version=PROCESSOR_VERSION,
                 )
@@ -88,9 +85,7 @@ class ParkingStateWriter:
         for period in candidate.record["operating_hours"]:
             for field, reason in period["field_issues"].items():
                 issues[f"operating_hours.{period['day_type']}.{field}"] = reason
-        self.issues(
-            record_id, issues, candidate.payload_id, section=candidate.record.get("issue_section")
-        )
+        self.issues(record_id, issues, section=candidate.record.get("issue_section"))
 
     def availability(self, record_id, candidate, *, ambiguous_scope=False, conflict=None):
         live = candidate.record["availability"]
@@ -130,7 +125,6 @@ class ParkingStateWriter:
         ):
             changes.update(
                 {key: live[key] for key in (*COUNTS, "observed_at", "received_at", "method")},
-                payload_id=candidate.payload_id,
                 usable=True,
                 reason_code=None,
                 processed_at=self.now,
@@ -161,11 +155,10 @@ class ParkingStateWriter:
             )
         )
         if latest_attempt:
-            if old and old["payload_id"] is None and "payload_id" not in changes:
+            if old and old["observed_at"] is None and "observed_at" not in changes:
                 changes["reason_code"] = reason
             changes.update(
                 **{"attempt_" + key: live[key] for key in COUNTS},
-                attempt_payload_id=candidate.payload_id,
                 attempt_received_at=candidate.received_at,
                 attempt_observed_at=live["observed_at"],
                 attempt_provision_code=live["provision_code"],
@@ -179,7 +172,7 @@ class ParkingStateWriter:
             issues = dict(candidate.record["field_issues"])
             if reason:
                 issues["availability"] = reason
-            self.issues(record_id, issues, candidate.payload_id, live=True)
+            self.issues(record_id, issues, live=True)
         if not old:
             self.session.execute(
                 table.insert().values(

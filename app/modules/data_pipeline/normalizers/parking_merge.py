@@ -13,7 +13,6 @@ def _key(candidate):
     return (
         candidate.received_at or datetime.min.replace(tzinfo=UTC),
         candidate.origin,
-        str(candidate.payload_id),
         candidate.row_index if candidate.row_index is not None else -1,
         fingerprint(candidate.record.get("input_fields")),
     )
@@ -143,12 +142,9 @@ def _merge(items, static, live):
         ),
         "inputs": [
             {
-                "payload_id": str(c.payload_id),
                 "row_index": c.row_index,
                 "origin": c.origin,
                 "received_at": c.received_at.isoformat() if c.received_at else None,
-                "input_sha256": fingerprint(c.record["input_fields"]),
-                "input_fields": c.record["input_fields"],
             }
             for c in ordered
         ],

@@ -10,6 +10,67 @@ from app.modules.data_pipeline.normalizers.values import number
 SOURCE = "national_parking"
 METHODS = ("PrkSttusInfo", "PrkOprInfo", "PrkRealtimeInfo")
 DAYS = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday", "Holiday")
+FIELDS = {
+    "PrkSttusInfo": (
+        "prk_center_id",
+        "prk_plce_adres_sido",
+        "prk_plce_nm",
+        "prk_plce_adres",
+        "prk_plce_entrc_la",
+        "prk_plce_entrc_lo",
+        "prk_cmprt_co",
+        "parkng_chrge_se",
+        "parkng_chrge_se_nm",
+        "prk_manage_agent",
+        "prk_manage_agent_nm",
+    ),
+    "PrkOprInfo": ("prk_center_id", "basic_info", "fxamt_info", *DAYS),
+    "PrkRealtimeInfo": (
+        "prk_center_id",
+        "pkfc_ParkingLots_total",
+        "pkfc_Available_ParkingLots_total",
+    ),
+}
+
+
+def selected_fields(method, row):
+    """Discard unused provider fields before handing the page to storage."""
+    if not isinstance(row, dict):
+        return None
+    selected = {key: row[key] for key in FIELDS[method] if key in row}
+    if method == "PrkOprInfo":
+
+        def keep(value, keys):
+            return (
+                {key: value[key] for key in keys if key in value}
+                if isinstance(value, dict)
+                else value
+            )
+
+        for group, keys in (
+            (
+                "basic_info",
+                (
+                    "parking_chrge_bs_time",
+                    "parking_chrge_adit_unit_time",
+                    "parking_chrge_bs_chrge",
+                    "parking_chrge_adit_unit_chrge",
+                ),
+            ),
+            ("fxamt_info", ("parking_chrge_one_day_chrge",)),
+        ):
+            if group in selected:
+                selected[group] = keep(selected[group], keys)
+        for day in DAYS:
+            if day in selected:
+                value = selected[day]
+                keys = ("opertn_start_time", "opertn_end_time")
+                selected[day] = (
+                    [keep(period, keys) for period in value]
+                    if isinstance(value, list)
+                    else keep(value, keys)
+                )
+    return selected
 
 
 def management_id(row):
@@ -30,7 +91,11 @@ def select_records(candidates):
             reasons[str(exc)] += 1
     for key, group in sorted(groups.items()):
         unique = []
-        for item in sorted(group, key=lambda c: (c.received_at, str(c.payload_id)), reverse=True):
+        for item in sorted(
+            group,
+            key=lambda c: (c.received_at, c.origin, c.row_index if c.row_index is not None else -1),
+            reverse=True,
+        ):
             if any(item.record == other.record for other in unique):
                 duplicates += 1
             else:

@@ -28,7 +28,6 @@ class NationalParkingWriter:
         now = datetime.now(UTC)
         state = ParkingStateWriter(self.writer, now)
         for candidate in candidates:
-            self.writer.validate_payload(normalizer.SOURCE, "all", candidate.payload_id)
             code = normalizer.management_id(candidate.record)
             matches = known[code]
             if code in blocked or len(matches) != 1:
@@ -59,7 +58,6 @@ class NationalParkingWriter:
                     .where(records.c.source_record_id == record_id)
                     .values(
                         **operation["fees"],
-                        operation_payload_id=candidate.payload_id,
                         operation_received_at=candidate.received_at,
                         operation_processed_at=now,
                         operation_processor_version=PROCESSOR_VERSION,

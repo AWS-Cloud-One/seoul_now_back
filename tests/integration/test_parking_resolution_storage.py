@@ -1,6 +1,6 @@
 import asyncio
 from copy import deepcopy
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 from uuid import UUID
 
 import pytest
@@ -13,116 +13,26 @@ from app.models import (
     ParkingAvailabilityLatest,
     ParkingFacility,
     ParkingSourceRecord,
-    RawPayload,
 )
 from app.modules.data_pipeline.collectors.citydata import CityDataDocument
-from app.modules.data_pipeline.identity import fingerprint
 from app.modules.data_pipeline.normalizers.parking import MUNICIPAL_PARKING_SOURCE, SOURCE
-from app.modules.data_pipeline.pipelines.citydata import run_citydata
-from app.modules.data_pipeline.pipelines.parking import project_citydata_parking, run_parking
-from app.repositories.citydata import CityDataRepository
+from app.modules.data_pipeline.pipelines.citydata import run_citydata_batch
+from app.modules.data_pipeline.pipelines.parking import run_parking
 from app.repositories.collection import CollectionRepository
-from app.storage.payloads import configured_store
+from tests.fixtures.citydata import STAMP, boundary, document
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("no_response_archive")]
 
 
-def test_complementary_registration_and_live_storage_keep_both_input_chains(normalized_database):
-    async def run():
-        engine = create_async_engine(normalized_database)
-        factory = async_sessionmaker(engine)
-        received = datetime(2026, 11, 4, 0, tzinfo=UTC)
-        registration = {
-            "PRK_CD": "1",
-            "PRK_NM": "registration name",
-            "ADDRESS": "lot address",
-            "ROAD_ADDR": "",
-            "LAT": 37.56,
-            "LNG": 126.97,
-            "CPCTY": "100",
-            "CUR_PRK_YN": "N",
-            "CUR_PRK_CNT": "",
-            "CUR_PRK_TIME": "",
-            "RATES": "1000",
-            "TIME_RATES": "30",
-            "PAY_YN": "Y",
-        }
-        live = {
-            **registration,
-            "PRK_NM": "live display alias",
-            "ROAD_ADDR": "road address",
-            "CUR_PRK_YN": "Y",
-            "CUR_PRK_CNT": "0",
-            "CUR_PRK_TIME": "2026-11-04 08:59",
-            "TIME_RATES": None,
-        }
+async def current_batch(engine, rows_by_area, *, minute=0):
+    async def fetch(code, name):
+        body = document(code, name)
+        body["CITYDATA"]["PRK_STTS"] = rows_by_area[code]
+        return CityDataDocument(body, STAMP + timedelta(minutes=minute))
 
-        async def collect(code, rows, receipt):
-            async def fetch():
-                return CityDataDocument(
-                    {"AREA_CD": code, "AREA_NM": code, "PRK_STTS": rows}, receipt, False
-                )
-
-            await run_citydata(engine, fetch, code, expected_code=code)
-
-        try:
-            await collect(
-                "POI001",
-                [registration, dict(registration, PRK_CD="2", CPCTY="34")],
-                received + timedelta(minutes=10),
-            )
-            await collect("POI002", [live, dict(live, PRK_CD="2", CPCTY="119")], received)
-            result = await project_citydata_parking(engine)
-            assert (result["accepted"], result["duplicates"], result["rejected"]) == (1, 1, 2)
-            assert result["rejection_reasons"] == {"conflicting_parking_registration": 2}
-            assert result["merge_summary"]["groups"] == 1
-            assert result["merge_summary"]["exact_duplicates"] == 0
-            async with factory() as s:
-                record = await s.scalar(select(ParkingSourceRecord))
-                rid, fid = record.source_record_id, record.parking_id
-                assert record.name == "registration name" and record.address == "road address"
-                assert (
-                    record.base_minutes == 30 and record.base_fee_krw == 1000 and record.base_usable
-                )
-                merged = await s.get(RawPayload, record.last_payload_id)
-                selected = configured_store().load_json(merged)
-                assert merged.payload_kind == "derived_snapshot" and merged.received_at is None
-                assert selected["contract"] == "citydata-parking-merged-v1"
-                for contributor in selected["inputs"]:
-                    payload = await s.get(RawPayload, UUID(contributor["payload_id"]))
-                    original_row = configured_store().load_json(payload)[contributor["row_index"]]
-                    assert contributor["input_fields"] == original_row
-                    assert contributor["input_sha256"] == fingerprint(original_row)
-                    assert payload.parent_payload_id is not None
-                observation = await s.get(ParkingAvailabilityLatest, rid)
-                original_payload = observation.payload_id
-                assert observation.usable and observation.reported_available_spaces == 0
-                assert observation.received_at == received
-                assert observation.payload_id != merged.payload_id
-                donor = selected["inputs"][selected["observation_source"]]
-                assert str(observation.payload_id) == donor["payload_id"]
-                assert record.operation_payload_id == merged.payload_id
-            # Fresh registration information must not make the old live observation look fresh.
-            await collect(
-                "POI001",
-                [dict(registration, PRK_NM="renamed registration")],
-                received + timedelta(minutes=20),
-            )
-            repeated = await project_citydata_parking(engine)
-            assert repeated["merge_summary"]["groups"] == 1
-            async with factory() as s:
-                record = await s.get(ParkingSourceRecord, rid)
-                observation = await s.get(ParkingAvailabilityLatest, rid)
-                assert record.parking_id == fid and record.name == "renamed registration"
-                assert (
-                    observation.payload_id == original_payload
-                    and observation.received_at == received
-                )
-                assert await s.scalar(select(func.count()).select_from(ParkingSourceRecord)) == 2
-        finally:
-            await engine.dispose()
-
-    asyncio.run(run())
+    return (await run_citydata_batch(engine, fetch, {code: code for code in rows_by_area}))[
+        "parking_storage"
+    ]
 
 
 def test_other_sources_stay_separate_and_explicit_shared_facility_is_preserved(normalized_database):
@@ -299,100 +209,95 @@ def test_one_code_can_have_distinct_spaces_and_one_conflict_does_not_block_other
     asyncio.run(run())
 
 
-def test_citydata_conflicts_keep_old_values_evidence_and_order_independence(
-    normalized_database, monkeypatch
-):
+def test_current_area_candidates_merge_and_do_not_refresh_old_observation(normalized_database):
     async def run():
         engine = create_async_engine(normalized_database)
         factory = async_sessionmaker(engine)
-        row = {
-            "PRK_CD": "1",
-            "PRK_NM": "parking",
-            "ADDRESS": "address",
-            "LAT": 37.56,
-            "LNG": 126.97,
-            "CPCTY": "100",
-            "CUR_PRK_YN": "Y",
-            "CUR_PRK_CNT": "10",
-            "CUR_PRK_TIME": "2020-01-01 08:00",
-            "RATES": "1000",
-            "TIME_RATES": "30",
-        }
-
-        async def collect(code, value):
-            async def fetch():
-                return {"AREA_CD": code, "AREA_NM": code, "PRK_STTS": [value]}
-
-            assert (await run_citydata(engine, fetch, code, expected_code=code))[
-                "status"
-            ] == "partial"
-
+        targets = {"POI001": "POI001", "POI002": "POI002"}
+        registration = dict(
+            document()["CITYDATA"]["PRK_STTS"][0],
+            CUR_PRK_YN="N",
+            CUR_PRK_CNT="",
+            CUR_PRK_TIME="",
+            RATES="1000",
+            TIME_RATES="30",
+            PAY_YN="Y",
+        )
+        live = dict(
+            registration,
+            CUR_PRK_YN="Y",
+            CUR_PRK_CNT="0",
+            CUR_PRK_TIME="2026-11-04 09:00",
+            TIME_RATES=None,
+        )
         try:
-            await collect("POI001", row)
-            assert (await project_citydata_parking(engine))["accepted"] == 1
-            async with factory() as s:
-                original = await s.scalar(select(ParkingSourceRecord))
-                rid, fid, receipt, payload_id = (
-                    original.source_record_id,
-                    original.parking_id,
-                    original.collected_at,
-                    original.last_payload_id,
-                )
-            await collect("POI002", dict(row, RATES="2000"))
-            normal_list = CityDataRepository.list_latest
-
-            async def reverse(self, *args, **kwargs):
-                return list(reversed(await normal_list(self, *args, **kwargs)))
-
-            for reversed_order in (False, True):
-                if reversed_order:
-                    monkeypatch.setattr(CityDataRepository, "list_latest", reverse)
-                result = await project_citydata_parking(engine)
+            await boundary(factory, targets)
+            result = await current_batch(engine, {"POI001": [registration], "POI002": [live]})
+            assert (result["accepted"], result["duplicates"], result["rejected"]) == (1, 1, 0)
+            assert result["merge_summary"]["groups"] == 1
+            async with factory() as session:
+                record = await session.scalar(select(ParkingSourceRecord))
+                rid, fid = record.source_record_id, record.parking_id
+                assert record.base_minutes == 30 and record.base_fee_krw == 1000
+                observation = await session.get(ParkingAvailabilityLatest, rid)
+                assert observation.usable and observation.reported_available_spaces == 0
+                assert observation.received_at == STAMP
+            result = await current_batch(
+                engine, {"POI001": [registration], "POI002": []}, minute=20
+            )
+            assert result["received"] == result["accepted"] == 1
+            async with factory() as session:
+                record = await session.get(ParkingSourceRecord, rid)
+                assert record.parking_id == fid
+                observation = await session.get(ParkingAvailabilityLatest, rid)
                 assert (
-                    result["accepted"],
-                    result["rejected"],
-                    result["duplicates"],
-                    result["conflicts"],
-                ) == (0, 2, 0, 2)
+                    observation.received_at == STAMP and observation.reported_available_spaces == 0
+                )
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_current_conflicts_are_order_independent_and_preserve_last_good_values(normalized_database):
+    async def run():
+        engine = create_async_engine(normalized_database)
+        factory = async_sessionmaker(engine)
+        row = dict(document()["CITYDATA"]["PRK_STTS"][0], RATES="1000", TIME_RATES="30")
+        try:
+            await boundary(factory, {"POI001": "POI001", "POI002": "POI002"})
+            assert (await current_batch(engine, {"POI001": [row]}))["accepted"] == 1
+            async with factory() as session:
+                record = await session.scalar(select(ParkingSourceRecord))
+                rid, fid = record.source_record_id, record.parking_id
+            areas = {"POI001": [row], "POI002": [dict(row, RATES="2000")]}
+            for ordered in (areas, dict(reversed(list(areas.items())))):
+                result = await current_batch(engine, ordered, minute=1)
+                assert (result["accepted"], result["rejected"], result["conflicts"]) == (0, 2, 2)
                 assert result["rejection_reasons"] == {"conflicting_parking_registration": 2}
-                async with factory() as s:
-                    stored = await s.get(ParkingSourceRecord, rid)
-                    assert (
-                        stored.parking_id,
-                        stored.base_fee_krw,
-                        stored.collected_at,
-                        stored.last_payload_id,
-                    ) == (fid, 1000, receipt, payload_id)
-                    run_id = UUID(result["run_id"])
-                    reasons = await CollectionRepository(s).rejection_counts([run_id])
-                    assert reasons[run_id] == result["rejection_reasons"]
-                    raw = list(
-                        await s.scalars(select(RawPayload).where(RawPayload.run_id == run_id))
+                async with factory() as session:
+                    current = await session.get(ParkingSourceRecord, rid)
+                    assert (current.parking_id, current.base_fee_krw, current.collected_at) == (
+                        fid,
+                        1000,
+                        STAMP,
                     )
-                    assert len(raw) == 3
-                    derived = [p for p in raw if p.payload_kind == "derived_snapshot"]
-                    assert len(derived) == 2 and all(p.parent_payload_id for p in derived)
-                    assert {configured_store().load_json(p)[0]["RATES"] for p in derived} == {
-                        "1000",
-                        "2000",
-                    }
-                    assert (await s.get(CollectionRun, run_id)).status == "partial"
-            # Equal registrations do not resolve different observations at the same time.
-            await collect("POI002", dict(row, CUR_PRK_CNT="11"))
-            result = await project_citydata_parking(engine)
+                    run_id = UUID(result["run_id"])
+                    assert (await CollectionRepository(session).rejection_counts([run_id]))[
+                        run_id
+                    ] == result["rejection_reasons"]
+                    assert (await session.get(CollectionRun, run_id)).status == "partial"
+            result = await current_batch(
+                engine, {"POI001": [row], "POI002": [dict(row, CUR_PRK_CNT="1")]}, minute=2
+            )
             assert result["rejection_reasons"] == {"conflicting_parking_observation": 2}
-            # Equal records fold to one with consistent counts; resolved facts can be used again.
-            await collect("POI002", row)
-            result = await project_citydata_parking(engine)
+            result = await current_batch(engine, {"POI001": [row], "POI002": [row]}, minute=3)
             assert (
                 result["status"],
                 result["received"],
                 result["accepted"],
                 result["duplicates"],
             ) == ("success", 2, 1, 1)
-            async with factory() as s:
-                assert await s.scalar(select(func.count()).select_from(ParkingSourceRecord)) == 1
-                assert (await s.get(ParkingSourceRecord, rid)).parking_id == fid
         finally:
             await engine.dispose()
 

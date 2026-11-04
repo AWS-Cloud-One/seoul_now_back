@@ -1,4 +1,4 @@
-"""Archive each method/page before atomic, source-local parking normalization."""
+"""Atomically store selected parking values and committed page progress, without archives."""
 
 from collections import Counter
 from dataclasses import replace
@@ -12,7 +12,10 @@ from app.modules.data_pipeline.normalizers.values import timestamp
 from app.modules.data_pipeline.results import ProcessingCounts
 from app.repositories.collection import CollectionRepository
 from app.repositories.national_parking import NationalParkingWriter
-from app.repositories.national_parking_progress import load_national_parking_progress
+from app.repositories.national_parking_progress import (
+    load_national_parking_progress,
+    save_national_parking_progress,
+)
 from app.repositories.normalization import NormalizedWriter
 
 
@@ -68,14 +71,46 @@ def normalize_datasets(sync, datasets):
             if not dataset["complete"] or reasons or limitations
             else "success",
             limitations=limitations,
-            pagination=dataset.get("pagination"),
+            pagination=pagination_summary(dataset),
             **counts.as_dict(),
         )
     return results
 
 
+def pagination_summary(dataset):
+    pagination = dataset.get("pagination")
+    return (
+        {key: value for key, value in pagination.items() if key not in {"before", "after"}}
+        if pagination
+        else None
+    )
+
+
+def failed_results(datasets, error):
+    return {
+        method: dict(
+            status="failed",
+            collection_status=dataset["status"],
+            complete=dataset["complete"],
+            provider_total=dataset["provider_total"],
+            error_code=error,
+            limitations={},
+            pagination=pagination_summary(dataset),
+            **ProcessingCounts(
+                unit="row",
+                scope=method,
+                received=len(dataset["candidates"]),
+                rejected=len(dataset["candidates"]),
+                rejection_reasons={error: len(dataset["candidates"])}
+                if dataset["candidates"]
+                else {},
+            ).as_dict(),
+        )
+        for method, dataset in datasets.items()
+    }
+
+
 async def save_national_parking(session, data):
-    # Serialize direct replays as well as the normal source-locked collector path.
     await session.execute(
         text("SELECT pg_advisory_xact_lock(hashtext('national-parking-pagination'))")
     )
@@ -87,43 +122,43 @@ async def save_national_parking(session, data):
         dataset = data["datasets"][method]
         candidates = []
         for page in dataset["pages"]:
+            if not page["usable"]:
+                continue
             received = timestamp(page["received_at"]).value
             if received is None:
                 raise ValueError("missing_page_receipt")
-            payload = await repo.archive(
-                run.id, page["body"], received, part=f"{method}:{page['page']}"
+            candidates.extend(
+                ParkingCandidate(row, received, f"{method}:page:{page['page']}", row_index)
+                for row_index, row in enumerate(page["rows"])
             )
-            if page["usable"]:
-                candidates.extend(
-                    ParkingCandidate(row, payload.payload_id, received, method)
-                    for row in page["body"][method]
-                )
         datasets[method] = {**dataset, "candidates": candidates}
+    next_progress = dict(current_progress)
+    progress_results = {}
+    stale = False
+    for method, dataset in datasets.items():
+        pagination = dataset.get("pagination")
+        if not pagination or not pagination["resumable"]:
+            continue
+        stale |= pagination["before"] != current_progress.get(method)
+        next_progress[method] = pagination["after"]
+        progress_results[method] = "recorded"
     error = None
-    try:
-        async with session.begin_nested():
-            results = await session.run_sync(lambda sync: normalize_datasets(sync, datasets))
-    except Exception:
-        error = "normalization_failed"
-        results = {
-            method: dict(
-                status="failed",
-                collection_status=d["status"],
-                complete=d["complete"],
-                provider_total=d["provider_total"],
-                error_code=error,
-                limitations={},
-                pagination=d.get("pagination"),
-                **ProcessingCounts(
-                    unit="row",
-                    scope=method,
-                    received=len(d["candidates"]),
-                    rejected=len(d["candidates"]),
-                    rejection_reasons={error: len(d["candidates"])} if d["candidates"] else {},
-                ).as_dict(),
-            )
-            for method, d in datasets.items()
-        }
+    if stale:
+        # Reject the writes too: an old batch cannot update data while its cursor is held.
+        error = "stale_parking_batch"
+        results = failed_results(datasets, error)
+        progress_results = dict.fromkeys(progress_results, "held_stale_batch")
+    else:
+        try:
+            async with session.begin_nested():
+                results = await session.run_sync(lambda sync: normalize_datasets(sync, datasets))
+                await save_national_parking_progress(session, next_progress, current_progress)
+        except Exception:
+            error = "normalization_failed"
+            results = failed_results(datasets, error)
+            progress_results = dict.fromkeys(progress_results, "held_storage_failure")
+    if error:
+        next_progress = current_progress
     if all(item["status"] == "failed" for item in results.values()):
         error = error or "parking_all_methods_failed"
     status = (
@@ -147,37 +182,6 @@ async def save_national_parking(session, data):
         },
         rejection_reasons=dict(reasons),
     )
-    report = dict(
-        source=normalizer.SOURCE,
-        status=status,
-        error_code=error,
-        run_id=str(run.id),
-        records=totals.received,
-        datasets=results,
-        **totals.as_dict(),
-    )
-    next_progress = dict(current_progress)
-    progress_results = {}
-    for method, dataset in datasets.items():
-        pagination = dataset.get("pagination")
-        if not pagination or not pagination["resumable"]:
-            continue
-        if error == "normalization_failed":
-            progress_results[method] = "held_storage_failure"
-        elif pagination["before"] != current_progress.get(method):
-            # A repeated/stale batch must never rewind or skip the committed cursor.
-            progress_results[method] = "held_stale_batch"
-        else:
-            next_progress[method] = pagination["after"]
-            progress_results[method] = "recorded"
-    # Keep state in the existing report, committed atomically with typed writes. Explicit
-    # replay data without pagination still carries forward the previous checkpoint.
-    report["pagination_progress"] = {
-        "version": 1,
-        "state": next_progress,
-        "results": progress_results,
-    }
-    await repo.archive(run.id, report, None, kind="processing_report", part="report")
     await repo.finish(
         run,
         status=status,
@@ -185,4 +189,16 @@ async def save_national_parking(session, data):
         completeness="complete" if status == "success" else "partial",
         **totals.database_counts(),
     )
-    return report
+    return dict(
+        source=normalizer.SOURCE,
+        status=status,
+        error_code=error,
+        run_id=str(run.id),
+        records=totals.received,
+        datasets=results,
+        **totals.as_dict(),
+        pagination_progress={
+            "results": progress_results,
+            "next_pages": {method: state["next_page"] for method, state in next_progress.items()},
+        },
+    )
