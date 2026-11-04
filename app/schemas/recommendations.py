@@ -54,12 +54,15 @@ class ConditionsPatch(WireModel):
         return value
 
 
-class RecommendationRequest(WireModel):
+class RequestContext(WireModel):
     request_id: UUID
     trip_id: UUID
     condition_version: int = Field(strict=True, ge=0)
     current_conditions: Conditions
     excluded_place_ids: list[str]
+
+
+class RecommendationRequest(RequestContext):
     conditions_patch: ConditionsPatch
 
 

@@ -7,6 +7,7 @@ from app.api.routes import (
     locations,
     map_contract,
     parking,
+    pending,
     recommendations,
     supplemental,
     team_contract,
@@ -30,3 +31,4 @@ router.include_router(supplemental.router)
 router.include_router(map_contract.router)
 router.include_router(recommendations.router)
 router.include_router(locations.router)
+router.include_router(pending.router)

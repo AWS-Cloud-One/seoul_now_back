@@ -1,0 +1,109 @@
+"""Provisional HTTP boundaries; injected team services supply actual behavior."""
+
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, Header, Path, Query
+from fastapi.responses import JSONResponse
+
+from app.api.contract import ContractRoute, envelope
+from app.schemas.common import ErrorResponse
+from app.schemas.pending import (
+    ChatRequest,
+    ChatResponse,
+    DataStatusResponse,
+    PlaceDetailResponse,
+    RetryRoutesRequest,
+    TravelTimeRequest,
+    TravelTimeResponse,
+)
+from app.schemas.recommendations import RecommendationEnvelope
+from app.services.pending import PendingService, get_pending_service, require_data_status_access
+
+router = APIRouter(route_class=ContractRoute)
+Service = Annotated[PendingService, Depends(get_pending_service)]
+PlaceId = Annotated[str, Path(min_length=1)]
+ERRORS = {code: {"model": ErrorResponse} for code in (400, 410, 422, 429, 500, 502, 503, 504)}
+
+
+def conversation_response(status, body):
+    headers = {"Cache-Control": "no-store"}
+    if body.error is not None and body.error.retry_after_seconds is not None:
+        headers["Retry-After"] = str(body.error.retry_after_seconds)
+    return JSONResponse(status_code=status, content=body.model_dump(mode="json"), headers=headers)
+
+
+@router.post(
+    "/chat/messages",
+    tags=["chat"],
+    response_model=ChatResponse,
+    summary="채팅·조건 변경·추천 — 연결 틀",
+    description="部分 초안의 연결 틀. AI·검증·추천 미연결 시 503이며 조건을 변경하지 않습니다.",
+    responses={code: {"model": ChatResponse} for code in (400, 410, 422, 429, 500, 502, 503, 504)},
+)
+async def chat_messages(body: ChatRequest, service: Service):
+    return conversation_response(*await service.conversation(body))
+
+
+@router.post(
+    "/recommendations/retry-routes",
+    tags=["recommendations"],
+    response_model=RecommendationEnvelope,
+    summary="같은 후보 경로 재확인 — 연결 틀",
+    description="보류 계약. 문맥 검증·경로 서비스 미연결 시 503. 새 후보를 탐색하지 않습니다.",
+    responses={
+        code: {"model": RecommendationEnvelope}
+        for code in (400, 409, 410, 422, 429, 500, 502, 503, 504)
+    },
+)
+async def retry_routes(body: RetryRoutesRequest, service: Service):
+    return conversation_response(*await service.conversation(body, retry=True))
+
+
+@router.get(
+    "/places/{place_id}",
+    tags=["places"],
+    response_model=PlaceDetailResponse,
+    summary="추천 장소 상세 — 연결 틀",
+    responses=ERRORS,
+    description="보류 계약. Result-Context 필수. 문맥 검증·상세 서비스 미연결 시 503입니다.",
+)
+async def place_detail(
+    place_id: PlaceId,
+    service: Service,
+    result_context: Annotated[str, Header(alias="Result-Context", min_length=1)],
+):
+    return envelope(await service.place_detail(place_id, result_context))
+
+
+@router.post(
+    "/places/{place_id}/travel-time",
+    tags=["places"],
+    response_model=TravelTimeResponse,
+    summary="이동시간 재확인 — 연결 틀",
+    responses=ERRORS,
+    description="보류 계약. 출발지·목적지는 검증된 문맥에서 얻습니다. 미연결 시 503입니다.",
+)
+async def travel_time(place_id: PlaceId, body: TravelTimeRequest, service: Service):
+    return JSONResponse(
+        content=TravelTimeResponse.model_validate(
+            envelope(await service.travel_time(place_id, body), request_id=body.request_id)
+        ).model_dump(mode="json"),
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.get(
+    "/data-status",
+    tags=["admin"],
+    response_model=DataStatusResponse,
+    summary="관리자 수집 상태 — 비공개 연결 틀",
+    responses=ERRORS,
+    dependencies=[Depends(require_data_status_access)],
+    description="보류·비공개 계약. 관리자 인증 미연결 상태에서는 항상 차단(503)합니다.",
+)
+async def data_status(
+    service: Service,
+    source: Annotated[str, Query(min_length=1)],
+    target_key: Annotated[str, Query(min_length=1)],
+):
+    return envelope(await service.data_status(source, target_key))
