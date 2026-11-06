@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, Header, Path, Query, Response
 
 from app.api.contract import ContractRoute, envelope
 from app.api.dependencies import get_pending_service, require_data_status_access
-from app.api.errors import api_error, error_status
+from app.api.errors import ERROR_STATUS, api_error, error_status
 from app.schemas.common import ErrorResponse
 from app.schemas.pending import (
     ChatRequest,
@@ -24,7 +24,8 @@ from app.services.pending import ConversationOutcome, PendingService
 router = APIRouter(route_class=ContractRoute)
 Service = Annotated[PendingService, Depends(get_pending_service)]
 PlaceId = Annotated[str, Path(min_length=1)]
-ERRORS = {code: {"model": ErrorResponse} for code in (400, 410, 422, 429, 500, 502, 503, 504)}
+# Adapters use the shared ServiceError mapping for every provisional endpoint.
+ERRORS = {status: {"model": ErrorResponse} for status in sorted(set(ERROR_STATUS.values()))}
 
 
 def conversation_response(outcome: ConversationOutcome, response: Response, request_id: UUID):
@@ -42,7 +43,7 @@ def conversation_response(outcome: ConversationOutcome, response: Response, requ
     response_model=ChatResponse,
     summary="채팅·조건 변경·추천 — 연결 틀",
     description="부분 초안의 연결 틀. AI·검증·추천 미연결 시 503이며 조건을 변경하지 않습니다.",
-    responses={code: {"model": ChatResponse} for code in (400, 410, 422, 429, 500, 502, 503, 504)},
+    responses={code: {"model": ChatResponse} for code in ERRORS},
 )
 async def chat_messages(body: ChatRequest, response: Response, service: Service):
     return conversation_response(await service.conversation(body), response, body.request_id)
@@ -54,10 +55,7 @@ async def chat_messages(body: ChatRequest, response: Response, service: Service)
     response_model=RecommendationEnvelope,
     summary="같은 후보 경로 재확인 — 연결 틀",
     description="보류 계약. 문맥 검증·경로 서비스 미연결 시 503. 새 후보를 탐색하지 않습니다.",
-    responses={
-        code: {"model": RecommendationEnvelope}
-        for code in (400, 409, 410, 422, 429, 500, 502, 503, 504)
-    },
+    responses={code: {"model": RecommendationEnvelope} for code in ERRORS},
 )
 async def retry_routes(body: RetryRoutesRequest, response: Response, service: Service):
     return conversation_response(

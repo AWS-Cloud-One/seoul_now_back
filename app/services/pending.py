@@ -107,6 +107,16 @@ class PendingService:
             change.conditions != request.current_conditions
         ):
             raise ValueError("Inconsistent condition version")
+        before = request.current_conditions.model_dump(mode="json")
+        after = change.conditions.model_dump(mode="json")
+        expected_changes = {
+            field: (before[field], value)
+            for field, value in after.items()
+            if value != before[field]
+        }
+        actual_changes = {item.field: (item.before, item.after) for item in change.changes}
+        if len(actual_changes) != len(change.changes) or actual_changes != expected_changes:
+            raise ValueError("Change details must match the actual condition changes")
         if retry and (
             change.conditions != request.current_conditions
             or change.changes
@@ -134,7 +144,12 @@ class PendingService:
                     if retry
                     else "채팅 해석·검증·추천 기능이 아직 연결되지 않았습니다."
                 )
-            raw = await (adapter.retry(request) if retry else adapter.process(request))
+            # Adapters may mutate their working input; preserve the incoming context
+            # for response validation and failures that did not accept new conditions.
+            adapter_request = request.model_copy(deep=True)
+            raw = await (
+                adapter.retry(adapter_request) if retry else adapter.process(adapter_request)
+            )
             data = data_type.model_validate(raw)
             self.validate_context(data, request, retry)
             # Failure after acceptance must explicitly preserve the accepted update.
@@ -181,7 +196,9 @@ class PendingService:
     async def travel_time(self, place_id, request):
         if self.travel is None:
             raise unavailable("결과 문맥 검증·이동시간 확인 기능이 아직 연결되지 않았습니다.")
-        data = TravelTimeData.model_validate(await self.travel.check(place_id, request))
+        data = TravelTimeData.model_validate(
+            await self.travel.check(place_id, request.model_copy(deep=True))
+        )
         if (
             data.trip_id != request.trip_id
             or data.result_id != request.result_id
