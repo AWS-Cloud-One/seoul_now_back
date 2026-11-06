@@ -1,8 +1,0 @@
-# Optional natural-language recommendation settings; base Compose is unchanged.
-services:
-  api:
-    environment:
-      APP_OPENAI_API_KEY: ${APP_OPENAI_API_KEY:-}
-      APP_OPENAI_MODEL: ${APP_OPENAI_MODEL:-gpt-4.1-mini}
-      APP_OPENAI_TIMEOUT_SECONDS: ${APP_OPENAI_TIMEOUT_SECONDS:-20}
-      APP_RECOMMENDATION_STATE_SECRET: ${APP_RECOMMENDATION_STATE_SECRET:-}

@@ -64,6 +64,11 @@ services:
 
   api:
     <<: *backend
+    environment:
+      <<: *app-environment
+      APP_OPENAI_API_KEY: ${APP_OPENAI_API_KEY:-}
+      APP_OPENAI_MODEL: ${APP_OPENAI_MODEL:-gpt-4.1-mini}
+      APP_OPENAI_TIMEOUT_SECONDS: ${APP_OPENAI_TIMEOUT_SECONDS:-20}
     init: true
     restart: unless-stopped
     ports:
