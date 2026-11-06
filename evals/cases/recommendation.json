@@ -1,0 +1,33 @@
+{
+  "version": "2026-11-06-car-only",
+  "source": "synthetic user requirements; not live model evaluation",
+  "cases": [
+    {
+      "message": "시청역에서 차로 30분 안에 갈 파스타집",
+      "expected_type": "new_recommendation",
+      "expected": {
+        "origin_name": "시청역",
+        "max_minutes": 30,
+        "query_meaning": "파스타"
+      }
+    },
+    {
+      "message": "다른 곳 추천해줘",
+      "expected_type": "recommend_more",
+      "expected_changes": {}
+    },
+    {
+      "message": "고기 말고 파스타",
+      "expected_type": "update_conditions",
+      "expected_changes": {
+        "query": "파스타"
+      }
+    },
+    {
+      "message": "시청역에서 차로 갈 카페",
+      "expected": {
+        "server_default_max_minutes": 30
+      }
+    }
+  ]
+}

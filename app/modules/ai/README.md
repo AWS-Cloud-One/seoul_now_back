@@ -1,4 +1,12 @@
-# AI 조건 해석·설명
+
+## 구현됨 (2026-11-05)
+
+OpenAI Responses API를 기존 HTTPX 비동기 클라이언트로 호출합니다. Bedrock은 사용하지 않습니다.
+`providers/openai.py`는 구조화 출력·오류를 검증하고 `interpretation.py`는 명시된 조건만 합칩니다.
+`explanation.py`는 모델이 선택한 근거 키와 서버 순서를 검증하고 서버 수치로 설명을 렌더링합니다.
+프롬프트는 `prompts/interpretation.txt`, `prompts/explanation.txt`입니다.
+설정·실행·모의 검증의 범위는 [추천 안내](../../../docs/RECOMMENDATION_GUIDE.md)를 참고하세요.
+아래는 초기 설계 기록으로 '미구현' 및 Bedrock 예정 설명은 이 항목으로 대체합니다.
 
 중심 담당: 백엔드 검증·AI 추천. 전체 작업 위치는 [README의 역할별 작업 위치](../../../README.md#역할별-작업-위치)를 따른다.
 

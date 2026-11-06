@@ -13,6 +13,8 @@ def app() -> FastAPI:
     return create_app(
         Settings(
             _env_file=None,
+            openai_api_key="",
+            kakao_rest_api_key="",
             database_url="postgresql+psycopg://test:test@127.0.0.1:1/test",
             cors_origins=["http://localhost:5173"],
             docs_enabled=True,

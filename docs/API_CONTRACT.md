@@ -1,5 +1,14 @@
 # 프론트·백엔드 API 연결 기준
 
+## GPT 추천 추가 (2026-11-05)
+
+`POST /api/v1/recommendations`를 구현했습니다. 요청은 `message`, 선택적 `conditions`, 이전 응답의 `state`입니다.
+응답은 `request_type`, `status`, `conditions`, `recommendations`(최대 3개), `state`, `more_available`,
+`origin_options`, `message`, `explanation_source`입니다. 아래의 과거 미구현 기록은 이 항목으로 대체합니다.
+추천 항목의 `place.place_url`은 카카오 장소 상세 페이지 URL이며, 미제공 시 null입니다.
+전체 채팅 저장은 하지 않으며 state는 서명된 30분짜리 연속 검색 상태입니다.
+상세 요청 예제·응답 필드·오류·제약은 [추천 안내](RECOMMENDATION_GUIDE.md)를 따릅니다.
+
 기준: 팀 Notion API 명세서. 모든 경로 앞에는 `/api/v1`을 붙입니다.
 개발 화면: http://localhost:5173 / 실행 명세: http://localhost:8000/docs
 
@@ -24,7 +33,7 @@
 
 - GET /map/areas: 노션은 행정동 조회라고 정의하지만 현재 보유 자료는 주요 장소입니다. 행정동 코드·경계의 공식 출처와 버전, GeoJSON 계약을 담당자와 먼저 확정해야 합니다.
 - GET /data-status: 관리자용입니다. 관리자 인증/권한 계약을 먼저 정한 뒤 제공처별 최신 성공·실패·수집 시각 응답을 구현합니다. 기존 /parking/runs 및 /traffic/collection-status는 개발 검증용입니다.
-- POST /chat/messages: AI 제공처·프롬프트·요청/응답·대화 저장·추천 근거 계약이 미정입니다. AI 담당 구현 후 연결합니다. 임의의 성공 응답은 만들지 않습니다.
+- 전체 대화 저장 기능은 미구현입니다. 장소 추천은 `POST /recommendations`에서 처리하며 `/chat/messages`는 제공하지 않습니다.
 
 ## 담당별 다음 작업
 

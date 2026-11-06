@@ -1,3 +1,4 @@
+import secrets
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -31,6 +32,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         openapi_url="/openapi.json" if config.docs_enabled else None,
     )
     app.state.settings = config
+    app.state.recommendation_state_secret = (
+        config.recommendation_state_secret.get_secret_value() or secrets.token_urlsafe(32)
+    )
     app.add_middleware(
         CORSMiddleware,
         allow_origins=config.cors_origins,

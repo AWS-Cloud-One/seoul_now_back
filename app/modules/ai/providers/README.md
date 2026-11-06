@@ -1,5 +1,10 @@
 # 모델 제공처 연결
 
+2026-11-05: 사용자 선택에 따라 Bedrock 대신 `openai.py`에 OpenAI Responses API를 구현했습니다.
+설정은 APP_OPENAI_API_KEY, APP_OPENAI_MODEL, APP_OPENAI_TIMEOUT_SECONDS입니다.
+기존 HTTPX를 사용하므로 boto3/OpenAI SDK 의존성을 추가하지 않습니다.
+실제 키가 없는 상태의 호출은 503을 반환합니다. 아래 Bedrock 안내는 이전 계획입니다.
+
 AI 담당이 Bedrock Converse 연결을 구현할 위치다. 아직 구현된 제공처는 없다.
 
 API와 분리된 독립 AI 서버를 추가하지 않고, 클라이언트를 생성하여 AI 처리 모듈에 전달한다. 모듈 import나 앱 시작만으로 유료 모델을 호출하지 않는다.
