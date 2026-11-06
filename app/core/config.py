@@ -27,6 +27,9 @@ class Settings(BaseSettings):
     sgis_consumer_secret: SecretStr = SecretStr("")
 
     kakao_rest_api_key: SecretStr = SecretStr("")
+    openai_api_key: SecretStr = SecretStr("")
+    openai_model: str = "gpt-4.1-mini"
+    openai_timeout_seconds: float = Field(default=20, gt=0, le=120)
     data_go_kr_api_key: SecretStr = SecretStr("")
     seoul_municipal_parking_api_key: SecretStr = SecretStr("")
     seoul_topis_api_key: SecretStr = SecretStr("")
