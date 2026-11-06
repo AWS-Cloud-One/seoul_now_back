@@ -53,6 +53,34 @@ class KakaoLocalClient:
             self.key,
         )
 
+    async def nearby_keyword(self, query: str, coordinates, *, page: int) -> dict:
+        return await kakao_get(
+            self.http,
+            "https://dapi.kakao.com/v2/local/search/keyword.json",
+            {
+                "query": query,
+                "x": coordinates.longitude,
+                "y": coordinates.latitude,
+                "page": page,
+                "size": 15,
+                "sort": "distance",
+            },
+            self.key,
+        )
+
+    async def directions(self, origin, destination) -> dict:
+        return await kakao_get(
+            self.http,
+            "https://apis-navi.kakaomobility.com/v1/directions",
+            {
+                "origin": f"{origin.longitude},{origin.latitude}",
+                "destination": f"{destination.longitude},{destination.latitude}",
+                "summary": "true",
+                "priority": "RECOMMEND",
+            },
+            self.key,
+        )
+
     async def region(self, latitude: float, longitude: float) -> dict:
         return await kakao_get(
             self.http,

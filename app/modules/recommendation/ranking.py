@@ -3,27 +3,25 @@
 from dataclasses import dataclass
 from itertools import groupby
 
-from app.schemas.recommendation import Candidate
+from app.modules.recommendation.types import Candidate
 
 
 @dataclass(frozen=True)
 class RecommendationPolicy:
-    road_radius_m: int = 500
     max_pages_per_request: int = 3
 
 
 DEFAULT_POLICY = RecommendationPolicy()
 
 
-def rank_candidates(
-    candidates: list[Candidate],
-    policy: RecommendationPolicy = DEFAULT_POLICY,
-) -> list[Candidate]:
-    ordered = sorted(candidates, key=lambda c: (c.duration_seconds // 60, c.place.id))
+def rank_candidates(candidates: list[Candidate]) -> list[Candidate]:
+    ordered = sorted(candidates, key=lambda c: (c.duration_seconds // 60, c.place.place_id))
     ranked = []
     for _, group in groupby(ordered, key=lambda c: c.duration_seconds // 60):
         bucket = list(group)
-        if all(c.parking is not None for c in bucket):
-            bucket.sort(key=lambda c: (c.parking.distance_m, c.place.id))
+        if all(
+            c.parking is not None and c.parking.nearest_distance_meters is not None for c in bucket
+        ):
+            bucket.sort(key=lambda c: (c.parking.nearest_distance_meters, c.place.place_id))
         ranked.extend(bucket)
     return ranked

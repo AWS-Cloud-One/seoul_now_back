@@ -3,6 +3,8 @@
 from dataclasses import dataclass
 from typing import Protocol
 
+from sqlalchemy.exc import SQLAlchemyError
+
 from app.core.exceptions import ServiceError
 from app.schemas.recommendations import (
     Clarification,
@@ -67,7 +69,7 @@ class RecommendationService:
                     "SERVICE_UNAVAILABLE",
                     "조건 검증·추천 기능이 아직 연결되지 않았습니다.",
                 )
-            decision = await self.validator.validate(request)
+            decision = await self.validator.validate(request.model_copy(deep=True))
             candidate_update = decision.update
             if candidate_update.applied:
                 changed = candidate_update.conditions != request.current_conditions
@@ -98,7 +100,9 @@ class RecommendationService:
                 if not update.applied:
                     raise ValueError("Recommendation requires accepted conditions")
                 data = RecommendationResponse.model_validate(
-                    await self.engine.recommend(request, update.conditions),
+                    await self.engine.recommend(
+                        request.model_copy(deep=True), update.conditions.model_copy(deep=True)
+                    ),
                 )
                 if (
                     data.trip_id != request.trip_id
@@ -108,8 +112,10 @@ class RecommendationService:
                 ):
                     raise ValueError("Recommendation adapter returned inconsistent context")
             return RecommendationOutcome(data)
-        except RecommendationFailure as exc:
+        except ServiceError as exc:
             failure = exc
+        except SQLAlchemyError:
+            failure = RecommendationFailure("DATA_UNAVAILABLE", "추천 자료를 조회할 수 없습니다.")
         except TimeoutError:
             failure = RecommendationFailure("PROVIDER_TIMEOUT", "추천 처리 시간이 초과되었습니다.")
         except Exception:
