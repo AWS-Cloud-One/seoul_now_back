@@ -2,7 +2,7 @@
 
 중심 담당: 백엔드·데이터 처리 공동.
 
-제공처별 인증·요청·응답 처리를 작성할 위치다. `SeoulClient.fetch_page()`는 GetParkInfo·GetParkingInfo·sDoTPeople의 서울 열린데이터 JSON 페이지를 조회한다. `kakao.py`는 카카오 장소·지역 조회 통신을 제공하며, 도시데이터·TOPIS 요청은 현재 데이터 파이프라인의 수집기에 있다. 모델 제공처 연결은 [app/modules/ai/providers](../modules/ai/providers/README.md)에서 관리한다.
+제공처별 인증·요청·응답 처리를 작성할 위치다. `SeoulClient.fetch_page()`는 GetParkInfo·GetParkingInfo·sDoTPeople의 서울 열린데이터 JSON 페이지를 조회한다. `kakao.py`는 카카오 장소·지역·자동차 경로 조회 통신을 제공하며, 도시데이터·TOPIS 요청은 현재 데이터 파이프라인의 수집기에 있다. 모델 제공처 연결은 [app/modules/ai/providers](../modules/ai/providers/README.md)에서 관리한다.
 
 - 제공처별 모듈을 만들고 API Service와 수집기에서 공유한다. 같은 API의 인증·재시도 코드를 각 담당 폴더에 복사하지 않는다.
 - HTTPX 비동기 클라이언트와 설정을 생성자로 전달받는 방식으로 작성한다. API는 lifespan, 수집은 단발 작업 범위에서 연결을 열고 닫는다.

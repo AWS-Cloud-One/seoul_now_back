@@ -87,9 +87,11 @@ Service가 AI·추천 모듈을 호출하고 결과를 조립합니다. **수집
 
 `app/api/`는 제품 HTTP 요청·응답과 명세의 헬스체크를 담당합니다. 임시 데이터 검사 화면·원본 조회·구형 API 호환 경로는 제공하지 않습니다. 수집·저장·공간 정보의 검증은 `tests/unit/data_pipeline/`과 `tests/integration/`에서 수행합니다. `/parking/nearby`는 명세의 `latitude`·`longitude`를 필수로 받습니다.
 
-Service·Repository·외부 클라이언트는 `app/api/dependencies.py`에서 연결합니다. Service는 `app/core/exceptions.py`의 `ServiceError(code, message, ...)`를 전달하고, HTTP 상태 코드는 `app/api/errors.py`, 제품 응답 봉투는 `app/api/contract.py`에서 처리합니다. 추천 담당의 검증기·엔진은 `get_recommendation_service()`에 연결하며 실제 알고리즘은 담당 모듈에서 구현합니다.
+Service·Repository·외부 클라이언트는 `app/api/dependencies.py`에서 연결합니다. Service는 `app/core/exceptions.py`의 `ServiceError(code, message, ...)`를 전달하고, HTTP 상태 코드는 `app/api/errors.py`, 제품 응답 봉투는 `app/api/contract.py`에서 처리합니다. `get_recommendation_service()`는 조건 검증기와 추천 엔진을 연결합니다. 추천 모듈은 후보 검색·제외·자동차 ETA·등록 주차거리 비교를 담당하며, DB와 카카오 조회는 주입받은 공통 서비스를 사용합니다.
 
-채팅·추천 경로 재확인·장소 상세·이동시간 확인·수집 상태 조회는 `pending` 라우터·스키마·서비스에 연결 틀만 준비되어 있습니다. 어댑터 구성은 `get_pending_service()`에서 담당하며 미연결 기능은 503을 반환합니다. 수집 상태 조회는 관리자 인증 연결 전까지 차단됩니다. 대화 서비스는 처리 결과와 `ServiceError`를 반환하고 HTTP 상태·응답 봉투는 라우터가 구성합니다.
+`/recommendations`는 구조화된 조건을 받고, `/chat/messages`는 자연어 조건을 해석한 뒤 같은 추천 서비스로 연결합니다. 출발지·목적이 불완전하거나 출발지가 모호하면 조건을 적용하지 않고 추가 질문합니다. OpenAI 키가 없으면 채팅 해석은 503, 구조화 추천은 서버의 기본 설명을 사용합니다. 카카오 장소·경로 조회에는 `APP_KAKAO_REST_API_KEY`와 해당 API 사용 권한이 필요합니다.
+
+추천 경로 재확인·과거 카드 문맥 검증/답변·장소 상세·이동시간 확인·수집 상태 조회는 여전히 연결 틀만 준비되어 있습니다. 어댑터 구성은 `get_pending_service()`에서 담당하며 미연결 기능은 503을 반환합니다. 수집 상태 조회는 관리자 인증 연결 전까지 차단됩니다. 결과 문맥 토큰·요청 중복 실행 방지·여행별 서버 탐색 상태는 아직 구현하지 않았으며, 현재 추천은 요청마다 최대 3개 검색 페이지에서 전달받은 제외 ID를 적용합니다. [추천 모듈 안내](app/modules/recommendation/README.md)를 참고하세요.
 
 현재 공통 API 조회 세션은 요청별 읽기 전용 스냅샷입니다. 대화·조건 등 DB에 저장하는 엔드포인트를 구현할 때는 쓰기 세션과 커밋 경계를 명시적으로 연결해야 합니다. 수집기는 공통 기본 엔진의 쓰기 세션을 사용합니다.
 
@@ -286,6 +288,9 @@ docker compose run --rm --no-deps api alembic history
 | `APP_DOCS_ENABLED` | `false`이면 API 문서와 OpenAPI 경로를 끕니다. |
 | `APP_DB_CONNECT_TIMEOUT_SECONDS` | DB 연결·연결 풀 대기 제한. 기본 3초. |
 | `APP_HEALTH_TIMEOUT_SECONDS` | DB 준비 상태 조회 제한. 기본 5초. |
+| `APP_OPENAI_API_KEY` | 자연어 조건 해석·추천 근거 선택에 사용하는 키. Compose는 API 컨테이너에만 전달합니다. |
+| `APP_OPENAI_MODEL` | 현재 모델은 `gpt-4.1-mini`. 모델 호출은 요청 처리 시에만 실행합니다. |
+| `APP_OPENAI_TIMEOUT_SECONDS` | 모델 호출 1회의 제한 시간. 기본 20초. |
 
 기본 DB 계정은 사용자 `seoul`, 비밀번호 `seoul_local`, DB 이름 `seoul_now`이며 로컬 개발 전용입니다. 컨테이너에서는 `db:5432`, 내 컴퓨터의 DB 도구에서는 `127.0.0.1:5432`로 연결합니다. `DB_PORT`를 바꿔도 컨테이너 사이의 포트는 `5432`로 유지합니다.
 

@@ -4,13 +4,16 @@
 
 이 패키지는 자연어 조건 해석, 구조화 출력 검증, 확정된 추천 근거의 설명을 담당한다. 서버의 후보 비교·최종 순위는 `app/modules/recommendation/`에서 처리한다.
 
-| 위치 | 작성할 내용 |
+| 위치 | 현재 역할 |
 | --- | --- |
-| `providers/` | Bedrock 등 모델 제공처 연결, 호출 제한·오류·사용량 처리 |
-| `prompts/` | 조건 해석·설명 프롬프트와 변경 기록 |
-| 이 패키지의 기능별 모듈 | 향후 `interpretation.py`, `explanation.py`, `validation.py` 등으로 조건 해석·설명·근거 검사를 구현 |
+| `providers/openai.py` | HTTPX로 Responses API 호출, 구조화 출력 검증, 공통 ServiceError 변환 |
+| `prompts/` | 조건 추출·근거 선택 프롬프트 |
+| `interpretation.py` | 현재 Conditions 필드에 맞는 변경 추출과 명시적 해제 처리 |
+| `explanation.py` | 서버가 확인한 ETA·등록 주차거리 문구 선택과 후보/순서/근거 검증 |
 
-현재는 패키지와 작업 안내만 있다. 실제 모델 호출, 프롬프트, 입력·출력 계약과 boto3 설치는 미구현이다. 각 계약은 API·추천 담당과 맞춘 뒤 `app/schemas/`에 공통 타입으로 정의한다.
+현재 구현은 기존 추천 브랜치의 OpenAI 연결을 사용한다. Bedrock은 미구현이다. 설정은 공통 `core/config.py`, 의존성 구성은 공통 `api/dependencies.py`에서 관리하며 별도 설정·Compose·공개 요청 형식을 만들지 않는다. 내부 해석 결과는 기존 `ConditionsPatch`로 변환한다.
+
+자연어 입력은 `services/chat.py`가 처리하며 해석 후 같은 구조화 추천 서비스를 호출한다. 구조화 추천 요청에서는 조건 해석을 호출하지 않는다. 모델 키 미설정/해석 실패는 오류로 반환하고, 설명 실패는 서버의 기본 설명으로 대체한다. 추천 결과 문맥을 필요로 하는 과거 카드 후속 답변은 아직 연결하지 않았다.
 
 - API Service가 AI 모듈을 호출한다. 이 패키지에서 Router나 `Request`를 사용하지 않는다.
 - 조건 해석 실패와 설명 실패의 대체 동작을 구분한다. 실패를 성공한 빈 결과로 바꾸지 않는다.
