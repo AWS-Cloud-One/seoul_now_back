@@ -28,3 +28,5 @@ AGENTS.md
 /jobs/data/*_probe.json
 /jobs/data/parking_api_notes.txt
 /jobs/data/parking_api_20261001.docx
+.idea
+docs/
