@@ -89,6 +89,8 @@ Service가 AI·추천 모듈을 호출하고 결과를 조립합니다. **수집
 
 Service·Repository·외부 클라이언트는 `app/api/dependencies.py`에서 연결합니다. Service는 `app/core/exceptions.py`의 `ServiceError(code, message, ...)`를 전달하고, HTTP 상태 코드는 `app/api/errors.py`, 제품 응답 봉투는 `app/api/contract.py`에서 처리합니다. 추천 담당의 검증기·엔진은 `get_recommendation_service()`에 연결하며 실제 알고리즘은 담당 모듈에서 구현합니다.
 
+채팅·추천 경로 재확인·장소 상세·이동시간 확인·수집 상태 조회는 `pending` 라우터·스키마·서비스에 연결 틀만 준비되어 있습니다. 어댑터 구성은 `get_pending_service()`에서 담당하며 미연결 기능은 503을 반환합니다. 수집 상태 조회는 관리자 인증 연결 전까지 차단됩니다. 대화 서비스는 처리 결과와 `ServiceError`를 반환하고 HTTP 상태·응답 봉투는 라우터가 구성합니다.
+
 현재 공통 API 조회 세션은 요청별 읽기 전용 스냅샷입니다. 대화·조건 등 DB에 저장하는 엔드포인트를 구현할 때는 쓰기 세션과 커밋 경계를 명시적으로 연결해야 합니다. 수집기는 공통 기본 엔진의 쓰기 세션을 사용합니다.
 
 ## 처음 실행하기

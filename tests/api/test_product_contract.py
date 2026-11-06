@@ -17,6 +17,11 @@ def test_openapi_exposes_only_product_contracts(app):
         "/api/v1/parking/nearby",
         "/api/v1/parking/{parking_id}",
         "/api/v1/recommendations",
+        "/api/v1/chat/messages",
+        "/api/v1/recommendations/retry-routes",
+        "/api/v1/places/{place_id}",
+        "/api/v1/places/{place_id}/travel-time",
+        "/api/v1/data-status",
     }
     models = schema["components"]["schemas"]
     assert {"RecommendationResponse", "ParkingFacility", "ParkingSourceRecord"} <= models.keys()

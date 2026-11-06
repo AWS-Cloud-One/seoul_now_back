@@ -18,6 +18,8 @@ agent/
 AGENTS.md
 /docs/
 
+/.idea/
+
 # Share official inputs only; exclude runtime data and local artifacts.
 /data/*
 !/data/*.xlsx

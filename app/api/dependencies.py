@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.clients.kakao import KakaoLocalClient
 from app.core.config import Settings
+from app.core.exceptions import ServiceError
 from app.repositories.health import HealthRepository
 from app.repositories.map import MapRepository
 from app.repositories.parking_detail import ParkingDetailRepository
@@ -16,6 +17,7 @@ from app.services.locations import LocationResolveService, LocationSearchService
 from app.services.map import MapService
 from app.services.parking_detail import ParkingDetailService
 from app.services.parking_nearby import ParkingNearbyService
+from app.services.pending import PendingService
 from app.services.recommendations import RecommendationService
 
 
@@ -82,3 +84,17 @@ def get_parking_nearby_service(
 def get_recommendation_service() -> RecommendationService:
     """Connect the team's condition validator and recommendation engine here."""
     return RecommendationService()
+
+
+def get_pending_service() -> PendingService:
+    """Connect the team's conversation, context and collection-status adapters here."""
+    return PendingService()
+
+
+async def require_data_status_access():
+    """Replace with agreed admin authorization; default denies all access."""
+    raise ServiceError(
+        "SERVICE_UNAVAILABLE",
+        "관리자 접근 보호 방식이 아직 연결되지 않았습니다.",
+        retryable=False,
+    )
