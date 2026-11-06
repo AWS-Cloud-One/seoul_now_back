@@ -58,7 +58,6 @@ def test_responses_structured_output_and_no_conversation_storage():
         "query",
         "origin_name",
         "max_minutes",
-        "radius_m",
     ]
 
 

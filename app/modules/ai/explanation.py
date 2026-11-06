@@ -26,7 +26,7 @@ def clauses(candidate):
     }
     if candidate.parking is not None:
         p = candidate.parking
-        facts["parking"] = f"주변 {p.name}: 확인된 잔여 {p.available_spaces}면"
+        facts["parking"] = f"주변 등록 주차장 {p.name}: 직선거리 {p.distance_m:g}m (빈자리 미확인)"
     return facts
 
 

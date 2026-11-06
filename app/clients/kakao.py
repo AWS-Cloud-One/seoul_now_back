@@ -1,5 +1,8 @@
 """Shared Kakao I/O for legacy routes and recommendation orchestration."""
 
+import math
+from datetime import UTC, datetime
+
 import httpx
 from pydantic import ValidationError
 
@@ -76,7 +79,12 @@ def parse_places(data):
                     name=doc["place_name"],
                     x=doc["x"],
                     y=doc["y"],
-                    address=doc.get("road_address_name") or doc.get("address_name") or "",
+                    address=doc.get("address_name") or "",
+                    road_address=doc.get("road_address_name") or None,
+                    phone=doc.get("phone") or None,
+                    category_code=doc.get("category_group_code") or None,
+                    category_name=doc.get("category_name") or None,
+                    collected_at=datetime.now(UTC),
                     place_url=doc.get("place_url"),
                 )
             )
@@ -98,8 +106,6 @@ class KakaoClient:
             "page": page,
             "size": 15,
         }
-        if conditions.radius_m is not None:
-            params["radius"] = conditions.radius_m
         data = await request_json(self.client, self.settings, SEARCH_URL, params)
         meta = data.get("meta")
         end = meta.get("is_end") if isinstance(meta, dict) else None
@@ -136,3 +142,44 @@ class KakaoClient:
             raise ProviderError(
                 502, "route_invalid", "예상 이동시간을 확인할 수 없습니다."
             ) from None
+
+    async def region(self, x: float, y: float):
+        data = await request_json(
+            self.client,
+            self.settings,
+            "https://dapi.kakao.com/v2/local/geo/coord2regioncode.json",
+            {"x": x, "y": y, "input_coord": "WGS84"},
+        )
+        documents = data.get("documents")
+        if not isinstance(documents, list):
+            raise ProviderError(502, "kakao_invalid", "지역 검증 응답을 확인할 수 없습니다.")
+        regions = {d.get("region_1depth_name") for d in documents if isinstance(d, dict)}
+        mapped = {"서울특별시": "seoul", "인천광역시": "incheon", "경기도": "gyeonggi"}
+        known = {mapped[r] for r in regions if r in mapped}
+        if len(known) == 1:
+            return known.pop()
+        return "other" if regions else None
+
+    async def route(self, conditions, place):
+        data = await request_json(
+            self.client,
+            self.settings,
+            DIRECTIONS_URL,
+            {
+                "origin": f"{conditions.x},{conditions.y}",
+                "destination": f"{place.x},{place.y}",
+                "summary": "true",
+                "priority": "RECOMMEND",
+            },
+        )
+        summary = parse_route(data)["summary"]
+        seconds, distance = summary.get("duration"), summary.get("distance")
+        if (
+            type(seconds) is not int
+            or seconds < 0
+            or type(distance) not in (int, float)
+            or not math.isfinite(distance)
+            or distance < 0
+        ):
+            raise ProviderError(502, "route_invalid", "경로의 시간·거리를 확인할 수 없습니다.")
+        return seconds, distance

@@ -1,9 +1,5 @@
 """Read existing citydata and parking projections without triggering collectors."""
 
-from app.modules.data_pipeline.normalizers.parking import (
-    CITYDATA_PARKING_SOURCE,
-    MUNICIPAL_PARKING_SOURCE,
-)
 from app.modules.data_pipeline.normalizers.traffic import snapshot_features
 from app.modules.recommendation.evidence import parking_evidence, traffic_evidence
 from app.modules.recommendation.ranking import DEFAULT_POLICY
@@ -25,6 +21,5 @@ class RecommendationEvidenceRepository:
         traffic = traffic_evidence(place.x, place.y, self.features, policy=self.policy)
         results = []
         if 37.4 <= place.y <= 37.75 and 126.7 <= place.x <= 127.25:
-            for source in (CITYDATA_PARKING_SOURCE, MUNICIPAL_PARKING_SOURCE):
-                results.append(await self.parking.nearby(place.y, place.x, source, 100))
+            results.append(await self.parking.nearest_registered(place.y, place.x))
         return traffic, parking_evidence(results)

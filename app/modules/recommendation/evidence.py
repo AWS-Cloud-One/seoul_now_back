@@ -57,30 +57,19 @@ def traffic_evidence(x, y, features, now=None, policy=DEFAULT_POLICY):
 
 
 def parking_evidence(results, now=None):
-    now = now or datetime.now(UTC)
+    """Choose the nearest registered record, independent of live availability."""
     confirmed = []
     for result in results:
         for item in result.get("items", []):
-            if item.get("real_time_available") is not True:
-                continue
-            observed = source_time(item.get("availability_updated_at"))
-            if observed is None or not 0 <= (now - observed).total_seconds() <= 900:
-                continue
             try:
                 evidence = ParkingEvidence(
                     id=item["id"],
                     name=item["name"],
-                    available_spaces=item["available_spaces"],
                     distance_m=item["distance_m"],
                     source=item["source"],
-                    source_time=observed,
+                    source_time=source_time(item.get("source_updated_at")),
                 )
             except KeyError, ValidationError:
                 continue
             confirmed.append(evidence)
-    # One actual parking facility, never sum potentially duplicated provider records.
-    primary = [p for p in confirmed if p.source == "seoul_citydata_prk"]
-    fallback = [p for p in confirmed if p.source == "seoul_municipal_parking"]
-    return min(
-        primary or fallback, key=lambda p: (-p.available_spaces, p.distance_m, p.id), default=None
-    )
+    return min(confirmed, key=lambda p: (p.distance_m, p.id), default=None)

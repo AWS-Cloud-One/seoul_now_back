@@ -5,7 +5,7 @@ from app.schemas.recommendation import Conditions, Interpretation
 
 
 def test_keyword_patch_preserves_origin_and_limit():
-    current = Conditions(query="고기", origin_name="시청역", x=126.978, y=37.5665, max_minutes=45)
+    current = Conditions(query="고기", x=126.978, y=37.5665, max_minutes=45)
     result = merge_conditions(
         current, Interpretation(request_type="update_conditions", changes={"query": "파스타"})
     )

@@ -12,7 +12,7 @@ def merge_conditions(current: Conditions | None, result: Interpretation) -> Cond
     if result.request_type == "update_conditions" and current is None:
         raise ValueError("변경할 기존 검색 조건이 없습니다.")
     values = (current or Conditions()).model_dump()
-    if "origin_name" in patch and patch["origin_name"] != values["origin_name"]:
+    if patch.pop("origin_name", None) is not None:
         values.update(x=None, y=None)
     values.update(patch)
     return Conditions.model_validate(values)

@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from app.api.router import router
 from app.core.config import Settings
 from app.db.session import create_engine
+from app.modules.recommendation.sessions import RecommendationSessions
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -32,6 +33,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         openapi_url="/openapi.json" if config.docs_enabled else None,
     )
     app.state.settings = config
+    app.state.recommendation_sessions = RecommendationSessions()
     app.state.recommendation_state_secret = (
         config.recommendation_state_secret.get_secret_value() or secrets.token_urlsafe(32)
     )

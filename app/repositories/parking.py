@@ -9,6 +9,7 @@ from app.models.parking import CollectionRun, ParkingRecord
 from app.modules.data_pipeline.normalizers.parking import (
     CITYDATA_PARKING_SOURCE,
     MUNICIPAL_PARKING_SOURCE,
+    SOURCE,
 )
 
 LIVE_STATUS_MAX_AGE = timedelta(minutes=15)
@@ -180,4 +181,53 @@ class ParkingRepository:
             )
             if citydata
             else "등록 기본정보·직선거리이며 현재 요금·빈자리를 보증하지 않습니다.",
+        }
+
+    async def nearest_registered(self, lat: float, lon: float) -> dict:
+        """Nearest stored registration within 1 km, without vacancy prioritization.
+
+        Reuse the latest successful/partial snapshot per supported source.
+        Keep source records separate; do not infer shared facility identity.
+        """
+        latest = (
+            select(
+                CollectionRun.source.label("source"),
+                func.max(CollectionRun.started_at).label("started_at"),
+            )
+            .where(
+                CollectionRun.source.in_(
+                    [SOURCE, CITYDATA_PARKING_SOURCE, MUNICIPAL_PARKING_SOURCE]
+                ),
+                CollectionRun.status.in_(["success", "partial"]),
+            )
+            .group_by(CollectionRun.source)
+            .subquery()
+        )
+        point = func.ST_GeogFromText(f"SRID=4326;POINT({lon} {lat})")
+        distance = func.ST_Distance(ParkingRecord.location, point)
+        result = await self.session.execute(
+            select(ParkingRecord, distance.label("distance_m"))
+            .join(
+                latest,
+                (ParkingRecord.source == latest.c.source)
+                & (ParkingRecord.collected_at == latest.c.started_at),
+            )
+            .where(func.ST_DWithin(ParkingRecord.location, point, 1000))
+            .order_by(distance, ParkingRecord.id)
+            .limit(1)
+        )
+        row = result.first()
+        if row is None:
+            return {"items": []}
+        record, meters = row
+        return {
+            "items": [
+                {
+                    "id": record.id,
+                    "name": record.name,
+                    "source": record.source,
+                    "distance_m": meters,
+                    "source_updated_at": record.source_updated_at,
+                }
+            ]
         }

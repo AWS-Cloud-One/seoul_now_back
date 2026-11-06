@@ -74,3 +74,61 @@ def test_atomic_runs_idempotency_spatial_lookup_and_failure_preservation():
             await engine.dispose()
 
     asyncio.run(check())
+
+
+@pytest.mark.integration
+def test_recommendation_nearest_registration_ignores_vacancies(monkeypatch):
+    from datetime import UTC, datetime, timedelta
+
+    import app.repositories.parking as module
+
+    url = os.getenv("TEST_DATABASE_URL")
+    if not url:
+        pytest.skip("TEST_DATABASE_URL required")
+    source = "test_" + uuid4().hex
+    for key in ("SOURCE", "CITYDATA_PARKING_SOURCE", "MUNICIPAL_PARKING_SOURCE"):
+        monkeypatch.setattr(module, key, source)
+
+    async def check():
+        engine = create_engine(Settings(_env_file=None, database_url=url))
+        factory = async_sessionmaker(engine, expire_on_commit=False)
+        try:
+            async with factory() as session:
+                now = datetime.now(UTC)
+                old = now - timedelta(days=1)
+                session.add_all(
+                    [
+                        CollectionRun(id=uuid4(), source=source, started_at=t, status="success")
+                        for t in (old, now)
+                    ]
+                )
+                for name, y, timestamp, details in (
+                    ("old", 37.5, old, {}),
+                    ("near", 37.5001, now, {"CUR_PRK_YN": "N"}),
+                    ("far", 37.501, now, {"CUR_PRK_YN": "Y", "CUR_PRK_CNT": "100"}),
+                ):
+                    session.add(
+                        ParkingRecord(
+                            id=uuid4().hex,
+                            source=source,
+                            source_id=name,
+                            name=name,
+                            location=func.ST_GeogFromText(f"SRID=4326;POINT(127 {y})"),
+                            details=details,
+                            source_updated_at=None,
+                            collected_at=timestamp,
+                        )
+                    )
+                await session.flush()
+                result = await ParkingRepository(session).nearest_registered(37.5, 127)
+                assert result["items"][0]["name"] == "near"
+                assert 10 < result["items"][0]["distance_m"] < 12
+                assert result["items"][0]["source_updated_at"] is None
+                assert (await ParkingRepository(session).nearest_registered(37.7, 127))[
+                    "items"
+                ] == []
+                await session.rollback()
+        finally:
+            await engine.dispose()
+
+    asyncio.run(check())

@@ -44,9 +44,7 @@ def test_keyword_search_uses_distance_and_requested_page():
             kakao = KakaoClient(
                 client, Settings(_env_file=None, kakao_rest_api_key=SecretStr("test"))
             )
-            return await kakao.search(
-                Conditions(query="파스타", x=126.978, y=37.5665, radius_m=10000), 2
-            )
+            return await kakao.search(Conditions(query="파스타", x=126.978, y=37.5665), 2)
 
     assert asyncio.run(run()) == ([], True)
     assert captured == [
@@ -57,7 +55,6 @@ def test_keyword_search_uses_distance_and_requested_page():
             "sort": "distance",
             "page": "2",
             "size": "15",
-            "radius": "10000",
         }
     ]
 

@@ -15,11 +15,9 @@ class StrictModel(BaseModel):
 
 class Conditions(StrictModel):
     query: str | None = Field(default=None, min_length=1, max_length=100)
-    origin_name: str | None = Field(default=None, min_length=1, max_length=100)
     x: float | None = Field(default=None, ge=124, le=132)
     y: float | None = Field(default=None, ge=33, le=39)
     max_minutes: int = Field(default=30, ge=1, le=180, strict=True)
-    radius_m: int | None = Field(default=None, ge=1, le=20000, strict=True)
 
     @model_validator(mode="after")
     def coordinate_pair(self):
@@ -32,7 +30,6 @@ class Changes(StrictModel):
     query: str | None = Field(default=None, min_length=1, max_length=100)
     origin_name: str | None = Field(default=None, min_length=1, max_length=100)
     max_minutes: int | None = Field(default=None, ge=1, le=180, strict=True)
-    radius_m: int | None = Field(default=None, ge=1, le=20000, strict=True)
 
 
 class Interpretation(StrictModel):
@@ -47,6 +44,11 @@ class Place(StrictModel):
     y: float = Field(ge=33, le=39)
     address: str = Field(default="", max_length=500)
     place_url: HttpUrl | None = None
+    road_address: str | None = None
+    phone: str | None = None
+    category_code: str | None = None
+    category_name: str | None = None
+    collected_at: datetime | None = None
 
     @field_validator("place_url", mode="before")
     @classmethod
@@ -72,10 +74,9 @@ class TrafficEvidence(StrictModel):
 class ParkingEvidence(StrictModel):
     id: str
     name: str
-    available_spaces: int = Field(ge=0, strict=True)
     distance_m: float = Field(ge=0)
     source: str
-    source_time: datetime
+    source_time: datetime | None = None
 
 
 class Candidate(StrictModel):
@@ -98,6 +99,17 @@ class SearchState(StrictModel):
 
 
 class ChatRequest(StrictModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        str_strip_whitespace=True,
+        allow_inf_nan=False,
+        json_schema_extra={
+            "example": {
+                "message": "가족끼리 먹을 한식집 추천해줘",
+                "conditions": {"x": 126.977, "y": 37.5657, "max_minutes": 30},
+            }
+        },
+    )
     message: str = Field(min_length=1, max_length=2000)
     conditions: Conditions | None = None
     state: str | None = Field(default=None, max_length=300000)

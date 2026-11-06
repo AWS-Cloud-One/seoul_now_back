@@ -29,8 +29,6 @@ class RecommendationService:
             # Explicit UI edits are partial: omitted defaults must not erase previous values.
             values = current.model_dump()
             updates = request.conditions.model_dump(exclude_unset=True)
-            if "origin_name" in updates and updates["origin_name"] != values["origin_name"]:
-                values.update(x=None, y=None)
             values.update(updates)
             current = Conditions.model_validate(values)
         interpretation = await self.model.complete(
@@ -48,6 +46,12 @@ class RecommendationService:
         if interpretation.request_type == "recommend_more" and previous is None:
             raise ValueError("추가 추천에는 이전 응답의 state가 필요합니다.")
         conditions = merge_conditions(current, interpretation)
+        # Explicit selected coordinates take precedence over model-extracted labels.
+        if request.conditions is not None and request.conditions.x is not None:
+            conditions = conditions.model_copy(
+                update={"x": request.conditions.x, "y": request.conditions.y}
+            )
+        origin_name = interpretation.changes.origin_name
         kind = interpretation.request_type
         base = {"request_type": kind, "conditions": conditions}
         if kind == "new_recommendation" and not interpretation.changes.model_dump(
@@ -63,12 +67,12 @@ class RecommendationService:
                 **base, status="needs_clarification", message="검색어를 알려주세요."
             )
         if conditions.x is None:
-            if not conditions.origin_name:
+            if not origin_name:
                 return ChatResponse(
                     **base, status="needs_clarification", message="출발지를 알려주세요."
                 )
-            options = await self.kakao.origins(conditions.origin_name)
-            exact = [p for p in options if p.name == conditions.origin_name]
+            options = await self.kakao.origins(origin_name)
+            exact = [p for p in options if p.name == origin_name]
             if len(exact) != 1:
                 pending = SearchState(conditions=conditions, expires_at=int(time.time()) + 1800)
                 return ChatResponse(
