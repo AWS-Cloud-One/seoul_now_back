@@ -10,23 +10,9 @@ from fastapi.routing import APIRoute
 from sqlalchemy.exc import SQLAlchemyError
 from starlette.exceptions import HTTPException
 
+from app.api.errors import api_error, error_status
+from app.core.exceptions import ServiceError
 from app.schemas.common import ApiError, ErrorResponse
-
-
-class ContractError(Exception):
-    def __init__(
-        self,
-        status: int,
-        code: str,
-        message: str,
-        *,
-        retryable: bool | None = None,
-        retry_after_seconds: int | None = None,
-    ):
-        self.status, self.code, self.message = status, code, message
-        self.retryable = status in {429, 502, 503, 504} if retryable is None else retryable
-        self.retry_after_seconds = retry_after_seconds
-        super().__init__(message)
 
 
 def envelope(data=None, error=None, *, request_id: UUID | str | None = None):
@@ -61,9 +47,10 @@ class ContractRoute(APIRoute):
                     {"field": ".".join(map(str, e["loc"])), "code": e["type"], "message": e["msg"]}
                     for e in exc.errors()
                 ]
-            except ContractError as exc:
-                status, code, message = exc.status, exc.code, exc.message
-                retryable, retry_after = exc.retryable, exc.retry_after_seconds
+            except ServiceError as exc:
+                error = api_error(exc)
+                status, code, message = error_status(exc), error.code, error.message
+                retryable, retry_after = error.retryable, error.retry_after_seconds
             except SQLAlchemyError:
                 status, code, message = 503, "DATA_UNAVAILABLE", "저장 자료를 조회할 수 없습니다."
                 retryable = True

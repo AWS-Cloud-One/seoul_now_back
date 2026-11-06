@@ -16,7 +16,7 @@ htmlcov
 **/.DS_Store
 agent
 **/agent
+docs
 AGENTS.md
 **/AGENTS.md
-data
-evals/results
+data/

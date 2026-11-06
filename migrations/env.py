@@ -1,9 +1,11 @@
 import asyncio
 from logging.config import fileConfig
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from alembic import context
 from geoalchemy2 import alembic_helpers
-from sqlalchemy import Connection, pool
+from sqlalchemy import Connection, pool, text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.core.config import Settings
@@ -40,8 +42,35 @@ def do_run_migrations(connection: Connection) -> None:
         render_item=alembic_helpers.render_item,
         process_revision_directives=alembic_helpers.writer,
     )
-    with context.begin_transaction():
-        context.run_migrations()
+    # Separate release jobs/developers must not execute DDL concurrently.
+    locked = connection.scalar(text("SELECT pg_try_advisory_lock(hashtext('seoul_now:alembic'))"))
+    connection.commit()
+    if not locked:
+        raise RuntimeError("Another migration is running; retry after it completes")
+    try:
+        # 0009's immutable conversion briefly writes archive files. Fresh-to-head
+        # upgrades remove those tables in 0012, so no runtime file store is needed.
+        explicit = config.attributes.get("payload_storage_dir")
+        with TemporaryDirectory(prefix="seoul-migration-") as temporary:
+            if explicit is None:
+                config.attributes["payload_storage_dir"] = temporary
+            try:
+                with context.begin_transaction():
+                    context.run_migrations()
+                    if explicit is None and any(Path(temporary).rglob("*.blob")):
+                        if connection.dialect.has_table(connection, "raw_payloads"):
+                            raise RuntimeError(
+                                "Historical targets before 0012 require an explicit "
+                                "Config.attributes['payload_storage_dir']; "
+                                "upgrade to head otherwise"
+                            )
+            finally:
+                if explicit is None:
+                    config.attributes.pop("payload_storage_dir", None)
+    finally:
+        connection.rollback()
+        connection.execute(text("SELECT pg_advisory_unlock(hashtext('seoul_now:alembic'))"))
+        connection.commit()
 
 
 async def run_migrations_online() -> None:

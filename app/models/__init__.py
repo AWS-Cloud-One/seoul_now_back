@@ -1,27 +1,79 @@
-"""Register SQLAlchemy models here so Alembic can discover their metadata."""
+"""Transition to revision 0012; apply only after all readers and writers are converted."""
 
-from app.db.base import Base
-from app.models.citydata import CityDataSnapshot
-from app.models.map import (
-    MapFeature,
-    MapLayerVersion,
-    MapObservation,
+from .areas import (
+    AdministrativeArea,
+    PopulationArea,
+    PopulationAttemptLatest,
+    PopulationLatest,
+    RegionBoundary,
+)
+from .base import Base
+from .chat import (
+    ChatConditionAgeGroup,
+    ChatConditionPurpose,
+    ChatConditionVersion,
+    ChatExcludedPlace,
+    ChatMessage,
+    ChatSession,
+)
+from .collection import (
+    CollectionRejectionReason,
+    CollectionRun,
+    DataSource,
+)
+from .collection_progress import CollectionCursor, CollectionCursorPage
+from .map import MapFeature, MapLayerVersion, MapPopulationObservation, MapRoadObservation
+from .parking import (
+    ParkingAvailabilityLatest,
     ParkingFacility,
+    ParkingFieldIssue,
+    ParkingOperatingHour,
     ParkingSourceRecord,
 )
-from app.models.parking import CollectionRun, ParkingRecord
-from app.models.provider import ProviderSnapshot
+from .places import Place, PlaceCategory
+from .sensors import PedestrianSensor, PedestrianSensorLatest
+from .traffic import (
+    RoadAreaMapping,
+    RoadLink,
+    RoadLinkMapping,
+    RoadTrafficAttemptLatest,
+    RoadTrafficLatest,
+)
 
-__all__ = ["Base", "ProviderSnapshot", "CityDataSnapshot", "CollectionRun", "ParkingRecord"]
-
-
-from app.models.population import FloatingPopulationHistory, PopulationArea
-
-__all__ += ["PopulationArea", "FloatingPopulationHistory"]
-__all__ += [
+__all__ = [
+    "ChatConditionAgeGroup",
+    "ChatConditionPurpose",
+    "ChatConditionVersion",
+    "ChatExcludedPlace",
+    "ChatMessage",
+    "ChatSession",
+    "Place",
+    "PlaceCategory",
+    "AdministrativeArea",
+    "CollectionRun",
+    "CollectionCursor",
+    "CollectionCursorPage",
+    "CollectionRejectionReason",
+    "DataSource",
     "MapFeature",
     "MapLayerVersion",
-    "MapObservation",
+    "MapPopulationObservation",
+    "MapRoadObservation",
+    "ParkingAvailabilityLatest",
+    "ParkingFieldIssue",
+    "ParkingOperatingHour",
     "ParkingFacility",
     "ParkingSourceRecord",
+    "PedestrianSensor",
+    "PedestrianSensorLatest",
+    "PopulationArea",
+    "PopulationLatest",
+    "PopulationAttemptLatest",
+    "RegionBoundary",
+    "RoadAreaMapping",
+    "RoadLink",
+    "RoadLinkMapping",
+    "RoadTrafficLatest",
+    "RoadTrafficAttemptLatest",
+    "Base",
 ]

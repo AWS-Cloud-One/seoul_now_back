@@ -2,12 +2,13 @@
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Depends, Response
 
-from app.api.contract import ContractRoute
+from app.api.contract import ContractRoute, envelope
+from app.api.dependencies import get_recommendation_service
+from app.api.errors import api_error, error_status
 from app.schemas.recommendations import RecommendationEnvelope, RecommendationRequest
-from app.services.recommendations import RecommendationService, get_recommendation_service
+from app.services.recommendations import RecommendationService
 
 router = APIRouter(prefix="/recommendations", tags=["recommendations"], route_class=ContractRoute)
 
@@ -27,10 +28,13 @@ router = APIRouter(prefix="/recommendations", tags=["recommendations"], route_cl
 )
 async def recommendations(
     body: RecommendationRequest,
+    response: Response,
     service: Annotated[RecommendationService, Depends(get_recommendation_service)],
 ):
-    status, result = await service.execute(body)
-    headers = {"Cache-Control": "no-store"}
-    if result.error is not None and result.error.retry_after_seconds is not None:
-        headers["Retry-After"] = str(result.error.retry_after_seconds)
-    return JSONResponse(status_code=status, content=result.model_dump(mode="json"), headers=headers)
+    outcome = await service.execute(body)
+    error = api_error(outcome.failure) if outcome.failure else None
+    response.status_code = error_status(outcome.failure) if outcome.failure else 200
+    response.headers["Cache-Control"] = "no-store"
+    if error is not None and error.retry_after_seconds is not None:
+        response.headers["Retry-After"] = str(error.retry_after_seconds)
+    return envelope(outcome.response, error, request_id=body.request_id)

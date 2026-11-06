@@ -13,19 +13,18 @@ from app.schemas.location import Coordinates
 from app.schemas.parking_nearby import ParkingSummary
 from app.schemas.recommendations import (
     Clarification,
-    RecommendationData,
+    RecommendationResponse,
     RequestContext,
     Stages,
-    WireModel,
 )
 
 
-class RecentMessage(WireModel):
+class RecentMessage(ContractModel):
     role: Literal["user", "assistant"]
     content: str = Field(max_length=500)
 
 
-class ChatTarget(WireModel):
+class ChatTarget(ContractModel):
     result_id: str
     place_id: str
     context_token: str
@@ -42,7 +41,7 @@ class ChatStages(Stages):
     interpretation: Literal["skipped", "ok", "failed"] = "skipped"
 
 
-class Answer(WireModel):
+class Answer(ContractModel):
     topic: Literal["recommendation_reason", "travel_time", "parking", "population", "scope_notice"]
     place_id: str | None
     text: str
@@ -53,7 +52,7 @@ class Answer(WireModel):
     information: list[Information[JsonValue]]
 
 
-class ChatData(RecommendationData):
+class ChatData(RecommendationResponse):
     kind: Literal[
         "clarification",
         "recommendation",
@@ -83,7 +82,7 @@ class RetryRoutesRequest(RequestContext):
     context_token: str
 
 
-class TravelTimeRequest(WireModel):
+class TravelTimeRequest(ContractModel):
     request_id: UUID
     trip_id: UUID
     condition_version: int = Field(strict=True, ge=0)

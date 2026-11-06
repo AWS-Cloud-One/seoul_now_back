@@ -2,7 +2,6 @@
 
 import asyncio
 import json
-import os
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -10,27 +9,29 @@ import pytest
 from sqlalchemy import func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.contract import ContractError
 from app.core.config import Settings
+from app.core.exceptions import ServiceError
 from app.db.session import create_engine
-from app.models.map import MapFeature, MapLayerVersion, MapObservation
+from app.models import (
+    MapFeature,
+    MapLayerVersion,
+    MapPopulationObservation,
+    MapRoadObservation,
+    PopulationArea,
+    RoadLink,
+)
+from app.repositories.collection import CollectionRepository
 from app.repositories.map import MapRepository
 from app.schemas.map import MapQuery
-from app.services.map_contract import MapService
+from app.services.map import MapService
 
-pytestmark = [
-    pytest.mark.integration,
-    pytest.mark.skipif(
-        os.getenv("RUN_MAP_DB_TESTS") != "1",
-        reason="Set RUN_MAP_DB_TESTS=1 for rollback-only PostGIS tests",
-    ),
-]
+pytestmark = pytest.mark.integration
 
 
 @pytest.mark.parametrize("layer", ["roads", "population"])
-def test_spatial_selection_and_version_consistency(layer):
+def test_spatial_selection_and_version_consistency(layer, normalized_database):
     async def check():
-        engine = create_engine(Settings())
+        engine = create_engine(Settings(_env_file=None, database_url=normalized_database))
         try:
             async with engine.connect() as connection:
                 transaction = await connection.begin()
@@ -41,7 +42,7 @@ def test_spatial_selection_and_version_consistency(layer):
                         version = await session.get(MapLayerVersion, layer)
                         if version is None:
                             version = MapLayerVersion(
-                                layer=layer, geometry_version="", coverage="", is_ready=False
+                                layer=layer, geometry_version=None, coverage="", is_ready=False
                             )
                             session.add(version)
                         version.geometry_version = "rollback-test"
@@ -68,21 +69,37 @@ def test_spatial_selection_and_version_consistency(layer):
                                 "name": "Test area",
                             }
                         )
+                        repo = CollectionRepository(session)
+                        await repo.ensure_source("spatial_fixture")
                         for feature_id, active in [(key, True), (key + "-inactive", False)]:
-                            own_props = props | {
-                                "link_id" if layer == "roads" else "area_code": feature_id
-                            }
+                            geom = func.ST_Multi(
+                                func.ST_SetSRID(func.ST_GeomFromGeoJSON(json.dumps(shape)), 4326)
+                            )
+                            parent = (
+                                RoadLink(link_id=feature_id)
+                                if layer == "roads"
+                                else PopulationArea(area_code=feature_id, name="Test area")
+                            )
+                            parent.geometry = geom
+                            parent.source = "spatial_fixture"
+                            parent.is_active = active
+                            session.add(parent)
+                            await session.flush()
                             session.add(
                                 MapFeature(
                                     layer=layer,
                                     feature_id=feature_id,
                                     is_active=active,
-                                    properties=own_props,
-                                    geometry=func.ST_SetSRID(
-                                        func.ST_GeomFromGeoJSON(json.dumps(shape)), 4326
-                                    ),
+                                    name=props["name"],
+                                    geometry=geom,
+                                    **{
+                                        "road_link_id"
+                                        if layer == "roads"
+                                        else "population_area_code": feature_id
+                                    },
                                 )
                             )
+                        await session.flush()
                         value = (
                             {"speed_kmh": 0, "travel_seconds": 25}
                             if layer == "roads"
@@ -94,12 +111,16 @@ def test_spatial_selection_and_version_consistency(layer):
                             }
                         )
                         session.add(
-                            MapObservation(
+                            (MapRoadObservation if layer == "roads" else MapPopulationObservation)(
                                 layer=layer,
-                                feature_id=key,
-                                value=value,
+                                **{"link_id" if layer == "roads" else "area_code": key},
+                                **value,
+                                has_observation=True,
+                                source="spatial_fixture",
+                                received_at=datetime.now(UTC),
                                 observed_at=datetime.now(UTC),
-                                collected_at=datetime.now(UTC),
+                                processed_at=datetime.now(UTC),
+                                processor_version="test",
                                 collection_failed=False,
                             )
                         )
@@ -112,16 +133,18 @@ def test_spatial_selection_and_version_consistency(layer):
                         ids = [i.link_id if layer == "roads" else i.area_code for i in status.items]
                         assert ids == [key]
                         assert status.status == "ok"
-                        assert (
-                            geometry.feature_collection.features[0].geometry.model_dump(mode="json")
-                            == shape
-                        )
+                        assert geometry.feature_collection.features[0].geometry.model_dump(
+                            mode="json"
+                        ) == {
+                            "type": "MultiLineString" if layer == "roads" else "MultiPolygon",
+                            "coordinates": [shape["coordinates"]],
+                        }
                         if layer == "population":
                             hole = await service.geometry(
                                 layer, MapQuery(bbox=(1.5, 1.5, 2.5, 2.5), level=6)
                             )
                             assert hole.feature_collection.features == []
-                        with pytest.raises(ContractError) as error:
+                        with pytest.raises(ServiceError) as error:
                             await service.status(layer, query, "old-version")
                         assert error.value.code == "GEOMETRY_VERSION_MISMATCH"
                 finally:

@@ -1,183 +1,119 @@
+"""Parking positions and current availability from typed source records."""
+
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from uuid import UUID
 
 from geoalchemy2 import Geometry
 from sqlalchemy import func, select
-from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.parking import CollectionRun, ParkingRecord
-from app.modules.data_pipeline.normalizers.parking import (
-    CITYDATA_PARKING_SOURCE,
-    MUNICIPAL_PARKING_SOURCE,
-)
+from app.models import ParkingAvailabilityLatest, ParkingSourceRecord
 
-LIVE_STATUS_MAX_AGE = timedelta(minutes=15)
+AVAILABILITY_MAX_AGE = timedelta(hours=1)
 
 
-def parking_availability(
-    source: str,
-    details: dict | None,
-    source_updated_at: datetime | None,
-    now: datetime | None = None,
-) -> dict:
-    """Expose a vacancy count only when Seoul says it is real-time and fresh."""
-    result = {
-        "current_availability": "unconfirmed",
-        "availability_status": "unconfirmed",
-        "available_spaces": None,
-        "availability_updated_at": None,
-        "real_time_available": False,
-    }
-    if source not in {CITYDATA_PARKING_SOURCE, MUNICIPAL_PARKING_SOURCE}:
-        return result
-
-    details = details or {}
-    flag = str(details.get("CUR_PRK_YN") or "").strip().upper()
-    if flag == "N":
-        result.update(current_availability="not_provided", availability_status="not_provided")
-        return result
-    if flag != "Y":
-        return result
-    try:
-        count = int(str(details.get("CUR_PRK_CNT")).strip())
-    except TypeError, ValueError:
-        return result
-    if count < 0 or source_updated_at is None:
-        return result
-
-    current = now or datetime.now(UTC)
-    observed = source_updated_at
-    if observed.tzinfo is None:
-        observed = observed.replace(tzinfo=UTC)
-    if current.tzinfo is None:
-        current = current.replace(tzinfo=UTC)
-    age = current - observed
-    if age < timedelta(0) or age > LIVE_STATUS_MAX_AGE:
-        result.update(current_availability="stale", availability_status="stale")
-        return result
-
-    result.update(
-        current_availability="available",
-        availability_status="available",
-        available_spaces=count,
-        availability_updated_at=source_updated_at,
-        real_time_available=True,
-    )
-    return result
+@dataclass(frozen=True)
+class ParkingAvailability:
+    source_record_id: UUID
+    source: str
+    available_spaces: int | None
+    total_spaces: int | None
+    usable: bool
+    observed_at: datetime | None
+    received_at: datetime | None
+    time_basis: str | None
+    expires_at: datetime | None
+    reason_code: str | None
 
 
 class ParkingRepository:
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(self, session):
         self.session = session
 
-    async def upsert(self, rows: list[dict]) -> None:
-        # Batches avoid PostgreSQL's bound-parameter limit.
-        for offset in range(0, len(rows), 500):
-            statement = insert(ParkingRecord).values(rows[offset : offset + 500])
-            statement = statement.on_conflict_do_update(
-                index_elements=[ParkingRecord.id],
-                set_={key: getattr(statement.excluded, key) for key in rows[0] if key != "id"},
-                where=ParkingRecord.collected_at < statement.excluded.collected_at,
-            )
-            await self.session.execute(statement)
+    async def active_positions(self, source):
+        r = ParkingSourceRecord
+        records = await self.session.execute(
+            select(
+                r.provider_record_id,
+                func.ST_Y(r.location.cast(Geometry)),
+                func.ST_X(r.location.cast(Geometry)),
+            ).where(r.source == source, r.is_active.is_(True), r.location.is_not(None))
+        )
+        positions = {}
+        for code, lat, lon in records:
+            positions.setdefault(code, set()).add((lat, lon))
+        return positions
 
-    async def nearby(self, lat: float, lon: float, source: str, limit: int) -> dict:
-        point = func.ST_GeogFromText(f"SRID=4326;POINT({lon} {lat})")
-        distance = func.ST_Distance(ParkingRecord.location, point)
-        latest = await self.session.scalar(
-            select(CollectionRun)
-            .where(
-                CollectionRun.source == source,
-                CollectionRun.status.in_(["success", "partial"]),
-            )
-            .order_by(CollectionRun.started_at.desc())
-            .limit(1)
-        )
-        if latest is None:
-            return {"status": "unconfirmed", "radius_m": None, "items": []}
-        latest_attempt = await self.session.scalar(
-            select(CollectionRun)
-            .where(CollectionRun.source == source)
-            .order_by(CollectionRun.started_at.desc())
-            .limit(1)
-        )
-        age = (datetime.now(latest.started_at.tzinfo) - latest.started_at).total_seconds()
-        citydata = source in {CITYDATA_PARKING_SOURCE, MUNICIPAL_PARKING_SOURCE}
-        fallback: tuple[int, list[dict]] | None = None
-        for radius in (300, 500, 1000):
-            result = await self.session.execute(
-                select(
-                    ParkingRecord,
-                    distance.label("distance_m"),
-                    func.ST_Y(ParkingRecord.location.cast(Geometry)),
-                    func.ST_X(ParkingRecord.location.cast(Geometry)),
-                )
+    async def availability(self, source_record_id, *, now=None):
+        """Keep historical facts, but expose counts only while usable at the requested time."""
+        now = now or datetime.now(UTC)
+        if now.utcoffset() is None:
+            raise ValueError("availability_time_requires_timezone")
+        row = (
+            await self.session.execute(
+                select(ParkingAvailabilityLatest, ParkingSourceRecord.source)
+                .join(ParkingSourceRecord)
                 .where(
-                    ParkingRecord.source == source,
-                    ParkingRecord.collected_at == latest.started_at,
-                    func.ST_DWithin(ParkingRecord.location, point, radius),
+                    ParkingAvailabilityLatest.source_record_id == source_record_id,
+                    ParkingSourceRecord.is_active.is_(True),
                 )
-                .order_by(distance, ParkingRecord.id)
-                .limit(max(limit, 100) if citydata else limit)
             )
-            items = []
-            for record, meters, latitude, longitude in result:
-                items.append(
-                    {
-                        "id": record.id,
-                        "source": record.source,
-                        "source_id": record.source_id,
-                        "name": record.name,
-                        "address": record.address,
-                        "lat": latitude,
-                        "lon": longitude,
-                        "distance_m": round(meters, 1),
-                        "registered_details": record.details,
-                        "source_updated_at": record.source_updated_at,
-                        "collected_at": record.collected_at,
-                        **parking_availability(
-                            record.source, record.details, record.source_updated_at
-                        ),
-                    }
-                )
-            if not items:
-                continue
-            if citydata:
-                items.sort(key=lambda item: (not item["real_time_available"], item["distance_m"]))
-                items = items[:limit]
-            fallback = (radius, items)
-            if not citydata or any(item["real_time_available"] for item in items):
-                break
-        if fallback is None:
-            return {
-                "status": "unconfirmed",
-                "radius_m": 1000,
-                "items": [],
-                "notice": "보유 자료에서 확인 불가. 실제 주차장이 없다는 뜻은 아닙니다.",
-            }
-        radius, items = fallback
-        has_live = any(item["real_time_available"] for item in items)
-        return {
-            "status": "live_parking"
-            if citydata and has_live
-            else (
-                "real_time_unavailable"
-                if citydata
-                else ("delayed" if age > 7 * 86400 else "registered_information")
-            ),
-            "radius_m": radius,
-            "items": items,
-            "collection_status": latest.status,
-            "latest_attempt_status": latest_attempt.status,
-            "latest_attempt_error": latest_attempt.error_code,
-            "source": source,
-            "is_demo": source.startswith("demo_"),
-            "last_collected_at": latest.started_at,
-            "notice": (
-                "실시간 제공 표식과 원천 갱신 시각(15분 이내)을 확인한 "
-                "항목만 주차 가능 면수를 표시합니다. "
-                "그 외는 실시간 미제공 또는 미확인입니다."
+        ).first()
+        if row is None:
+            return None
+        state, source = row
+        total, received = state.total_spaces, state.received_at
+        observed, usable, reason = state.observed_at, state.usable, state.reason_code
+        available = (
+            state.reported_available_spaces
+            if state.method == "reported"
+            else state.calculated_available_spaces
+        )
+        basis, expires = "observed_at" if observed is not None else None, None
+        if source == "national_parking" and observed is None:
+            # Keep source-timestamped observations separate from the latest received counts.
+            total, available = state.attempt_total_spaces, state.attempt_reported_available_spaces
+            received, basis = state.attempt_received_at, "received_at"
+            reason = state.attempt_reason_code
+            if state.reason_code in {"AMBIGUOUS_AVAILABILITY_SCOPE", "SAME_TIME_CONFLICT"}:
+                reason = state.reason_code
+            usable = (
+                state.attempt_status == "unknown"
+                and reason == "SOURCE_TIME_UNKNOWN"
+                and state.attempt_provision_state == "provided"
+                and total is not None
+                and available is not None
+                and 0 <= available <= total
             )
-            if citydata
-            else "등록 기본정보·직선거리이며 현재 요금·빈자리를 보증하지 않습니다.",
-        }
+            if received is None:
+                usable, reason = False, "RECEIPT_TIME_UNKNOWN"
+            else:
+                expires = received + AVAILABILITY_MAX_AGE
+                if received > now:
+                    usable, reason = False, "FUTURE_TIMESTAMP"
+                elif now > expires:
+                    usable, reason = False, "STALE_DATA"
+        else:
+            if observed is None:
+                usable, reason = False, reason or "SOURCE_TIME_UNKNOWN"
+            else:
+                expires = observed + AVAILABILITY_MAX_AGE
+                if observed > now:
+                    usable, reason = False, "FUTURE_TIMESTAMP"
+                elif now > expires:
+                    usable, reason = False, "STALE_DATA"
+            # A later explicit withdrawal overrides the retained historical observation.
+            if state.attempt_provision_state == "not_provided":
+                usable, reason = False, "NOT_PROVIDED"
+        return ParkingAvailability(
+            source_record_id=source_record_id,
+            source=source,
+            available_spaces=available if usable else None,
+            total_spaces=total,
+            usable=usable,
+            observed_at=observed,
+            received_at=received,
+            time_basis=basis,
+            expires_at=expires,
+            reason_code=reason,
+        )

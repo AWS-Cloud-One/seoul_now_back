@@ -1,19 +1,17 @@
 """Team integration ports for provisional APIs; no fabricated success responses.
 
-Adapters own domain validation and safe ContractError mapping. Context adapters
+Adapters own domain validation and safe ServiceError mapping. Context adapters
 must verify tokens, result membership, expiry and original conditions BEFORE
 fetching data or invoking paid services. No token/auth policy is invented here.
 """
 
-from datetime import UTC, datetime
+from dataclasses import dataclass
 from typing import Protocol
 
-from app.api.contract import ContractError
-from app.schemas.common import ApiError
+from app.core.exceptions import ServiceError
 from app.schemas.pending import (
     ChatData,
     ChatRequest,
-    ChatResponse,
     ChatStages,
     DataStatusData,
     PlaceDetailData,
@@ -21,19 +19,27 @@ from app.schemas.pending import (
     TravelTimeData,
     TravelTimeRequest,
 )
-from app.schemas.recommendations import ConditionUpdate, RecommendationData, RecommendationEnvelope
+from app.schemas.recommendations import ConditionUpdate, RecommendationResponse
 
 
 def unavailable(message):
-    return ContractError(503, "SERVICE_UNAVAILABLE", message, retryable=False)
+    return ServiceError("SERVICE_UNAVAILABLE", message, retryable=False)
 
 
-class PendingFailure(ContractError):
+class PendingFailure(ServiceError):
     """Safe adapter failure explicitly carrying the last accepted condition state."""
 
-    def __init__(self, status, code, message, *, data, retry_after_seconds=None):
-        super().__init__(status, code, message, retry_after_seconds=retry_after_seconds)
+    def __init__(self, code, message, *, data, retryable=None, retry_after_seconds=None):
+        super().__init__(
+            code, message, retryable=retryable, retry_after_seconds=retry_after_seconds
+        )
         self.data = data
+
+
+@dataclass(frozen=True)
+class ConversationOutcome:
+    response: ChatData | RecommendationResponse
+    failure: ServiceError | None = None
 
 
 class ChatProcessor(Protocol):
@@ -47,7 +53,7 @@ class ChatProcessor(Protocol):
 
 
 class RouteRetryProcessor(Protocol):
-    async def retry(self, request: RetryRoutesRequest) -> RecommendationData:
+    async def retry(self, request: RetryRoutesRequest) -> RecommendationResponse:
         """Verify historical context; retry original candidates, never search new ones."""
         ...
 
@@ -109,10 +115,11 @@ class PendingService:
         ):
             raise ValueError("Route retry must not change conditions or ask new questions")
 
-    async def conversation(self, request, *, retry=False):
+    async def conversation(
+        self, request: ChatRequest | RetryRoutesRequest, *, retry=False
+    ) -> ConversationOutcome:
         """Preserve incoming conditions when the request has not been accepted."""
-        data_type = RecommendationData if retry else ChatData
-        response_type = RecommendationEnvelope if retry else ChatResponse
+        data_type = RecommendationResponse if retry else ChatData
         update = ConditionUpdate(
             applied=False,
             conditions=request.current_conditions,
@@ -133,38 +140,23 @@ class PendingService:
             # Failure after acceptance must explicitly preserve the accepted update.
             if data.kind == "failure":
                 raise ValueError("Use a response carrying a safe failure status and error")
-            return 200, response_type(
-                request_id=request.request_id,
-                server_time=datetime.now(UTC),
-                data=data,
-                error=None,
-            )
+            return ConversationOutcome(data)
         except PendingFailure as exc:
             failure = exc
             try:
                 failed_data = data_type.model_validate(exc.data)
                 self.validate_context(failed_data, request, retry)
-                if failed_data.kind != "failure" or not 400 <= exc.status <= 599:
+                if failed_data.kind != "failure":
                     raise ValueError("Invalid adapter failure")
-                return failure.status, response_type(
-                    request_id=request.request_id,
-                    server_time=datetime.now(UTC),
-                    data=failed_data,
-                    error=ApiError(
-                        code=failure.code,
-                        message=failure.message,
-                        retryable=failure.retryable,
-                        retry_after_seconds=failure.retry_after_seconds,
-                    ),
-                )
+                return ConversationOutcome(failed_data, failure)
             except Exception:
-                failure = ContractError(500, "INTERNAL_ERROR", "요청 처리 중 오류가 발생했습니다.")
-        except ContractError as exc:
+                failure = ServiceError("INTERNAL_ERROR", "요청 처리 중 오류가 발생했습니다.")
+        except ServiceError as exc:
             failure = exc
         except TimeoutError:
-            failure = ContractError(504, "PROVIDER_TIMEOUT", "처리 시간이 초과되었습니다.")
+            failure = ServiceError("PROVIDER_TIMEOUT", "처리 시간이 초과되었습니다.")
         except Exception:
-            failure = ContractError(500, "INTERNAL_ERROR", "요청 처리 중 오류가 발생했습니다.")
+            failure = ServiceError("INTERNAL_ERROR", "요청 처리 중 오류가 발생했습니다.")
         data = data_type(
             trip_id=request.trip_id,
             base_condition_version=request.condition_version,
@@ -176,17 +168,7 @@ class PendingService:
             clarification=None,
             warnings=[],
         )
-        return failure.status, response_type(
-            request_id=request.request_id,
-            server_time=datetime.now(UTC),
-            data=data,
-            error=ApiError(
-                code=failure.code,
-                message=failure.message,
-                retryable=failure.retryable,
-                retry_after_seconds=failure.retry_after_seconds,
-            ),
-        )
+        return ConversationOutcome(data, failure)
 
     async def place_detail(self, place_id, context_token):
         if self.places is None:
@@ -216,12 +198,3 @@ class PendingService:
         if data.source != source or data.target_key != target_key:
             raise ValueError("Status adapter returned another target")
         return data
-
-
-def get_pending_service() -> PendingService:
-    return PendingService()
-
-
-async def require_data_status_access():
-    """Replace with agreed admin authorization; default denies all access."""
-    raise unavailable("관리자 접근 보호 방식이 아직 연결되지 않았습니다.")

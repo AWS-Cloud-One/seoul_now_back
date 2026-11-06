@@ -1,4 +1,4 @@
-from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
 from app.core.config import Settings
 
@@ -12,4 +12,13 @@ def create_engine(settings: Settings) -> AsyncEngine:
         max_overflow=5,
         pool_timeout=settings.db_connect_timeout_seconds,
         connect_args={"connect_timeout": settings.db_connect_timeout_seconds},
+    )
+
+
+def read_session_factory(engine: AsyncEngine):
+    """One committed snapshot for every SELECT in an API request; writers use the base engine."""
+    return async_sessionmaker(
+        engine.execution_options(isolation_level="REPEATABLE READ", postgresql_readonly=True),
+        expire_on_commit=False,
+        autoflush=False,
     )

@@ -7,7 +7,7 @@
 | 빌드 단계 | 포함 내용 | 용도 |
 | --- | --- | --- |
 | `runtime` | Python·실행 패키지·앱·migration·jobs | 실행 이미지의 공통 기반 |
-| `development` | runtime + pytest·Ruff·tests | 로컬 개발, 자동 재시작, 검사 |
+| `development` | runtime + pytest·Ruff·cfn-lint·tests | 로컬 개발, 자동 재시작, 앱·인프라 검사 |
 | `production` | runtime | 테스트 도구와 자동 재시작을 제외한 배포용 이미지 |
 
 Python 버전과 OS 이미지는 Dockerfile의 첫 `FROM`에서 함께 고정합니다. 실행 패키지는 `requirements.txt`, 개발 패키지는 이를 참조하는 `requirements-dev.txt`에 직접 작성합니다. 빌드 때 `pip install -r`로 설치하고 `pip check`로 의존성 충돌을 확인합니다.
@@ -30,7 +30,11 @@ docker build --platform linux/amd64 -t seoul-now-backend:prod-amd64 .
 
 - `api`: 소스 폴더를 연결하고 `--reload`로 실행합니다.
 - `migrate`: DB 변경을 적용하고 종료합니다. `Exited (0)`이 정상입니다.
-- `tests`: `test` 프로필에서만 실행하며 실제 PostGIS를 포함해 검사합니다.
+- `citydata-collector`: 같은 이미지에서 `jobs.scheduler`로 정기 수집을 실행합니다.
+- `reference-import`: `reference` 프로필의 명시적 기준정보 반영 작업이며 현재 `data`만 읽기 전용으로 연결합니다. 기본 명령은 도움말 출력입니다.
+- `tests`: `test` 프로필에서만 실행하며 실제 PostGIS를 포함해 검사합니다. 기준파일 파서 테스트용 reference 마운트가 있으며 실제 API 키·응답 원문은 연결하지 않습니다.
+
+API·정기 worker에는 기준파일·raw 마운트가 없고 배포 이미지에도 기준파일/원문은 포함하지 않습니다. 초기 기준정보는 별도 반영 작업으로 DB에 저장한 뒤 사용합니다. 최신0012 마이그레이션과 선행 기준정보 반영 후 사용합니다.
 
 Dockerfile의 기본 헬스체크는 `/api/v1/health/live`입니다. 로컬 Compose는 `/api/v1/health/ready`를 사용해 DB까지 확인합니다. AWS의 생존·준비 상태 판정은 운영 요구에 맞춰 따로 설정합니다.
 
@@ -40,4 +44,4 @@ PostGIS 이미지는 `linux/amd64`로 고정되어 Apple Silicon에서 에뮬레
 
 배포용 이미지가 AWS 자원까지 구성하지는 않습니다. AWS 담당은 ECR·ECS, 실행 환경변수·Secret, 네트워크·권한, 별도 migration 작업과 배포 순서를 연결해야 합니다. Compose의 DB 계정·포트 설정은 로컬 개발용입니다.
 
-`jobs/`에 수집 진입점이 구현되면 같은 이미지에서 `python -m jobs.<작업명>`으로 별도 실행할 수 있습니다. 아직 실행 가능한 수집 명령은 없습니다.
+수집 명령은 같은 이미지에서 `python -m jobs.<작업명>`으로 실행합니다. 명령과 선행조건은 [jobs 안내](../jobs/README.md)를 참고합니다.

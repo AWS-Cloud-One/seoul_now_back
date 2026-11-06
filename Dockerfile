@@ -11,7 +11,8 @@ FROM base AS runtime
 COPY requirements.txt ./requirements.txt
 RUN python -m pip install -r requirements.txt && python -m pip check
 
-RUN useradd --create-home --uid 10001 app && chown app:app /app
+RUN useradd --create-home --uid 10001 app \
+    && chown -R app:app /app
 COPY --chown=app:app app ./app
 COPY --chown=app:app jobs ./jobs
 COPY --chown=app:app migrations ./migrations

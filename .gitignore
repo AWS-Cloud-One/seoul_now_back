@@ -2,6 +2,7 @@
 .env.*
 !.env.example
 .venv/
+.venv314/
 .tools/
 .uv-cache/
 __pycache__/
@@ -15,18 +16,11 @@ htmlcov/
 # Personal development notes and agent instructions.
 agent/
 AGENTS.md
+/docs/
 
-# Local source files, generated data and evaluation output.
-/data/raw/*
-!/data/raw/README.md
-/data/processed/*
-!/data/processed/README.md
-/evals/results/*
-!/evals/results/README.md
+/.idea/
 
-# Local provider probes and short-lived CCTV URLs
-/jobs/data/*_probe.json
-/jobs/data/parking_api_notes.txt
-/jobs/data/parking_api_20261001.docx
-.idea
-docs/
+# Share official inputs only; exclude runtime data and local artifacts.
+/data/*
+!/data/*.xlsx
+!/data/*.zip

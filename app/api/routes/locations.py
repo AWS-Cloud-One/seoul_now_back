@@ -1,40 +1,17 @@
 """L01 origin search and L02 coordinate resolution; no recommendation calls."""
 
-from collections.abc import AsyncIterator
 from typing import Annotated
 
-import httpx
 from fastapi import APIRouter, Depends, Query
 
 from app.api.contract import ContractRoute, envelope
-from app.api.dependencies import get_settings
-from app.clients.kakao import KakaoLocalClient
-from app.core.config import Settings
+from app.api.dependencies import get_location_resolve_service, get_location_search_service
 from app.schemas.common import ErrorResponse
 from app.schemas.location import Coordinates
 from app.schemas.locations import LocationResolveResponse, LocationSearchResponse, SearchQuery
 from app.services.locations import LocationResolveService, LocationSearchService
 
 router = APIRouter(prefix="/locations", tags=["locations"], route_class=ContractRoute)
-
-
-async def get_kakao_local_client(
-    settings: Annotated[Settings, Depends(get_settings)],
-) -> AsyncIterator[KakaoLocalClient]:
-    async with httpx.AsyncClient(timeout=10) as http:
-        yield KakaoLocalClient(http, settings.kakao_rest_api_key.get_secret_value())
-
-
-def get_location_search_service(
-    provider: Annotated[KakaoLocalClient, Depends(get_kakao_local_client)],
-) -> LocationSearchService:
-    return LocationSearchService(provider)
-
-
-def get_location_resolve_service(
-    provider: Annotated[KakaoLocalClient, Depends(get_kakao_local_client)],
-) -> LocationResolveService:
-    return LocationResolveService(provider)
 
 
 @router.get(

@@ -1,0 +1,450 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Seoul Now foundation: a two-AZ VPC, six subnets, optional zonal NAT,
+  an S3 gateway endpoint, a private ECR repository and two private S3 buckets.
+  This stack does not create EKS, EC2 instances, RDS or an ALB.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Project
+        Parameters: [ProjectName, Environment]
+      - Label:
+          default: Network
+        Parameters: [VpcCidr, AvailabilityZoneA, AvailabilityZoneB, NatMode]
+    ParameterLabels:
+      NatMode:
+        default: NAT gateways (none for foundation only)
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: seoul-now
+    MinLength: 3
+    MaxLength: 16
+    AllowedPattern: '[a-z][a-z0-9-]*[a-z0-9]'
+  Environment:
+    Type: String
+    Default: lab
+    AllowedValues: [lab, demo]
+  VpcCidr:
+    Type: String
+    Default: 10.42.0.0/16
+    AllowedPattern: '10\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.0\.0/16'
+    ConstraintDescription: Use an unused 10.x.0.0/16 private IPv4 range.
+    Description: >-
+      Must not overlap networks you plan to connect. Six /20 subnets are
+      allocated from this /16; do not change this after deploying workloads.
+  AvailabilityZoneA:
+    Type: AWS::EC2::AvailabilityZone::Name
+    Description: First standard availability zone in the selected region.
+  AvailabilityZoneB:
+    Type: AWS::EC2::AvailabilityZone::Name
+    Description: A different standard availability zone in the selected region.
+  NatMode:
+    Type: String
+    Default: none
+    AllowedValues: [none, single, per-az]
+    Description: >-
+      none: no general internet egress for private subnets. single: both app
+      subnets use NAT in AZ A. per-az: each app subnet uses its own AZ's NAT.
+      NAT and its public IPv4 addresses incur charges while provisioned.
+
+Rules:
+  DifferentAvailabilityZones:
+    Assertions:
+      - Assert:
+          Fn::Not:
+            - Fn::Equals:
+                - Ref: AvailabilityZoneA
+                - Ref: AvailabilityZoneB
+        AssertDescription: AvailabilityZoneA and AvailabilityZoneB must differ.
+
+Conditions:
+  HasNat: !Not [!Equals [!Ref NatMode, none]]
+  HasNatPerAz: !Equals [!Ref NatMode, per-az]
+
+Resources:
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-vpc'
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-igw'
+  InternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref Vpc
+      InternetGatewayId: !Ref InternetGateway
+
+  # Fn::Cidr's third argument is host bits: 12 produces /20 IPv4 subnets.
+  PublicSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Ref AvailabilityZoneA
+      CidrBlock: !Select [0, !Cidr [!Ref VpcCidr, 6, 12]]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-public-a'
+        - Key: kubernetes.io/role/elb
+          Value: '1'
+  PublicSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Ref AvailabilityZoneB
+      CidrBlock: !Select [1, !Cidr [!Ref VpcCidr, 6, 12]]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-public-b'
+        - Key: kubernetes.io/role/elb
+          Value: '1'
+  AppSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Ref AvailabilityZoneA
+      CidrBlock: !Select [2, !Cidr [!Ref VpcCidr, 6, 12]]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-app-a'
+        - Key: kubernetes.io/role/internal-elb
+          Value: '1'
+  AppSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Ref AvailabilityZoneB
+      CidrBlock: !Select [3, !Cidr [!Ref VpcCidr, 6, 12]]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-app-b'
+        - Key: kubernetes.io/role/internal-elb
+          Value: '1'
+  DbSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Ref AvailabilityZoneA
+      CidrBlock: !Select [4, !Cidr [!Ref VpcCidr, 6, 12]]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-db-a'
+  DbSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Ref AvailabilityZoneB
+      CidrBlock: !Select [5, !Cidr [!Ref VpcCidr, 6, 12]]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-db-b'
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-public'
+  PublicDefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+  PublicAssociationA:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetA
+      RouteTableId: !Ref PublicRouteTable
+  PublicAssociationB:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetB
+      RouteTableId: !Ref PublicRouteTable
+
+  AppRouteTableA:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-app-a'
+  AppRouteTableB:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-app-b'
+  AppAssociationA:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref AppSubnetA
+      RouteTableId: !Ref AppRouteTableA
+  AppAssociationB:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref AppSubnetB
+      RouteTableId: !Ref AppRouteTableB
+
+  # Database subnets deliberately have no internet default route or LB tags.
+  DbRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-db'
+  DbAssociationA:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref DbSubnetA
+      RouteTableId: !Ref DbRouteTable
+  DbAssociationB:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref DbSubnetB
+      RouteTableId: !Ref DbRouteTable
+
+  NatElasticIpA:
+    Type: AWS::EC2::EIP
+    Condition: HasNat
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-nat-a'
+  NatGatewayA:
+    Type: AWS::EC2::NatGateway
+    Condition: HasNat
+    DependsOn: PublicDefaultRoute
+    Properties:
+      AllocationId: !GetAtt NatElasticIpA.AllocationId
+      ConnectivityType: public
+      SubnetId: !Ref PublicSubnetA
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-nat-a'
+  NatElasticIpB:
+    Type: AWS::EC2::EIP
+    Condition: HasNatPerAz
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-nat-b'
+  NatGatewayB:
+    Type: AWS::EC2::NatGateway
+    Condition: HasNatPerAz
+    DependsOn: PublicDefaultRoute
+    Properties:
+      AllocationId: !GetAtt NatElasticIpB.AllocationId
+      ConnectivityType: public
+      SubnetId: !Ref PublicSubnetB
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-nat-b'
+  AppDefaultRouteA:
+    Type: AWS::EC2::Route
+    Condition: HasNat
+    Properties:
+      RouteTableId: !Ref AppRouteTableA
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGatewayA
+  AppDefaultRouteB:
+    Type: AWS::EC2::Route
+    Condition: HasNat
+    Properties:
+      RouteTableId: !Ref AppRouteTableB
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !If [HasNatPerAz, !Ref NatGatewayB, !Ref NatGatewayA]
+
+  S3GatewayEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref Vpc
+      VpcEndpointType: Gateway
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.s3'
+      RouteTableIds:
+        - !Ref AppRouteTableA
+        - !Ref AppRouteTableB
+      # Endpoint access still requires the caller's IAM and bucket permissions.
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: '*'
+            Action: s3:*
+            Resource: '*'
+
+  BackendRepository:
+    Type: AWS::ECR::Repository
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      RepositoryName: !Sub '${ProjectName}/${Environment}/backend'
+      ImageTagMutability: IMMUTABLE
+      EmptyOnDelete: false
+      EncryptionConfiguration:
+        EncryptionType: AES256
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+
+  WebBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub '${ProjectName}-${Environment}-${AWS::AccountId}-${AWS::Region}-web'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        IgnorePublicAcls: true
+        BlockPublicPolicy: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+  WebBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Bucket: !Ref WebBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: s3:*
+            Resource:
+              - !GetAtt WebBucket.Arn
+              - !Sub '${WebBucket.Arn}/*'
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+
+  DataBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub '${ProjectName}-${Environment}-${AWS::AccountId}-${AWS::Region}-data'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        IgnorePublicAcls: true
+        BlockPublicPolicy: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+  DataBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Bucket: !Ref DataBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: s3:*
+            Resource:
+              - !GetAtt DataBucket.Arn
+              - !Sub '${DataBucket.Arn}/*'
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+
+Outputs:
+  VpcId:
+    Value: !Ref Vpc
+  VpcCidr:
+    Value: !Ref VpcCidr
+  AvailabilityZones:
+    Value: !Join [',', [!Ref AvailabilityZoneA, !Ref AvailabilityZoneB]]
+  PublicSubnetIds:
+    Description: Use for the internet-facing ALB.
+    Value: !Join [',', [!Ref PublicSubnetA, !Ref PublicSubnetB]]
+  AppSubnetIds:
+    Description: Use for the EKS cluster and managed node group.
+    Value: !Join [',', [!Ref AppSubnetA, !Ref AppSubnetB]]
+  DbSubnetIds:
+    Description: Use for the RDS DB subnet group.
+    Value: !Join [',', [!Ref DbSubnetA, !Ref DbSubnetB]]
+  NatMode:
+    Description: >-
+      none means private workloads cannot reach public APIs or ECR APIs;
+      enable NAT or provide the required endpoints before adding EKS workers.
+    Value: !Ref NatMode
+  NatPublicIpA:
+    Condition: HasNat
+    Value: !Ref NatElasticIpA
+  NatPublicIpB:
+    Condition: HasNatPerAz
+    Value: !Ref NatElasticIpB
+  BackendRepositoryUri:
+    Value: !GetAtt BackendRepository.RepositoryUri
+  BackendRepositoryArn:
+    Value: !GetAtt BackendRepository.Arn
+  WebBucketName:
+    Description: Private origin bucket; CloudFront OAC is a later step.
+    Value: !Ref WebBucket
+  DataBucketName:
+    Value: !Ref DataBucket
+  S3GatewayEndpointId:
+    Value: !Ref S3GatewayEndpoint

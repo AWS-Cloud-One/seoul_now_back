@@ -1,15 +1,20 @@
 name: seoul-now-backend
 
+x-postgis: &postgis
+  image: postgis/postgis:17-3.6@sha256:eeead53aa76f9219eac3af490e00484a7dd604dbcbc3ed2ae0e96668986f16f3
+  # The pinned image is amd64 only; Apple Silicon uses Docker Desktop emulation.
+  platform: linux/amd64
+
 x-backend: &backend
-  build:
+  build: &backend-build
     context: .
     target: development
   environment: &app-environment
-    APP_DATABASE_URL: ${APP_DATABASE_URL:-postgresql+psycopg://seoul:seoul_local@db:5432/seoul_now}
+    APP_DATABASE_URL: ${DOCKER_DATABASE_URL:-postgresql+psycopg://seoul:seoul_local@db:5432/seoul_now}
     APP_CORS_ORIGINS: '${APP_CORS_ORIGINS:-["http://localhost:5173","http://127.0.0.1:5173"]}'
     APP_DOCS_ENABLED: ${APP_DOCS_ENABLED:-true}
     APP_DB_CONNECT_TIMEOUT_SECONDS: ${APP_DB_CONNECT_TIMEOUT_SECONDS:-3}
-    # 추가 연동용 키: 실제 호출 코드는 추후 구현
+    # 설정된 키가 있는 제공처만 수집한다.
     APP_SEOUL_SDOT_API_KEY: ${APP_SEOUL_SDOT_API_KEY:-}
     APP_ITS_API_KEY: ${APP_ITS_API_KEY:-}
     APP_SGIS_CONSUMER_KEY: ${APP_SGIS_CONSUMER_KEY:-}
@@ -22,18 +27,16 @@ x-backend: &backend
     APP_SEOUL_CITYDATA_API_KEY: ${APP_SEOUL_CITYDATA_API_KEY:-}
     APP_HEALTH_TIMEOUT_SECONDS: ${APP_HEALTH_TIMEOUT_SECONDS:-5}
   volumes:
-    - ./app:/app/app
-    - ./jobs:/app/jobs
-    - ./migrations:/app/migrations
-    - ./tests:/app/tests
-    - ./pyproject.toml:/app/pyproject.toml:ro
+    - &app-code ./app:/app/app
+    - &jobs-code ./jobs:/app/jobs
+    - &migration-code ./migrations:/app/migrations
+    - &test-code ./tests:/app/tests
+    - &project-config ./pyproject.toml:/app/pyproject.toml:ro
 
 services:
   db:
-    image: postgis/postgis:17-3.6@sha256:eeead53aa76f9219eac3af490e00484a7dd604dbcbc3ed2ae0e96668986f16f3
-    # The upstream Debian image currently ships amd64 only (2026-10-19).
-    # Docker Desktop on Apple Silicon therefore needs amd64 emulation.
-    platform: linux/amd64
+    <<: *postgis
+    restart: unless-stopped
     environment:
       POSTGRES_DB: seoul_now
       POSTGRES_USER: seoul
@@ -62,6 +65,7 @@ services:
   api:
     <<: *backend
     init: true
+    restart: unless-stopped
     ports:
       - "127.0.0.1:${API_PORT:-8000}:8000"
     healthcheck:
@@ -83,7 +87,7 @@ services:
   citydata-collector:
     <<: *backend
     init: true
-    command: ["python", "-u", "-m", "jobs.collect_citydata_all", "--interval", "300"]
+    command: ["python", "-u", "-m", "jobs.scheduler"]
     restart: unless-stopped
     healthcheck:
       disable: true
@@ -93,31 +97,57 @@ services:
       migrate:
         condition: service_completed_successfully
 
-  sdot-collector:
+  # Reference files are inputs to explicit imports, not runtime API/worker dependencies.
+  reference-import:
     <<: *backend
-    init: true
-    command: ["python", "-u", "-m", "jobs.collect_sdot_loop"]
-    restart: unless-stopped
+    profiles: ["reference"]
+    command: ["python", "-m", "jobs.import_place_boundaries", "--help"]
+    restart: "no"
     healthcheck:
       disable: true
+    volumes:
+      - *app-code
+      - *jobs-code
+      - *migration-code
+      - *project-config
+      - ./data:/app/data:ro
     depends_on:
       db:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+
+  # Tests use a separate DB and never inherit provider keys or response files.
+  test-db:
+    <<: *postgis
+    profiles: ["test"]
+    environment:
+      POSTGRES_DB: validation
+      POSTGRES_USER: validation
+      POSTGRES_PASSWORD: validation_local
+    volumes:
+      - test_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U validation -d validation"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
 
   tests:
-    <<: *backend
+    build: *backend-build
     profiles: ["test"]
-    command: ["pytest"]
+    command: ["pytest", "-q"]
     environment:
-      <<: *app-environment
-      TEST_DATABASE_URL: ${APP_DATABASE_URL:-postgresql+psycopg://seoul:seoul_local@db:5432/seoul_now}
+      APP_DATABASE_URL: postgresql+psycopg://validation:validation_local@test-db:5432/validation
+      TEST_DATABASE_URL: postgresql+psycopg://validation:validation_local@test-db:5432/validation
+    volumes:
+      - ./data:/app/data:ro
     healthcheck:
       disable: true
     depends_on:
-      migrate:
-        condition: service_completed_successfully
+      test-db:
+        condition: service_healthy
 
 volumes:
   postgres_data:
+  test_postgres_data:
