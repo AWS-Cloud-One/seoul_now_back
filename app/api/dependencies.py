@@ -8,16 +8,23 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.clients.kakao import KakaoLocalClient
 from app.core.config import Settings
 from app.core.exceptions import ServiceError
+from app.modules.ai.providers.openai import OpenAIProvider
+from app.modules.recommendation.engine import DestinationRecommendationEngine
 from app.repositories.health import HealthRepository
 from app.repositories.map import MapRepository
 from app.repositories.parking_detail import ParkingDetailRepository
 from app.repositories.parking_nearby import ParkingNearbyRepository
+from app.services.chat import RecommendationChatProcessor
 from app.services.health import HealthService
 from app.services.locations import LocationResolveService, LocationSearchService
 from app.services.map import MapService
 from app.services.parking_detail import ParkingDetailService
 from app.services.parking_nearby import ParkingNearbyService
 from app.services.pending import PendingService
+from app.services.recommendation_adapters import (
+    RecommendationConditionsValidator,
+    RecommendationSource,
+)
 from app.services.recommendations import RecommendationService
 
 
@@ -81,14 +88,36 @@ def get_parking_nearby_service(
     return ParkingNearbyService(ParkingNearbyRepository(session), provider)
 
 
-def get_recommendation_service() -> RecommendationService:
-    """Connect the team's condition validator and recommendation engine here."""
-    return RecommendationService()
+def get_ai_provider(
+    http: Annotated[httpx.AsyncClient, Depends(get_http_client)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> OpenAIProvider:
+    return OpenAIProvider(http, settings)
 
 
-def get_pending_service() -> PendingService:
-    """Connect the team's conversation, context and collection-status adapters here."""
-    return PendingService()
+def get_recommendation_source(
+    provider: Annotated[KakaoLocalClient, Depends(get_kakao_local_client)],
+    parking: Annotated[ParkingNearbyService, Depends(get_parking_nearby_service)],
+) -> RecommendationSource:
+    return RecommendationSource(provider, parking)
+
+
+def get_recommendation_service(
+    source: Annotated[RecommendationSource, Depends(get_recommendation_source)],
+    model: Annotated[OpenAIProvider, Depends(get_ai_provider)],
+) -> RecommendationService:
+    return RecommendationService(
+        RecommendationConditionsValidator(source), DestinationRecommendationEngine(source, model)
+    )
+
+
+def get_pending_service(
+    model: Annotated[OpenAIProvider, Depends(get_ai_provider)],
+    provider: Annotated[KakaoLocalClient, Depends(get_kakao_local_client)],
+    recommendations: Annotated[RecommendationService, Depends(get_recommendation_service)],
+) -> PendingService:
+    # Historical context readers and administrative status remain unconnected.
+    return PendingService(chat=RecommendationChatProcessor(model, provider, recommendations))
 
 
 async def require_data_status_access():
