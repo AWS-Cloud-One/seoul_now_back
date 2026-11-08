@@ -13,6 +13,7 @@ from app.modules.recommendation.types import Candidate
 from app.schemas.parking_nearby import ParkingSummary
 from app.schemas.recommendations import RecommendationRequest
 from app.services.recommendation_adapters import RecommendationConditionsValidator
+from app.services.recommendation_execution import RecommendationExecution
 from app.services.recommendations import RecommendationService
 from tests.fixtures.recommendation_context import response
 
@@ -91,11 +92,11 @@ async def current_result(*, traffic="fresh", hidden_unknown=False, general=False
     engine = DestinationRecommendationEngine(
         source,
         area_provider=provider,
-        progress_store=MemoryProgressStore(),
     )
     service = RecommendationService(
         RecommendationConditionsValidator(source),
         engine,
+        execution=RecommendationExecution(MemoryProgressStore()),
     )
     outcome = await service.execute(request)
     assert outcome.failure is None

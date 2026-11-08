@@ -10,6 +10,7 @@ from app.modules.recommendation.progress import MemoryProgressStore
 from app.modules.recommendation.types import Candidate
 from app.schemas.recommendations import RecommendationRequest
 from app.services.recommendation_adapters import RecommendationConditionsValidator
+from app.services.recommendation_execution import RecommendationExecution
 from app.services.recommendations import RecommendationService
 
 
@@ -68,8 +69,16 @@ def setup(store=None):
         [candidate(i) for i in range((page - 1) * 15, page * 15)],
         page == 5,
     )
-    engine = DestinationRecommendationEngine(source, progress_store=store or MemoryProgressStore())
-    return RecommendationService(RecommendationConditionsValidator(source), engine), source, engine
+    engine = DestinationRecommendationEngine(source)
+    return (
+        RecommendationService(
+            RecommendationConditionsValidator(source),
+            engine,
+            execution=RecommendationExecution(store or MemoryProgressStore()),
+        ),
+        source,
+        engine,
+    )
 
 
 def next_request(req, outcome):
@@ -216,12 +225,12 @@ def test_retry_failure_and_time_limit_do_not_turn_into_success_history():
         source.route.side_effect = ServiceError("PROVIDER_TIMEOUT", "timeout")
         failed = await service.retry_routes(req, originals)
         assert failed.response.kind == "general_candidates"
-        assert not engine.progress_store.trip(req.trip_id).excluded
+        assert not service.execution.store.trip(req.trip_id).excluded
         source.route.side_effect = [(601, 10), ServiceError("PROVIDER_TIMEOUT", "timeout")]
         outcome = await service.retry_routes(next_request(req, failed), originals)
         assert outcome.response.kind == "no_candidates"
         assert outcome.response.stages.routes == "partial"
-        assert not engine.progress_store.trip(req.trip_id).excluded
+        assert not service.execution.store.trip(req.trip_id).excluded
         source.search.assert_not_awaited()
 
     asyncio.run(run())

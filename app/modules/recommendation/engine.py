@@ -1,14 +1,13 @@
 """Part 2 search progression, comparison and original-candidate route retry."""
 
 import asyncio
-from copy import deepcopy
 from datetime import UTC, datetime
 
 from app.core.exceptions import ServiceError
 from app.modules.ai.explanation import explain
 from app.modules.recommendation.areas import select_areas
 from app.modules.recommendation.cards import card, result, unavailable_parking
-from app.modules.recommendation.progress import DEFAULT_PROGRESS_STORE, SearchProgress, fingerprint
+from app.modules.recommendation.progress import RecommendationWork, SearchProgress, fingerprint
 from app.modules.recommendation.ranking import DEFAULT_POLICY, rank_candidates
 from app.schemas.recommendation_result import SearchAreaSnapshot, SearchScope
 from app.schemas.recommendations import ConditionUpdate, RecommendationResponse, Stages
@@ -19,28 +18,22 @@ FATAL_ERRORS = {"RATE_LIMITED", "SERVICE_UNAVAILABLE"}
 
 
 class DestinationRecommendationEngine:
-    def __init__(
-        self, source, model=None, policy=DEFAULT_POLICY, *, progress_store=None, area_provider=None
-    ):
+    def __init__(self, source, model=None, policy=DEFAULT_POLICY, *, area_provider=None):
         self.source, self.model, self.policy = source, model, policy
-        self.progress_store = (
-            progress_store if progress_store is not None else DEFAULT_PROGRESS_STORE
-        )
         self.area_provider = area_provider
 
-    async def recommend(self, request, conditions):
+    async def recommend(self, request, conditions, *, work: RecommendationWork):
         async with asyncio.timeout(90):
-            return await self._recommend(request, conditions)
+            return await self._recommend(request, conditions, work)
 
-    async def _recommend(self, request, conditions):
-        trip = self.progress_store.trip(request.trip_id)
+    async def _recommend(self, request, conditions, work):
         signature = fingerprint(conditions.model_dump(mode="json"))
         progress = (
-            deepcopy(trip.search)
-            if trip.search.fingerprint == signature
+            work.search
+            if work.search.fingerprint == signature
             else SearchProgress(fingerprint=signature)
         )
-        excluded = trip.excluded | set(request.excluded_place_ids)
+        excluded = work.excluded | set(request.excluded_place_ids)
         warnings = []
         if progress.areas is None:
             if self.area_provider is None:
@@ -136,15 +129,14 @@ class DestinationRecommendationEngine:
                 fallback=not bool(progress.areas),
                 more_available=bool(progress.remaining) or len(progress.ended) < len(targets),
             ).model_dump(mode="json")
-        trip.search = progress
+        work.search = progress
         return response
 
-    async def retry_routes(self, request, conditions, candidates):
+    async def retry_routes(self, request, conditions, candidates, *, work: RecommendationWork):
         """Only Part 3's authenticated original candidates; no search or interpretation."""
         if not 1 <= len(candidates) <= 3:
             raise ServiceError("VALIDATION_ERROR", "재시도할 원래 후보는 1~3곳이어야 합니다.")
-        trip = self.progress_store.trip(request.trip_id)
-        excluded = trip.excluded | set(request.excluded_place_ids)
+        excluded = work.excluded | set(request.excluded_place_ids)
         warnings = []
         async with asyncio.timeout(90):
             eligible, failed, successes = await self._evaluate(

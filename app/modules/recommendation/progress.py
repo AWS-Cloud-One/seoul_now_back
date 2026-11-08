@@ -4,7 +4,7 @@ import asyncio
 import hashlib
 import json
 import time
-from copy import copy
+from copy import copy, deepcopy
 from dataclasses import dataclass, field
 
 from app.core.exceptions import ServiceError
@@ -22,6 +22,18 @@ class SearchProgress:
 
 
 @dataclass
+class RecommendationWork:
+    """Private request workspace; engines never mutate the published trip."""
+
+    version: int | None
+    conditions: object
+    excluded: set
+    search: SearchProgress
+    invalidated: bool = False
+    expired: bool = False
+
+
+@dataclass
 class TripProgress:
     expires_at: float
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -31,6 +43,13 @@ class TripProgress:
     search: SearchProgress = field(default_factory=SearchProgress)
     requests: dict = field(default_factory=dict)
     expired: bool = False
+
+    def expire(self):
+        self.expired = True
+        self.requests.clear()
+        self.excluded.clear()
+        self.search = SearchProgress()
+        self.conditions = None
 
 
 def fingerprint(value):
@@ -66,19 +85,35 @@ class MemoryProgressStore:
     def trip(self, trip_id):
         return self.trips[str(trip_id)]
 
-    async def run(self, request, operation, callback, extra=None):
+    @staticmethod
+    def check_current(request, work):
+        if work.expired or (work.version is None and request.condition_version != 0):
+            raise ServiceError(
+                "CONTEXT_EXPIRED",
+                "추천 탐색 상태가 없습니다. 새 여행을 시작해 주세요.",
+                retryable=False,
+            )
+        if work.version is not None and (
+            work.version != request.condition_version
+            or work.conditions != request.current_conditions
+        ):
+            raise ServiceError(
+                "CONTEXT_CONDITIONS_MISMATCH",
+                "현재 여행의 조건과 버전을 다시 확인해 주세요.",
+                retryable=False,
+            )
+
+    async def run(
+        self, request, operation, callback, extra=None, *, require_current=True, guard=None
+    ):
         now = self.clock()
         # Keep small tombstones: an expired ID must not silently lose exclusions.
         for entry in self.trips.values():
-            if not entry.lock.locked() and now >= entry.expires_at and not entry.expired:
-                entry.expired = True
-                entry.requests.clear()
-                entry.excluded.clear()
-                entry.search = SearchProgress()
-                entry.conditions = None
+            if not entry.lock.locked() and now >= entry.expires_at:
+                entry.expire()
         key = str(request.trip_id)
         if key not in self.trips:
-            if request.condition_version != 0:
+            if require_current and request.condition_version != 0:
                 raise ServiceError(
                     "CONTEXT_EXPIRED",
                     "여행의 추천 상태가 없습니다. 새 여행을 시작해 주세요.",
@@ -90,12 +125,15 @@ class MemoryProgressStore:
         entry = self.trips[key]
         body = request.model_dump(mode="json")
         # Default-valued null and explicitly supplied null have different patch semantics.
-        body["conditions_patch"] = request.conditions_patch.model_dump(
-            mode="json", exclude_unset=True
-        )
+        if "conditions_patch" in type(request).model_fields:
+            body["conditions_patch"] = request.conditions_patch.model_dump(
+                mode="json", exclude_unset=True
+            )
         signature = fingerprint({"operation": operation, "request": body, "extra": extra})
         async with entry.lock:
-            if entry.expired or self.clock() >= entry.expires_at:
+            if self.clock() >= entry.expires_at:
+                entry.expire()
+            if require_current and entry.expired:
                 raise ServiceError(
                     "CONTEXT_EXPIRED",
                     "추천 탐색 상태가 만료되었습니다. 새 여행을 시작해 주세요.",
@@ -103,11 +141,15 @@ class MemoryProgressStore:
                 )
             request_id = str(request.request_id)
             cached = entry.requests.get(request_id)
+            if cached and cached[0] != signature:
+                raise ServiceError(
+                    "REQUEST_ID_CONFLICT", "같은 요청 ID의 내용이 다릅니다.", retryable=False
+                )
+            # Target authentication/expiry is checked even on a cached response,
+            # after any lock wait. It must not invoke paid interpretation.
+            if guard is not None:
+                await guard()
             if cached:
-                if cached[0] != signature:
-                    raise ServiceError(
-                        "REQUEST_ID_CONFLICT", "같은 요청 ID의 내용이 다릅니다.", retryable=False
-                    )
                 return clone(cached[1])
             if len(entry.requests) >= self.max_requests:
                 raise ServiceError(
@@ -115,26 +157,40 @@ class MemoryProgressStore:
                     "여행별 요청 한도에 도달했습니다. 새 여행을 시작해 주세요.",
                     retryable=False,
                 )
-            if entry.version is not None and (
-                entry.version != request.condition_version
-                or entry.conditions != request.current_conditions
-            ):
-                raise ServiceError(
-                    "CONTEXT_CONDITIONS_MISMATCH",
-                    "현재 여행의 조건과 버전을 다시 확인해 주세요.",
-                    retryable=False,
-                )
-            outcome = await callback()
+            work = RecommendationWork(
+                version=entry.version,
+                conditions=deepcopy(entry.conditions),
+                excluded=set(entry.excluded),
+                search=deepcopy(entry.search),
+                expired=entry.expired,
+            )
+            if require_current:
+                self.check_current(request, work)
+            try:
+                # The execution owner returns only after any DB commit succeeds.
+                outcome = await callback(work)
+            except BaseException:
+                # Cancellation/interrupt may arrive while commit is completing.
+                # With no durable replay journal, never guess that the trip is safe
+                # to resume. Keep a tombstone rather than replay external effects.
+                entry.expire()
+                raise
+            if work.invalidated:
+                entry.expire()
+                return clone(outcome)
+            cached_outcome = clone(outcome)
             update = outcome.response.condition_update
             if update.applied:
                 entry.conditions = update.conditions.model_copy(deep=True)
                 entry.version = update.version
                 entry.excluded.update(request.excluded_place_ids)
+                if outcome.failure is None:
+                    entry.search = work.search
                 if outcome.response.kind == "recommendation":
                     entry.excluded.update(
                         c["place"]["value"]["place_id"] for c in outcome.response.result["cards"]
                     )
-            entry.requests[request_id] = signature, clone(outcome)
+            entry.requests[request_id] = signature, cached_outcome
             entry.expires_at = self.clock() + self.ttl_seconds
             return clone(outcome)
 
