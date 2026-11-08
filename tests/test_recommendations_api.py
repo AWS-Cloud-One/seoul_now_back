@@ -54,6 +54,8 @@ def payload():
 
 
 def test_missing_adapters_is_503_and_preserves_context(client, payload):
+    # Main now wires real adapters; explicitly exercise the missing-port contract.
+    client.app.dependency_overrides[get_recommendation_service] = lambda: RecommendationService()
     response = client.post("/api/v1/recommendations", json=payload)
     assert response.status_code == 503
     body = response.json()

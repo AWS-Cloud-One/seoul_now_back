@@ -64,6 +64,24 @@ def card(candidate, rank=None, explanation=None, source="none"):
     if routed:
         evidence.append(
             dict(
+                type="traffic",
+                text="도착지 주변 도로: " + candidate.congestion,
+                information=information(
+                    None
+                    if candidate.congestion == "확인 불가"
+                    else {"grade": candidate.congestion},
+                    candidate.congestion_source,
+                    reason="NO_OBSERVATION" if candidate.congestion == "확인 불가" else None,
+                ),
+            )
+        )
+        evidence[-1]["information"]["observed_at"] = (
+            candidate.congestion_observed_at.isoformat()
+            if candidate.congestion_observed_at
+            else None
+        )
+        evidence.append(
+            dict(
                 type="eta",
                 text=f"자동차 이동시간 {candidate.duration_seconds}초",
                 information=route,

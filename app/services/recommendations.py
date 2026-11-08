@@ -57,6 +57,57 @@ class RecommendationService:
         self.validator, self.engine = validator, engine
 
     async def execute(self, request: RecommendationRequest) -> RecommendationOutcome:
+        return await self._dispatch(request)
+
+    async def retry_routes(
+        self, request: RecommendationRequest, candidates
+    ) -> RecommendationOutcome:
+        """Part 3 must authenticate the original result/conditions before calling this port."""
+        if request.conditions_patch.model_fields_set:
+            return self._rejected(
+                request,
+                RecommendationFailure(
+                    "CONTEXT_CONDITIONS_MISMATCH", "경로 재시도는 원래 조건을 사용해야 합니다."
+                ),
+            )
+        return await self._dispatch(request, candidates)
+
+    async def _dispatch(self, request, candidates=None):
+        store = vars(self.engine).get("progress_store") if self.engine is not None else None
+        try:
+            if store is None:
+                return await self._execute(request, candidates)
+            return await store.run(
+                request,
+                "recommend" if candidates is None else "retry_routes",
+                lambda: self._execute(request, candidates),
+                None if candidates is None else [c.model_dump(mode="json") for c in candidates],
+            )
+        except ServiceError as exc:
+            return self._rejected(request, exc)
+
+    def _rejected(self, request, failure):
+        return RecommendationOutcome(
+            RecommendationResponse(
+                trip_id=request.trip_id,
+                base_condition_version=request.condition_version,
+                kind="failure",
+                message=failure.message,
+                condition_update=ConditionUpdate(
+                    applied=False,
+                    conditions=request.current_conditions,
+                    version=request.condition_version,
+                    changes=[],
+                ),
+                stages=Stages(),
+                result=None,
+                clarification=None,
+                warnings=[],
+            ),
+            failure,
+        )
+
+    async def _execute(self, request, candidates=None):
         update = ConditionUpdate(
             applied=False,
             conditions=request.current_conditions,
@@ -99,9 +150,13 @@ class RecommendationService:
             else:
                 if not update.applied:
                     raise ValueError("Recommendation requires accepted conditions")
+                run = self.engine.recommend if candidates is None else self.engine.retry_routes
+                args = () if candidates is None else (candidates,)
                 data = RecommendationResponse.model_validate(
-                    await self.engine.recommend(
-                        request.model_copy(deep=True), update.conditions.model_copy(deep=True)
+                    await run(
+                        request.model_copy(deep=True),
+                        update.conditions.model_copy(deep=True),
+                        *args,
                     ),
                 )
                 if (

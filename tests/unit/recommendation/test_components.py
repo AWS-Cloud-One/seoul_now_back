@@ -46,12 +46,12 @@ def candidate(identifier, seconds, meters):
     "inputs,expected",
     [
         ([("b", 600, 10), ("a", 659, 30)], ["b", "a"]),
-        ([("b", 600, 10), ("a", 659, None)], ["a", "b"]),
+        ([("b", 600, 10), ("a", 659, None)], ["b", "a"]),
         ([("a", 660, 1), ("b", 659, 100)], ["b", "a"]),
-        ([("2", 600, 20), ("10", 601, 20)], ["10", "2"]),
+        ([("2", 600, 20), ("10", 601, 20)], ["2", "10"]),
     ],
 )
-def test_minute_bucket_parking_and_lexical_order(inputs, expected):
+def test_unknown_congestion_falls_back_to_eta(inputs, expected):
     assert [
         c.place.place_id for c in rank_candidates([candidate(*values) for values in inputs])
     ] == expected
@@ -66,7 +66,9 @@ def test_interpretation_distinguishes_omission_from_explicit_clear():
         Interpretation(intent="recommendation", headcount=2, clear_fields=["headcount"]).patch()
 
 
-@pytest.mark.parametrize("status,code", [(429, "RATE_LIMITED"), (503, "PROVIDER_ERROR")])
+@pytest.mark.parametrize(
+    "status,code", [(429, "RATE_LIMITED"), (503, "PROVIDER_ERROR"), (401, "SERVICE_UNAVAILABLE")]
+)
 def test_shared_kakao_transport_errors_reach_recommendation_ports(status, code):
     async def run():
         async with httpx.AsyncClient(
@@ -172,3 +174,25 @@ def test_parking_database_failure_becomes_a_shared_service_error():
         assert "private database details" not in exc.value.message
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    "seconds,grades,distances,expected",
+    [
+        ((600, 899), ("정체", "원활"), (None, None), ["b", "a"]),
+        ((599, 600), ("정체", "원활"), (None, 1), ["a", "b"]),
+        ((610, 620), ("서행", "원활"), (500, None), ["a", "b"]),
+        ((610, 620), ("서행", "원활"), (500.01, None), ["b", "a"]),
+        ((610, 620), ("정체", "원활"), (1, None), ["b", "a"]),
+        ((620, 610), ("서행", "서행"), (1, 400), ["b", "a"]),
+        ((620, 610), ("원활", "확인 불가"), (1, None), ["b", "a"]),
+        ((620, 610), ("원활", "원활"), (1, None), ["b", "a"]),
+    ],
+)
+def test_five_minute_congestion_and_parking_bonus(seconds, grades, distances, expected):
+    values = [
+        candidate(key, eta, meters).model_copy(update={"congestion": grade})
+        for key, eta, meters, grade in zip(("a", "b"), seconds, distances, grades, strict=True)
+    ]
+    assert [c.place.place_id for c in rank_candidates(values)] == expected
+    assert tuple(c.congestion for c in values) == grades
