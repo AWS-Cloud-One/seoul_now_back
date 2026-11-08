@@ -12,7 +12,7 @@ from app.schemas.common import ContractModel
 
 class ExplanationItem(ContractModel):
     place_id: str
-    facts: list[Literal["eta", "parking"]] = Field(min_length=1, max_length=2)
+    facts: list[Literal["eta", "parking", "traffic"]] = Field(min_length=1, max_length=3)
 
 
 class ExplanationPlan(ContractModel):
@@ -21,6 +21,8 @@ class ExplanationPlan(ContractModel):
 
 def clauses(candidate):
     facts = {"eta": f"예상 자동차 이동시간 약 {math.ceil(candidate.duration_seconds / 60)}분"}
+    if candidate.congestion != "확인 불가":
+        facts["traffic"] = f"도착지 주변 도로: {candidate.congestion}"
     if candidate.parking and candidate.parking.nearest_distance_meters is not None:
         facts["parking"] = (
             f"주변 등록 주차장까지 직선거리 {candidate.parking.nearest_distance_meters:g}m"

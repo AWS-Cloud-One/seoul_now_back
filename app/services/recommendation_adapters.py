@@ -67,6 +67,13 @@ class RecommendationSource:
         try:
             body = await self.kakao.directions(origin, destination)
         except KakaoError as exc:
+            # Shared transport currently collapses HTTP 401/403 to this safe 502 message.
+            # Keep that known configuration failure out of general-candidate fallback.
+            if (
+                exc.status == 502
+                and exc.message == "카카오 키 또는 해당 API 사용 권한을 확인해 주세요."
+            ):
+                raise ServiceError("SERVICE_UNAVAILABLE", exc.message, retryable=False) from None
             raise provider_failure(exc) from None
         try:
             route = body["routes"][0]
