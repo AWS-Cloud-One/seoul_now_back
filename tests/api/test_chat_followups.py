@@ -1,6 +1,8 @@
 import hashlib
 from copy import deepcopy
+from dataclasses import replace
 from datetime import timedelta
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
@@ -9,15 +11,20 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from app.api.dependencies import (
     get_ai_provider,
+    get_area_query_service,
     get_context_reader,
     get_kakao_local_client,
+    get_place_detail_reader,
     get_recommendation_execution,
     get_recommendation_service,
+    get_travel_time_reader,
 )
 from app.core.exceptions import ServiceError
 from app.modules.ai.interpretation import Interpretation
 from app.modules.recommendation.progress import MemoryProgressStore, TripProgress
 from app.repositories.recommendation_context import RecommendationContextRepository
+from app.schemas.location import Coordinates
+from app.schemas.pending import PlaceDetailData, TravelTimeData
 from app.schemas.recommendations import Change, Conditions
 from app.services.recommendation_context import RecommendationContextService
 from app.services.recommendation_context_payload import prepare_snapshot
@@ -38,6 +45,7 @@ def followups(app):
         token_digest=hashlib.sha256(TOKEN.encode()).hexdigest(),
         expires_at=NOW + timedelta(minutes=30),
     )
+    stored = replace(stored, card_coordinates=(Coordinates(latitude=37.57, longitude=126.98),))
     repo = AsyncMock(spec=RecommendationContextRepository)
     repo.get_by_token_digest.side_effect = lambda digest: (
         stored if digest == stored.result.context_token_digest else None
@@ -73,6 +81,62 @@ def followups(app):
     execution = RecommendationExecution(store)
     app.dependency_overrides[get_recommendation_execution] = lambda: execution
     return body, repo, model, kakao, recommendations, clock
+
+
+@pytest.fixture
+def current_readers(app, followups):
+    body = followups[0]
+    original = response().result["cards"][0]
+    places, travel, areas = AsyncMock(), AsyncMock(), AsyncMock()
+    places.detail.return_value = PlaceDetailData(
+        result_id=body["target"]["result_id"],
+        place=original["place"],
+        parking=original["parking"] | {"total_count": 7, "nearest_distance_meters": 120},
+        original_recommended_at=NOW,
+        checked_at=NOW + timedelta(seconds=10),
+    )
+    travel.check.return_value = TravelTimeData(
+        trip_id=body["trip_id"],
+        base_condition_version=7,
+        result_id=body["target"]["result_id"],
+        place_id="kakao:original",
+        original_recommended_at=NOW,
+        checked_at=NOW + timedelta(seconds=10),
+        route=original["route"]
+        | {
+            "value": {"duration_seconds": 905, "distance_meters": 2222},
+            "collected_at": NOW + timedelta(seconds=10),
+        },
+    )
+    areas.population_at.return_value = {
+        "checked_at": NOW + timedelta(seconds=10),
+        "reason_code": None,
+        "areas": [
+            {
+                "area_code": "POI001",
+                "name": "관측 구역",
+                "boundary_version": "v1",
+                "population": {
+                    "value": {
+                        "min_people": 10,
+                        "max_people": 20,
+                        "congestion": "normal",
+                        "is_replacement": False,
+                    },
+                    "status": "available",
+                    "freshness": "fresh",
+                    "observed_at": NOW,
+                    "collected_at": NOW,
+                    "source": "seoul_city_population",
+                    "reason_code": None,
+                },
+            }
+        ],
+    }
+    app.dependency_overrides[get_place_detail_reader] = lambda: places
+    app.dependency_overrides[get_travel_time_reader] = lambda: travel
+    app.dependency_overrides[get_area_query_service] = lambda: areas
+    return SimpleNamespace(places=places, travel=travel, areas=areas)
 
 
 def assert_no_new_recommendation(followups):
@@ -190,17 +254,81 @@ def test_target_selection_clarification_can_be_sent_back_unchanged(client, follo
 
 
 @pytest.mark.parametrize("intent", ["travel_time", "parking", "population"])
-def test_current_fact_question_stays_unconnected_and_never_reuses_old_values_as_current(
-    client, followups, intent
+def test_current_fact_question_uses_shared_readers_without_new_recommendation(
+    client, followups, current_readers, intent
 ):
     body, _, model, _, _, _ = followups
     model.complete.return_value = Interpretation(intent=intent)
     result = client.post("/api/v1/chat/messages", json=body)
-    assert result.status_code == 503 and result.json()["error"]["code"] == "SERVICE_UNAVAILABLE"
-    assert result.json()["data"]["answer"] is None
-    assert result.json()["data"]["stages"]["interpretation"] == "ok"
-    assert_preserved(result.json()["data"], body)
+    assert result.status_code == 200, result.text
+    data = result.json()["data"]
+    assert data["kind"] == "answer" and data["answer"]["topic"] == intent
+    fact = data["answer"]["information"][0]
+    assert_preserved(data, body)
+    if intent == "travel_time":
+        assert fact["value"]["duration_seconds"] == 905
+        assert data["stages"]["routes"] == "ok"
+        current_readers.travel.check.assert_awaited_once()
+        current_readers.places.detail.assert_not_awaited()
+    elif intent == "parking":
+        assert fact["value"]["total_count"] == 7
+        assert fact["value"]["availability"] == "unsupported"
+        assert fact["collected_at"] is None and fact["observed_at"] is None
+        current_readers.places.detail.assert_awaited_once()
+        current_readers.travel.check.assert_not_awaited()
+    else:
+        assert fact["value"]["area_code"] == "POI001"
+        assert fact["value"]["population"]["min_people"] == 10
+        current_readers.areas.population_at.assert_awaited_once_with(
+            Coordinates(latitude=37.57, longitude=126.98),
+        )
+        current_readers.travel.check.assert_not_awaited()
+        current_readers.places.detail.assert_not_awaited()
+    replay = client.post("/api/v1/chat/messages", json=body)
+    assert replay.json()["data"] == data
     model.complete.assert_awaited_once()
+    assert_no_new_recommendation(followups)
+
+
+@pytest.mark.parametrize("intent", ["travel_time", "parking", "population"])
+def test_current_lookup_failure_preserves_conditions_and_replays_once(
+    client, followups, current_readers, intent
+):
+    body, _, model, _, _, _ = followups
+    model.complete.return_value = Interpretation(intent=intent)
+    reader = {
+        "travel_time": current_readers.travel.check,
+        "parking": current_readers.places.detail,
+        "population": current_readers.areas.population_at,
+    }[intent]
+    reader.side_effect = ServiceError("DATA_UNAVAILABLE", "조회 실패")
+    for _ in range(2):
+        result = client.post("/api/v1/chat/messages", json=body)
+        assert result.status_code == 503 and result.json()["data"]["kind"] == "failure"
+        assert_preserved(result.json()["data"], body)
+    reader.assert_awaited_once()
+    model.complete.assert_awaited_once()
+    assert_no_new_recommendation(followups)
+
+
+@pytest.mark.parametrize("intent", ["travel_time", "parking", "population"])
+def test_expiry_during_current_lookup_blocks_answer(client, followups, current_readers, intent):
+    body, _, model, _, _, clock = followups
+    model.complete.return_value = Interpretation(intent=intent)
+    reader = {
+        "travel_time": current_readers.travel.check,
+        "parking": current_readers.places.detail,
+        "population": current_readers.areas.population_at,
+    }[intent]
+
+    async def expire(*args):
+        clock[0] = NOW + timedelta(minutes=30)
+        return reader.return_value
+
+    reader.side_effect = expire
+    result = client.post("/api/v1/chat/messages", json=body)
+    assert result.status_code == 410 and result.json()["error"]["code"] == "CONTEXT_EXPIRED"
+    assert_preserved(result.json()["data"], body)
     assert_no_new_recommendation(followups)
 
 

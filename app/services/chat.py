@@ -26,10 +26,21 @@ FOLLOWUP_TOPICS = {
 
 
 class RecommendationChatProcessor:
-    def __init__(self, model, kakao, recommendations, *, execution, contexts=None, reasons=None):
+    def __init__(
+        self,
+        model,
+        kakao,
+        recommendations,
+        *,
+        execution,
+        contexts=None,
+        reasons=None,
+        current_answers=None,
+    ):
         self.model, self.kakao, self.recommendations = model, kakao, recommendations
         self.contexts, self.reasons = contexts, reasons
         self.execution = execution
+        self.current_answers = current_answers
 
     @staticmethod
     def response(request, kind, message, **values):
@@ -212,12 +223,17 @@ class RecommendationChatProcessor:
                 data = self.reasons.answer_from_context(request, stored)
                 data.stages.interpretation = "ok"
                 return data
-            # Part 1 owns current facts. Never turn these questions into a new recommendation.
-            raise ServiceError(
-                "SERVICE_UNAVAILABLE",
-                f"{FOLLOWUP_TOPICS[parsed.intent]} 조회가 아직 연결되지 않았습니다.",
-                retryable=False,
-            )
+            if self.current_answers is None:
+                raise ServiceError(
+                    "SERVICE_UNAVAILABLE",
+                    "현재 정보 조회가 연결되지 않았습니다.",
+                    retryable=False,
+                )
+            answer = await self.current_answers.answer(request, parsed.intent, stored)
+            data = self.response(request, "answer", answer.text, answer=answer)
+            if parsed.intent == "travel_time":
+                data.stages.routes = "ok"
+            return data
         if parsed.intent == "scope_notice":
             message = (
                 "현재 출발하는 자동차 이동 기준 장소 추천을 지원합니다. "

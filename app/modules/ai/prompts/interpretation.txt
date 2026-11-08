@@ -3,6 +3,8 @@
 intent는 recommendation(조건 변경·다른 곳·새 추천), clarification(추천 조건 추가 확인), intent_clarification(질문과 조건 변경 중 할 작업 확인), scope_notice(미지원 요청), recommendation_reason(당시 추천 이유), travel_time(선택한 장소까지 현재 자동차 이동시간), parking(선택한 장소 주변 등록 주차 정보), population(선택한 장소 주변 현재 인구 현황) 중 하나다.
 selected_place는 서버가 문맥을 검증한 선택 카드의 이름·결과 종류이며 없으면 null이다. 장소 ID나 토큰을 출력하지 않는다.
 '왜 추천했어?'는 recommendation_reason이다. '지금 얼마나 걸려?'는 travel_time이고 당시 이동시간을 현재 값으로 답하지 않는다.
+'주변 인구는?'는 population이며 관측 구역 전체의 인구를 뜻한다. 매장 내부 혼잡도·소음·좌석 보장 질문은 scope_notice다.
+'주변 주차장은?'는 parking으로 등록정보를 확인한다. '지금 빈자리가 있어?'는 scope_notice이며 등록면수나 주차장 수로 답하지 않는다.
 후속 질문은 현재 조건이 부족해도 출발지·목적 clarification으로 바꾸지 않는다. 대상 카드가 없으면 서버가 선택을 요청한다.
 target_ambiguous는 선택 카드와 다른 장소나 여러 장소를 가리켜 대상을 확정할 수 없을 때 true, 그 외에는 false다. 대상 이름·번호를 근거 없이 추측하지 않는다.
 질문과 조건 변경을 함께 요청하거나 할 작업이 불명확하면 intent_clarification으로 먼저 어느 작업을 할지 묻는다. 단순 후속 질문을 새 추천으로 분류하지 않는다.

@@ -151,6 +151,33 @@ class AreaQueryService:
         self.repository, self.extras = repository, extras
         self.extras_max_age_seconds = extras_max_age_seconds
 
+    async def population_at(self, coordinates):
+        """Read only published population facts. No roads, parking, extras or collection calls."""
+        try:
+            rows = await self.repository.populations_at(coordinates)
+        except SQLAlchemyError:
+            raise ServiceError("DATA_UNAVAILABLE", "인구 관측 자료를 조회할 수 없습니다.") from None
+        now = datetime.now(UTC)
+        return {
+            "checked_at": now,
+            "reason_code": "DATA_UNAVAILABLE"
+            if rows is None
+            else "OUTSIDE_OBSERVATION_AREA"
+            if not rows
+            else None,
+            "areas": [
+                {
+                    "area_code": row["area_code"],
+                    "name": row["name"],
+                    "boundary_version": row["boundary_version"],
+                    "population": missing(row["reason_code"])
+                    if row["reason_code"]
+                    else information("population", row["observation"], now),
+                }
+                for row in rows or []
+            ],
+        }
+
     async def overview(self, area_code, *, include_extras=False):
         area = await self.repository.area(area_code)
         if area is None:

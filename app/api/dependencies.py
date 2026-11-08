@@ -23,6 +23,7 @@ from app.repositories.recommendation_context import RecommendationContextReposit
 from app.repositories.recommendation_geography import RecommendationGeographyRepository
 from app.services.area_queries import AreaQueryService
 from app.services.chat import RecommendationChatProcessor
+from app.services.current_place_answers import CurrentPlaceAnswers
 from app.services.health import HealthService
 from app.services.locations import LocationResolveService, LocationSearchService
 from app.services.map import MapService
@@ -195,6 +196,14 @@ def get_ai_provider(
     return OpenAIProvider(http, settings)
 
 
+def get_current_place_answers(
+    places: Annotated[PlaceDetailReader, Depends(get_place_detail_reader)],
+    travel: Annotated[TravelTimeReader, Depends(get_travel_time_reader)],
+    areas: Annotated[AreaQueryService, Depends(get_area_query_service)],
+) -> CurrentPlaceAnswers:
+    return CurrentPlaceAnswers(places, travel, areas)
+
+
 def get_recommendation_source(
     provider: Annotated[KakaoLocalClient, Depends(get_kakao_local_client)],
     parking: Annotated[ParkingNearbyService, Depends(get_parking_nearby_service)],
@@ -252,6 +261,7 @@ def get_pending_service(
     execution: Annotated[RecommendationExecution, Depends(get_recommendation_execution)],
     places: Annotated[PlaceDetailReader, Depends(get_place_detail_reader)],
     travel: Annotated[TravelTimeReader, Depends(get_travel_time_reader)],
+    current_answers: Annotated[CurrentPlaceAnswers, Depends(get_current_place_answers)],
 ) -> PendingService:
     return PendingService(
         places=places,
@@ -263,6 +273,7 @@ def get_pending_service(
             execution=execution,
             contexts=contexts,
             reasons=reasons,
+            current_answers=current_answers,
         ),
         retry=RecommendationRouteRetryProcessor(
             recommendations, contexts=contexts, execution=execution

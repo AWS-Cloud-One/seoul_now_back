@@ -42,7 +42,10 @@ def conversation_response(outcome: ConversationOutcome, response: Response, requ
     tags=["chat"],
     response_model=ChatResponse,
     summary="채팅·조건 변경·추천",
-    description="질문과 조건 변경을 해석해 추천하거나 선택한 카드의 당시 추천 이유를 답합니다.",
+    description=(
+        "추천·조건 변경, 선택한 카드의 당시 이유 및 "
+        "현재 이동시간·등록 주차·관측 인구 질문을 처리합니다."
+    ),
     responses={code: {"model": ChatResponse} for code in ERRORS},
 )
 async def chat_messages(body: ChatRequest, response: Response, service: Service):
