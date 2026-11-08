@@ -70,7 +70,8 @@ def answer_data(context):
 
 @pytest.mark.parametrize("retry", [False, True])
 def test_unconnected_conversation_preserves_context(api, context, retry):
-    _, client = api
+    app, client = api
+    app.dependency_overrides[get_pending_service] = lambda: PendingService()
     body = context | (
         {"result_id": "r1", "context_token": "opaque"} if retry else {"message": "카페 찾아줘"}
     )

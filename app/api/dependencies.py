@@ -30,6 +30,7 @@ from app.services.recommendation_context import RecommendationContextService
 from app.services.recommendation_execution import RecommendationExecution
 from app.services.recommendation_persistence import RecommendationPersistence
 from app.services.recommendation_reason import RecommendationReasonService
+from app.services.recommendation_retry import RecommendationRouteRetryProcessor
 from app.services.recommendations import RecommendationService
 
 
@@ -172,7 +173,7 @@ def get_pending_service(
     reasons: Annotated[RecommendationReasonService, Depends(get_recommendation_reason_service)],
     execution: Annotated[RecommendationExecution, Depends(get_recommendation_execution)],
 ) -> PendingService:
-    # Current fact readers, route retry and administrative status await their owning parts.
+    # Current fact readers and administrative status await their owning parts.
     return PendingService(
         chat=RecommendationChatProcessor(
             model,
@@ -181,6 +182,9 @@ def get_pending_service(
             execution=execution,
             contexts=contexts,
             reasons=reasons,
+        ),
+        retry=RecommendationRouteRetryProcessor(
+            recommendations, contexts=contexts, execution=execution
         ),
     )
 

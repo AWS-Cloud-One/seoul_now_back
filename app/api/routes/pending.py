@@ -53,8 +53,8 @@ async def chat_messages(body: ChatRequest, response: Response, service: Service)
     "/recommendations/retry-routes",
     tags=["recommendations"],
     response_model=RecommendationEnvelope,
-    summary="같은 후보 경로 재확인 — 연결 틀",
-    description="보류 계약. 문맥 검증·경로 서비스 미연결 시 503. 새 후보를 탐색하지 않습니다.",
+    summary="같은 후보 경로 재확인",
+    description="일반 후보 문맥을 검증하고 원래 장소의 경로를 같은 조건으로 재확인·저장합니다.",
     responses={code: {"model": RecommendationEnvelope} for code in ERRORS},
 )
 async def retry_routes(body: RetryRoutesRequest, response: Response, service: Service):
