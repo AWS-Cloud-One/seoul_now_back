@@ -12,8 +12,12 @@ from app.services.query_cursors import QUERY_CURSORS
 
 
 def comparable_fee(records):
+    payment_states = set()
     values = set()
     for record in records:
+        # Payment flags can conflict even when a source's fee cannot be converted.
+        if record.is_paid is True or record.is_paid is False:
+            payment_states.add(record.is_paid)
         if record.is_paid is False:
             values.add(0.0)
         elif (
@@ -25,7 +29,7 @@ def comparable_fee(records):
             and record.base_fee_krw > 0
         ):
             values.add(float(record.base_fee_krw * 60 / record.base_minutes))
-    if len(values) > 1:
+    if len(payment_states) > 1 or len(values) > 1:
         return None, "conflict", "CONFLICTING_SOURCE_FEES"
     if not values:
         return None, "unknown", "FEE_UNIT_OR_PAYMENT_UNKNOWN"

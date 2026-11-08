@@ -1,13 +1,19 @@
 """Public Part 1 query route wiring; no provider requests or DB connection."""
 
 from datetime import UTC, datetime
+from decimal import Decimal
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
+from uuid import UUID, uuid4
 
 import pytest
 
 from app.api.routes.location_queries import get_area_query_service, get_place_query_service
 from app.api.routes.parking import get_parking_search_service
+from app.models import ParkingSourceRecord
 from app.services.area_queries import missing
+from app.services.parking_search import ParkingSearchService
+from app.services.query_cursors import QueryCursorStore
 
 
 @pytest.fixture
@@ -47,6 +53,65 @@ def test_manual_parking_route_precedes_uuid_route(client, queries):
     assert response.status_code == 200
     request = queries[1].search.call_args.args[0]
     assert request.sort == "price" and request.radius_meters == 2000
+
+
+def test_price_sort_places_conflicting_fees_after_known_prices_across_pages(client, app):
+    conflict_id, free_id, paid_id, unknown_id = [UUID(int=i) for i in range(1, 5)]
+    repo = AsyncMock()
+    repo.get_version.return_value = SimpleNamespace(is_ready=True, geometry_version="v1")
+    repo.list_facilities.return_value = [
+        (key, "unverified", {"name": name}, 37.56, 126.97, meters)
+        for key, name, meters in [
+            (conflict_id, "요금 충돌", 10),
+            (paid_id, "유료", 20),
+            (free_id, "무료", 30),
+            (unknown_id, "요금 미확인", 40),
+        ]
+    ]
+
+    def record(paid, minutes=None, amount=None):
+        return ParkingSourceRecord(
+            source_record_id=uuid4(),
+            source="national_parking" if paid else "seoul_getparkinfo",
+            is_paid=paid,
+            base_minutes=Decimal(minutes) if minutes is not None else None,
+            base_fee_krw=Decimal(amount) if amount is not None else None,
+            base_usable=minutes is not None and amount is not None,
+        )
+
+    repo.list_records.return_value = {
+        conflict_id: [record(False), record(True, amount=1000)],
+        free_id: [record(False)],
+        paid_id: [record(True, 10, 500)],
+        unknown_id: [],
+    }
+    service = ParkingSearchService(repo, cursors=QueryCursorStore())
+    app.dependency_overrides[get_parking_search_service] = lambda: service
+    params = {"latitude": 37.56, "longitude": 126.97, "sort": "price", "limit": 2}
+    first = client.get("/api/v1/parking/search", params=params)
+    assert first.status_code == 200
+    page = first.json()["data"]
+    assert page["total_count"] == 4 and page["next_cursor"]
+    assert [item["facility"]["parking_id"] for item in page["items"]] == [
+        str(free_id),
+        str(paid_id),
+    ]
+    assert [item["hourly_base_comparison_krw"] for item in page["items"]] == [0, 3000]
+    second = client.get("/api/v1/parking/search", params={**params, "cursor": page["next_cursor"]})
+    assert second.status_code == 200
+    page = second.json()["data"]
+    assert page["next_cursor"] is None
+    assert [item["facility"]["parking_id"] for item in page["items"]] == [
+        str(conflict_id),
+        str(unknown_id),
+    ]
+    conflict = page["items"][0]
+    assert conflict["hourly_base_comparison_krw"] is None
+    assert conflict["fee_status"] == "conflict"
+    assert conflict["fee_reason"] == "CONFLICTING_SOURCE_FEES"
+    records = conflict["facility"]["records"]
+    assert len(records) == 2
+    assert records[1]["registered"]["value"]["fees"]["base_fee_krw"] == 1000
 
 
 def test_area_uses_observation_id_and_preserves_partial_response(client, queries):

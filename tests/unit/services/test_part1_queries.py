@@ -109,6 +109,9 @@ def test_nearby_cursor_version_change_and_same_radius():
         ([(True, None, 500)], (None, "unknown")),
         ([(True, 10, 0)], (None, "unknown")),
         ([(False, None, None), (True, 10, 500)], (None, "conflict")),
+        ([(True, 10, 500), (True, 10, 1000)], (None, "conflict")),
+        ([(False, None, None), (None, None, None)], (0.0, "free")),
+        ([(True, 10, 500), (None, None, None)], (3000.0, "paid")),
     ],
 )
 def test_fee_comparison_does_not_guess_free_or_combine_sources(records, expected):
@@ -122,6 +125,27 @@ def test_fee_comparison_does_not_guess_free_or_combine_sources(records, expected
         for paid, minutes, amount in records
     ]
     assert comparable_fee(values)[:2] == expected
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize(
+    "minutes,amount,usable",
+    [(None, 500, False), (10, None, False), (10, 500, False), (None, 500, True)],
+    ids=["missing-time", "missing-fee", "unusable-base", "missing-time-marked-usable"],
+)
+def test_free_and_paid_conflict_even_when_paid_fee_is_unusable(minutes, amount, usable, reverse):
+    records = [
+        SimpleNamespace(is_paid=False),
+        SimpleNamespace(
+            is_paid=True,
+            base_minutes=Decimal(minutes) if minutes is not None else None,
+            base_fee_krw=Decimal(amount) if amount is not None else None,
+            base_usable=usable,
+        ),
+    ]
+    if reverse:
+        records.reverse()
+    assert comparable_fee(records) == (None, "conflict", "CONFLICTING_SOURCE_FEES")
 
 
 def test_parking_search_fixed_radius_pages_and_changed_order_expiry():
