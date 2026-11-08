@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, Query
 
 from app.api.contract import ContractRoute, envelope
 from app.api.dependencies import get_location_resolve_service, get_location_search_service
+from app.api.routes.location_queries import router as query_router
 from app.schemas.common import ErrorResponse
 from app.schemas.location import Coordinates
 from app.schemas.locations import LocationResolveResponse, LocationSearchResponse, SearchQuery
@@ -19,10 +20,9 @@ router = APIRouter(prefix="/locations", tags=["locations"], route_class=Contract
     response_model=LocationSearchResponse,
     summary="출발지 장소명·주소 검색",
     description=(
-        "보류 계약의 부분 구현입니다. 좌표로 지원 지역을 확인합니다. "
-        "커서 미연결 상태에서는 다음 페이지가 필요한 검색에 503을 반환합니다."
+        "좌표로 지원 지역을 확인합니다. 다음 페이지는 같은 검색어·limit과 반환된 커서를 사용합니다."
     ),
-    responses={code: {"model": ErrorResponse} for code in (422, 429, 500, 502, 503, 504)},
+    responses={code: {"model": ErrorResponse} for code in (410, 422, 429, 500, 502, 503, 504)},
 )
 async def search(
     query: Annotated[
@@ -57,3 +57,6 @@ async def resolve(
     service: Annotated[LocationResolveService, Depends(get_location_resolve_service)],
 ):
     return envelope(await service.resolve(Coordinates(latitude=latitude, longitude=longitude)))
+
+
+router.include_router(query_router)

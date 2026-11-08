@@ -1,4 +1,4 @@
-"""L01/L02 provider conversion. Cursor policy remains an unconfigured port."""
+"""L01/L02 provider conversion with bounded opaque search pagination."""
 
 from dataclasses import dataclass
 from typing import Protocol
@@ -9,6 +9,7 @@ from app.clients.kakao import KakaoError, KakaoLocalClient
 from app.core.exceptions import ServiceError
 from app.schemas.location import Coordinates, Location
 from app.schemas.locations import LocationResolveData, LocationSearchData
+from app.services.query_cursors import QUERY_CURSORS
 
 
 def provider_error():
@@ -60,17 +61,50 @@ class LocationPagination(Protocol):
         ...
 
 
-async def first_page(provider: KakaoLocalClient, query: str, limit: int) -> SearchPage:
-    # Keep the existing keyword search as the first provider. When no places
-    # match, try the address endpoint. Never silently truncate a provider page.
-    rows, is_end = documents(await provider.keyword(query, page=1, size=min(limit + 1, 15)))
-    if rows:
-        if not is_end and len(rows) <= limit and limit > 15:
-            more, is_end = documents(await provider.keyword(query, page=2, size=15))
-            rows += more
-        return SearchPage(rows, not is_end or len(rows) > limit)
-    rows, is_end = documents(await provider.address(query, size=limit + 1))
-    return SearchPage(rows, not is_end or len(rows) > limit)
+class ProviderLocationPagination:
+    """Fixed provider page size plus buffered rows; bound to query and limit."""
+
+    def __init__(self, cursors=None):
+        self.cursors = cursors if cursors is not None else QUERY_CURSORS
+
+    async def search(self, provider, query, cursor, limit):
+        scope = ("locations", query, limit)
+        state = (
+            self.cursors.read(cursor, scope)
+            if cursor
+            else {
+                "mode": "keyword",
+                "page": 1,
+                "buffer": [],
+                "ended": False,
+            }
+        )
+        rows = state["buffer"]
+        size = min(limit + 1, 15)
+        budget = 3
+        while budget and len(rows) <= limit and not state["ended"]:
+            budget -= 1
+            if state["page"] > 45:
+                raise ServiceError(
+                    "PROVIDER_ERROR", "제공처 검색 범위를 초과했습니다. 검색어를 구체화해 주세요."
+                )
+            if state["mode"] == "keyword":
+                body = await provider.keyword(query, page=state["page"], size=size)
+            elif state["page"] == 1:
+                body = await provider.address(query, size=size)
+            else:
+                body = await provider.address(query, size=size, page=state["page"])
+            batch, ended = documents(body)
+            if not batch and state["mode"] == "keyword" and state["page"] == 1:
+                state["mode"] = "address"
+                continue
+            rows.extend(batch)
+            state["page"] += 1
+            state["ended"] = ended
+        state["buffer"] = rows[limit:]
+        more = bool(state["buffer"]) or not state["ended"]
+        token = self.cursors.issue(scope, state) if more else None
+        return SearchPage(rows[:limit], more, token)
 
 
 def region_from_coordinates(body):
@@ -110,19 +144,14 @@ def region_from_coordinates(body):
 
 class LocationSearchService:
     def __init__(self, provider: KakaoLocalClient, pagination: LocationPagination | None = None):
-        self.provider, self.pagination = provider, pagination
+        self.provider = provider
+        self.pagination = pagination if pagination is not None else ProviderLocationPagination()
 
     async def search(self, query: str, cursor: str | None, limit: int) -> LocationSearchData:
-        if cursor is not None and self.pagination is None:
-            raise self.pagination_unavailable()
         try:
-            page = (
-                await self.pagination.search(self.provider, query, cursor, limit)
-                if self.pagination
-                else (await first_page(self.provider, query, limit))
-            )
+            page = await self.pagination.search(self.provider, query, cursor, limit)
             if page.has_more and not page.next_cursor:
-                raise self.pagination_unavailable()
+                raise provider_error()
             if (not page.has_more and page.next_cursor is not None) or len(page.documents) > limit:
                 raise provider_error()
             items, regions = [], {}
@@ -149,14 +178,6 @@ class LocationSearchService:
             raise provider_failure(exc) from None
         except ValidationError, KeyError, TypeError:
             raise provider_error() from None
-
-    @staticmethod
-    def pagination_unavailable():
-        return ServiceError(
-            "SERVICE_UNAVAILABLE",
-            "다음 페이지 처리가 아직 연결되지 않았습니다. 검색어를 더 구체적으로 입력해 주세요.",
-            retryable=False,
-        )
 
 
 def address_from_coordinates(body):

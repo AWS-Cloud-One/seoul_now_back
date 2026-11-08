@@ -4,15 +4,19 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.contract import ContractRoute, envelope
-from app.api.dependencies import get_parking_detail_service, get_parking_nearby_service
+from app.api.dependencies import get_parking_detail_service, get_parking_nearby_service, get_session
+from app.repositories.parking_nearby import ParkingNearbyRepository
 from app.schemas.common import ErrorResponse
 from app.schemas.location import Coordinates
 from app.schemas.parking_detail import ParkingDetailResponse, ParkingErrorResponse
 from app.schemas.parking_nearby import NearbyParkingQuery, NearbyParkingResponse
+from app.schemas.query_services import ParkingSearchQuery, ParkingSearchResponse
 from app.services.parking_detail import ParkingDetailService
 from app.services.parking_nearby import ParkingNearbyService
+from app.services.parking_search import ParkingSearchService
 
 router = APIRouter(prefix="/parking", tags=["parking"], route_class=ContractRoute)
 
@@ -21,8 +25,8 @@ router = APIRouter(prefix="/parking", tags=["parking"], route_class=ContractRout
     "/nearby",
     response_model=NearbyParkingResponse,
     summary="주변 주차 등록정보 조회",
-    description="P02 부분 구현. 다음 페이지 처리는 담당 기능 연결 전까지 503으로 응답합니다.",
-    responses={code: {"model": ErrorResponse} for code in (422, 429, 500, 502, 503, 504)},
+    description="첫 유효 반경을 유지하며 같은 좌표·limit으로 다음 페이지를 조회합니다.",
+    responses={code: {"model": ErrorResponse} for code in (410, 422, 429, 500, 502, 503, 504)},
 )
 async def nearby(
     query: Annotated[NearbyParkingQuery, Query()],
@@ -38,6 +42,23 @@ async def nearby(
 
 
 # Static paths are registered before the UUID detail route.
+def get_parking_search_service(session: Annotated[AsyncSession, Depends(get_session)]):
+    return ParkingSearchService(ParkingNearbyRepository(session))
+
+
+@router.get(
+    "/search",
+    response_model=ParkingSearchResponse,
+    summary="독립 주차 검색·거리/요금 정렬 — 파트 1 초안",
+    responses={code: {"model": ErrorResponse} for code in (410, 422, 500, 503)},
+)
+async def parking_search(
+    query: Annotated[ParkingSearchQuery, Query()],
+    service: Annotated[ParkingSearchService, Depends(get_parking_search_service)],
+):
+    return envelope(await service.search(query))
+
+
 @router.get(
     "/{parking_id}",
     response_model=ParkingDetailResponse,
