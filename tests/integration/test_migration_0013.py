@@ -6,12 +6,12 @@ from uuid import uuid4
 import pytest
 import sqlalchemy as sa
 from alembic import command
-from test_migration_0009 import config
-from test_migration_0009 import migration_database as migration_database
-from test_migration_0010 import fail_upgrade_at
-from test_model_constraints import snapshot_card
 
 from app.models import Base
+from tests.integration.test_migration_0009 import config
+from tests.integration.test_migration_0009 import migration_database as migration_database
+from tests.integration.test_migration_0010 import fail_upgrade_at
+from tests.integration.test_model_constraints import snapshot_card
 
 pytestmark = pytest.mark.integration
 NEW_TABLES = {
