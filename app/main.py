@@ -9,6 +9,7 @@ from app.core.config import Settings
 from app.db.session import create_engine, read_session_factory, write_session_factory
 from app.modules.recommendation.progress import MemoryProgressStore
 from app.services.driving_requests import DrivingRequests
+from app.services.read_replay import ReadReplay
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -25,6 +26,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             concurrency=config.mobility_max_concurrency,
             interval=1 / config.mobility_requests_per_second,
         )
+        app.state.travel_replay = ReadReplay(ttl=config.result_context_ttl_seconds)
         try:
             yield
         finally:

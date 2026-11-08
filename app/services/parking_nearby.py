@@ -21,18 +21,27 @@ class ParkingNearbyService:
         self.repository, self.provider = repository, provider
         self.cursors = cursors if cursors is not None else QUERY_CURSORS
 
-    async def search(self, coordinates: Coordinates, limit: int, cursor: str | None):
+    async def search(
+        self,
+        coordinates: Coordinates,
+        limit: int,
+        cursor: str | None,
+        *,
+        verified_seoul=False,
+    ):
         scope = ("parking-nearby", coordinates.latitude, coordinates.longitude, limit)
         page = self.cursors.read(cursor, scope) if cursor else None
         try:
-            region = region_from_coordinates(
-                await self.provider.region(
-                    coordinates.latitude,
-                    coordinates.longitude,
+            # Only internal readers of authenticated Seoul result coordinates may skip this.
+            if not verified_seoul:
+                region = region_from_coordinates(
+                    await self.provider.region(
+                        coordinates.latitude,
+                        coordinates.longitude,
+                    )
                 )
-            )
-            if region != "seoul":
-                raise ServiceError("VALIDATION_ERROR", "서울 목적지 좌표를 입력해 주세요.")
+                if region != "seoul":
+                    raise ServiceError("VALIDATION_ERROR", "서울 목적지 좌표를 입력해 주세요.")
             now = datetime.now(UTC)
             version = await self.repository.get_version()
             summary = ParkingSummary(

@@ -18,6 +18,7 @@ from app.repositories.health import HealthRepository
 from app.repositories.map import MapRepository
 from app.repositories.parking_detail import ParkingDetailRepository
 from app.repositories.parking_nearby import ParkingNearbyRepository
+from app.repositories.recommendation_conditions import RecommendationConditionsRepository
 from app.repositories.recommendation_context import RecommendationContextRepository
 from app.repositories.recommendation_geography import RecommendationGeographyRepository
 from app.services.area_queries import AreaQueryService
@@ -29,6 +30,7 @@ from app.services.parking_detail import ParkingDetailService
 from app.services.parking_nearby import ParkingNearbyService
 from app.services.parking_search import ParkingSearchService
 from app.services.pending import PendingService
+from app.services.place_details import PlaceDetailReader, TravelTimeReader
 from app.services.place_queries import PlaceQueryService
 from app.services.recommendation_adapters import (
     RecommendationConditionsValidator,
@@ -154,6 +156,27 @@ def get_place_query_service(
     )
 
 
+def get_place_detail_reader(
+    contexts: Annotated[RecommendationContextService, Depends(get_context_reader)],
+    parking: Annotated[ParkingNearbyService, Depends(get_parking_nearby_service)],
+) -> PlaceDetailReader:
+    return PlaceDetailReader(contexts, parking)
+
+
+def get_travel_time_reader(
+    request: Request,
+    session: Session,
+    contexts: Annotated[RecommendationContextService, Depends(get_context_reader)],
+    queries: Annotated[PlaceQueryService, Depends(get_place_query_service)],
+) -> TravelTimeReader:
+    return TravelTimeReader(
+        contexts,
+        RecommendationConditionsRepository(session),
+        queries,
+        request.app.state.travel_replay,
+    )
+
+
 def get_area_query_service(
     session: Session,
     http: Annotated[httpx.AsyncClient, Depends(get_http_client)],
@@ -227,9 +250,12 @@ def get_pending_service(
     contexts: Annotated[RecommendationContextService, Depends(get_context_reader)],
     reasons: Annotated[RecommendationReasonService, Depends(get_recommendation_reason_service)],
     execution: Annotated[RecommendationExecution, Depends(get_recommendation_execution)],
+    places: Annotated[PlaceDetailReader, Depends(get_place_detail_reader)],
+    travel: Annotated[TravelTimeReader, Depends(get_travel_time_reader)],
 ) -> PendingService:
-    # Current fact readers and administrative status await their owning parts.
     return PendingService(
+        places=places,
+        travel=travel,
         chat=RecommendationChatProcessor(
             model,
             provider,

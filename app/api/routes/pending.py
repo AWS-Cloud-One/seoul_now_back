@@ -67,15 +67,17 @@ async def retry_routes(body: RetryRoutesRequest, response: Response, service: Se
     "/places/{place_id}",
     tags=["places"],
     response_model=PlaceDetailResponse,
-    summary="추천 장소 상세 — 연결 틀",
+    summary="추천 장소 상세",
     responses=ERRORS,
-    description="보류 계약. Result-Context 필수. 문맥 검증·상세 서비스 미연결 시 503입니다.",
+    description="Result-Context 검증 후 저장된 장소와 현재 등록 주차 정보를 반환합니다.",
 )
 async def place_detail(
     place_id: PlaceId,
     service: Service,
+    response: Response,
     result_context: Annotated[str, Header(alias="Result-Context", min_length=1)],
 ):
+    response.headers["Cache-Control"] = "no-store"
     return envelope(await service.place_detail(place_id, result_context))
 
 
@@ -83,9 +85,9 @@ async def place_detail(
     "/places/{place_id}/travel-time",
     tags=["places"],
     response_model=TravelTimeResponse,
-    summary="이동시간 재확인 — 연결 틀",
+    summary="이동시간 재확인",
     responses=ERRORS,
-    description="보류 계약. 출발지·목적지는 검증된 문맥에서 얻습니다. 미연결 시 503입니다.",
+    description="결과의 원래 출발지·목적지로 ETA를 확인하고 정상 조회값을 60초간 재사용합니다.",
 )
 async def travel_time(
     place_id: PlaceId, body: TravelTimeRequest, response: Response, service: Service
