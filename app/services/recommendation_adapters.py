@@ -1,6 +1,5 @@
 """Adapt the shared Kakao and parking services to the recommendation ports."""
 
-import math
 from datetime import UTC, datetime
 
 from pydantic import ValidationError
@@ -8,7 +7,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from app.clients.kakao import KakaoError
 from app.core.exceptions import ServiceError
-from app.modules.recommendation.types import Candidate
+from app.modules.recommendation.types import Candidate, RouteEstimate
 from app.schemas.location import Coordinates
 from app.schemas.pending import Place
 from app.schemas.recommendations import Conditions, ConditionUpdate
@@ -17,8 +16,9 @@ from app.services.recommendations import ValidationDecision
 
 
 class RecommendationSource:
-    def __init__(self, kakao, parking):
+    def __init__(self, kakao, parking, queries):
         self.kakao, self.parking_service = kakao, parking
+        self.queries = queries
 
     async def region(self, coordinates):
         try:
@@ -64,33 +64,12 @@ class RecommendationSource:
         return candidates, is_end
 
     async def route(self, origin, destination):
-        try:
-            body = await self.kakao.directions(origin, destination)
-        except KakaoError as exc:
-            # Shared transport currently collapses HTTP 401/403 to this safe 502 message.
-            # Keep that known configuration failure out of general-candidate fallback.
-            if (
-                exc.status == 502
-                and exc.message == "카카오 키 또는 해당 API 사용 권한을 확인해 주세요."
-            ):
-                raise ServiceError("SERVICE_UNAVAILABLE", exc.message, retryable=False) from None
-            raise provider_failure(exc) from None
-        try:
-            route = body["routes"][0]
-            if type(route["result_code"]) is not int or route["result_code"] != 0:
-                raise ValueError("route unavailable")
-            seconds, distance = route["summary"]["duration"], route["summary"]["distance"]
-            if (
-                type(seconds) is not int
-                or seconds < 0
-                or type(distance) not in (int, float)
-                or not math.isfinite(distance)
-                or distance < 0
-            ):
-                raise ValueError("invalid route")
-            return seconds, distance
-        except KeyError, IndexError, TypeError, ValueError:
-            raise ServiceError("PROVIDER_ERROR", "자동차 이동시간을 확인할 수 없습니다.") from None
+        data = await self.queries.driving(origin, destination, include_geometry=False)
+        return RouteEstimate(
+            data.route.value.duration_seconds,
+            data.route.value.distance_meters,
+            data.route.collected_at,
+        )
 
     async def parking(self, coordinates):
         # Use the published, normalized facilities and the same first-radius rule as P02.

@@ -5,7 +5,7 @@ from typing import Protocol
 
 from pydantic import ValidationError
 
-from app.clients.kakao import KakaoError, KakaoLocalClient
+from app.clients.kakao import KakaoConfigurationError, KakaoError, KakaoLocalClient
 from app.core.exceptions import ServiceError
 from app.schemas.location import Coordinates, Location
 from app.schemas.locations import LocationResolveData, LocationSearchData
@@ -17,6 +17,8 @@ def provider_error():
 
 
 def provider_failure(exc: KakaoError) -> ServiceError:
+    if isinstance(exc, KakaoConfigurationError):
+        return ServiceError("SERVICE_UNAVAILABLE", exc.message, retryable=False)
     code = {429: "RATE_LIMITED", 504: "PROVIDER_TIMEOUT", 503: "SERVICE_UNAVAILABLE"}.get(
         exc.status,
         "PROVIDER_ERROR",

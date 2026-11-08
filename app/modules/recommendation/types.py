@@ -1,5 +1,6 @@
 """Internal recommendation candidates; public requests keep the API_SPEC models."""
 
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal
 
@@ -9,6 +10,13 @@ from app.schemas.common import ContractModel
 from app.schemas.parking_nearby import ParkingSummary
 from app.schemas.pending import Place
 from app.schemas.recommendation_result import RankingDecision
+
+
+@dataclass(frozen=True)
+class RouteEstimate:
+    duration_seconds: int
+    distance_meters: float
+    collected_at: datetime
 
 
 class Candidate(ContractModel):

@@ -7,6 +7,7 @@ import pytest
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.clients.kakao import KakaoLocalClient
+from app.clients.query_kakao import KakaoQueryClient
 from app.core.exceptions import ServiceError
 from app.modules.ai.interpretation import Interpretation
 from app.modules.recommendation.cards import unavailable_parking
@@ -14,6 +15,7 @@ from app.modules.recommendation.ranking import rank_candidates
 from app.modules.recommendation.types import Candidate
 from app.schemas.location import Coordinates
 from app.schemas.pending import Place
+from app.services.place_queries import PlaceQueryService
 from app.services.recommendation_adapters import RecommendationSource
 
 
@@ -76,7 +78,10 @@ def test_shared_kakao_transport_errors_reach_recommendation_ports(status, code):
                 lambda request: httpx.Response(status, headers={"Retry-After": "8"})
             )
         ) as http:
-            source = RecommendationSource(KakaoLocalClient(http, "test-key"), AsyncMock())
+            kakao = KakaoLocalClient(http, "test-key")
+            source = RecommendationSource(
+                kakao, AsyncMock(), PlaceQueryService(KakaoQueryClient(kakao))
+            )
             with pytest.raises(ServiceError) as exc:
                 await source.route(
                     Coordinates(latitude=37.56, longitude=126.97),
@@ -102,12 +107,15 @@ def test_invalid_route_numbers_are_not_ranked(summary):
     async def run():
         kakao = AsyncMock()
         kakao.directions.return_value = {"routes": [{"result_code": 0, "summary": summary}]}
-        source = RecommendationSource(kakao, AsyncMock())
-        with pytest.raises(ServiceError, match="이동시간"):
+        source = RecommendationSource(
+            kakao, AsyncMock(), PlaceQueryService(KakaoQueryClient(kakao))
+        )
+        with pytest.raises(ServiceError) as exc:
             await source.route(
                 Coordinates(latitude=37.56, longitude=126.97),
                 Coordinates(latitude=37.57, longitude=126.98),
             )
+        assert exc.value.code == "PROVIDER_ERROR"
 
     asyncio.run(run())
 
@@ -150,13 +158,18 @@ def test_recommendation_kakao_calls_preserve_coordinates_and_provider_identity()
             )
 
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
-            source = RecommendationSource(KakaoLocalClient(http, "test-key"), AsyncMock())
+            kakao = KakaoLocalClient(http, "test-key")
+            source = RecommendationSource(
+                kakao, AsyncMock(), PlaceQueryService(KakaoQueryClient(kakao))
+            )
             origin = Coordinates(latitude=37.56, longitude=126.97)
             values, end = await source.search("카페", origin, "cafe", 2)
             assert end and values[0].place.place_id == "kakao:001"
             assert requests[0].url.params["page"] == "2"
             assert requests[0].url.params["x"] == "126.97"
-            assert await source.route(origin, values[0].place.coordinates) == (600, 1500)
+            estimate = await source.route(origin, values[0].place.coordinates)
+            assert (estimate.duration_seconds, estimate.distance_meters) == (600, 1500)
+            assert estimate.collected_at is not None
             assert requests[1].url.params["origin"] == "126.97,37.56"
             assert requests[1].url.params["destination"] == "126.98,37.57"
 
@@ -167,7 +180,7 @@ def test_parking_database_failure_becomes_a_shared_service_error():
     async def run():
         parking = AsyncMock()
         parking.search.side_effect = SQLAlchemyError("private database details")
-        source = RecommendationSource(AsyncMock(), parking)
+        source = RecommendationSource(AsyncMock(), parking, AsyncMock())
         with pytest.raises(ServiceError) as exc:
             await source.parking(Coordinates(latitude=37.56, longitude=126.97))
         assert exc.value.code == "DATA_UNAVAILABLE"

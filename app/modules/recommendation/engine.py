@@ -9,6 +9,7 @@ from app.modules.recommendation.areas import select_areas
 from app.modules.recommendation.cards import card, result, unavailable_parking
 from app.modules.recommendation.progress import RecommendationWork, SearchProgress, fingerprint
 from app.modules.recommendation.ranking import DEFAULT_POLICY, rank_candidates
+from app.modules.recommendation.types import RouteEstimate
 from app.schemas.recommendation_result import SearchAreaSnapshot, SearchScope
 from app.schemas.recommendations import ConditionUpdate, RecommendationResponse, Stages
 
@@ -181,7 +182,11 @@ class DestinationRecommendationEngine:
                     raise answer
                 failed.append(candidate)
                 continue
-            seconds, meters = answer
+            seconds, meters = (
+                (answer.duration_seconds, answer.distance_meters)
+                if isinstance(answer, RouteEstimate)
+                else answer
+            )
             successes += 1
             if (
                 conditions.max_travel_seconds is not None
@@ -189,7 +194,9 @@ class DestinationRecommendationEngine:
             ):
                 continue
             candidate.duration_seconds, candidate.distance_meters = seconds, meters
-            candidate.route_collected_at = datetime.now(UTC)
+            candidate.route_collected_at = (
+                answer.collected_at if isinstance(answer, RouteEstimate) else datetime.now(UTC)
+            )
             try:
                 candidate.parking = await self.source.parking(candidate.place.coordinates)
             except ServiceError:

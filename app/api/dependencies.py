@@ -1,3 +1,4 @@
+import hashlib
 from collections.abc import AsyncIterator
 from typing import Annotated
 
@@ -5,23 +6,29 @@ import httpx
 from fastapi import Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.clients.area_extras import SeoulAreaExtras
 from app.clients.kakao import KakaoLocalClient
+from app.clients.query_kakao import KakaoQueryClient
 from app.core.config import Settings
 from app.core.exceptions import ServiceError
 from app.modules.ai.providers.openai import OpenAIProvider
 from app.modules.recommendation.engine import DestinationRecommendationEngine
+from app.repositories.area_queries import AreaQueryRepository
 from app.repositories.health import HealthRepository
 from app.repositories.map import MapRepository
 from app.repositories.parking_detail import ParkingDetailRepository
 from app.repositories.parking_nearby import ParkingNearbyRepository
 from app.repositories.recommendation_context import RecommendationContextRepository
+from app.services.area_queries import AreaQueryService
 from app.services.chat import RecommendationChatProcessor
 from app.services.health import HealthService
 from app.services.locations import LocationResolveService, LocationSearchService
 from app.services.map import MapService
 from app.services.parking_detail import ParkingDetailService
 from app.services.parking_nearby import ParkingNearbyService
+from app.services.parking_search import ParkingSearchService
 from app.services.pending import PendingService
+from app.services.place_queries import PlaceQueryService
 from app.services.recommendation_adapters import (
     RecommendationConditionsValidator,
     RecommendationSource,
@@ -128,6 +135,34 @@ def get_parking_nearby_service(
     return ParkingNearbyService(ParkingNearbyRepository(session), provider)
 
 
+def get_parking_search_service(session: Session) -> ParkingSearchService:
+    return ParkingSearchService(ParkingNearbyRepository(session))
+
+
+def get_place_query_service(
+    request: Request,
+    provider: Annotated[KakaoLocalClient, Depends(get_kakao_local_client)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> PlaceQueryService:
+    key = settings.kakao_rest_api_key.get_secret_value().strip()
+    return PlaceQueryService(
+        KakaoQueryClient(provider),
+        driving_requests=request.app.state.driving_requests,
+        cache_namespace=hashlib.sha256(key.encode()).hexdigest(),
+    )
+
+
+def get_area_query_service(
+    session: Session,
+    http: Annotated[httpx.AsyncClient, Depends(get_http_client)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> AreaQueryService:
+    return AreaQueryService(
+        AreaQueryRepository(session),
+        SeoulAreaExtras(http, settings.seoul_citydata_api_key.get_secret_value()),
+    )
+
+
 def get_ai_provider(
     http: Annotated[httpx.AsyncClient, Depends(get_http_client)],
     settings: Annotated[Settings, Depends(get_settings)],
@@ -138,8 +173,9 @@ def get_ai_provider(
 def get_recommendation_source(
     provider: Annotated[KakaoLocalClient, Depends(get_kakao_local_client)],
     parking: Annotated[ParkingNearbyService, Depends(get_parking_nearby_service)],
+    queries: Annotated[PlaceQueryService, Depends(get_place_query_service)],
 ) -> RecommendationSource:
-    return RecommendationSource(provider, parking)
+    return RecommendationSource(provider, parking, queries)
 
 
 def get_recommendation_execution(request: Request) -> RecommendationExecution:

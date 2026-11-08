@@ -1,22 +1,12 @@
-"""Part 1 extra query routes, mounted under the existing /locations router.
-
-Public paths are integration proposals; no shared router/dependency edits needed.
-"""
+"""Independent place, driving and area queries using shared service dependencies."""
 
 from typing import Annotated
 
-import httpx
 from fastapi import APIRouter, Depends, Query
 from fastapi.encoders import jsonable_encoder
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.contract import ContractRoute, envelope
-from app.api.dependencies import get_http_client, get_kakao_local_client, get_session, get_settings
-from app.clients.area_extras import SeoulAreaExtras
-from app.clients.kakao import KakaoLocalClient
-from app.clients.query_kakao import KakaoQueryClient
-from app.core.config import Settings
-from app.repositories.area_queries import AreaQueryRepository
+from app.api.dependencies import get_area_query_service, get_place_query_service
 from app.schemas.common import ErrorResponse
 from app.schemas.location import Coordinates
 from app.schemas.query_services import (
@@ -32,24 +22,6 @@ from app.services.place_queries import PlaceQueryService
 
 router = APIRouter(route_class=ContractRoute)
 ERRORS = {code: {"model": ErrorResponse} for code in (404, 410, 422, 429, 500, 502, 503, 504)}
-
-
-def get_place_query_service(provider: Annotated[KakaoLocalClient, Depends(get_kakao_local_client)]):
-    return PlaceQueryService(KakaoQueryClient(provider))
-
-
-def get_area_query_service(
-    session: Annotated[AsyncSession, Depends(get_session)],
-    http: Annotated[httpx.AsyncClient, Depends(get_http_client)],
-    settings: Annotated[Settings, Depends(get_settings)],
-):
-    return AreaQueryService(
-        AreaQueryRepository(session),
-        SeoulAreaExtras(
-            http,
-            settings.seoul_citydata_api_key.get_secret_value(),
-        ),
-    )
 
 
 @router.get(

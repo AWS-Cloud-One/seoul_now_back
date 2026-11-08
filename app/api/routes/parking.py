@@ -4,11 +4,13 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.contract import ContractRoute, envelope
-from app.api.dependencies import get_parking_detail_service, get_parking_nearby_service, get_session
-from app.repositories.parking_nearby import ParkingNearbyRepository
+from app.api.dependencies import (
+    get_parking_detail_service,
+    get_parking_nearby_service,
+    get_parking_search_service,
+)
 from app.schemas.common import ErrorResponse
 from app.schemas.location import Coordinates
 from app.schemas.parking_detail import ParkingDetailResponse, ParkingErrorResponse
@@ -42,10 +44,6 @@ async def nearby(
 
 
 # Static paths are registered before the UUID detail route.
-def get_parking_search_service(session: Annotated[AsyncSession, Depends(get_session)]):
-    return ParkingSearchService(ParkingNearbyRepository(session))
-
-
 @router.get(
     "/search",
     response_model=ParkingSearchResponse,

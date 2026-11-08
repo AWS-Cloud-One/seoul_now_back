@@ -8,8 +8,11 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from app.api.routes.location_queries import get_area_query_service, get_place_query_service
-from app.api.routes.parking import get_parking_search_service
+from app.api.dependencies import (
+    get_area_query_service,
+    get_parking_search_service,
+    get_place_query_service,
+)
 from app.models import ParkingSourceRecord
 from app.services.area_queries import missing
 from app.services.parking_search import ParkingSearchService

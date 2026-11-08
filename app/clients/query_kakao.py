@@ -21,14 +21,4 @@ class KakaoQueryClient:
         )
 
     async def driving(self, origin, destination, *, include_geometry):
-        return await kakao_get(
-            self.client.http,
-            "https://apis-navi.kakaomobility.com/v1/directions",
-            {
-                "origin": f"{origin.longitude},{origin.latitude}",
-                "destination": f"{destination.longitude},{destination.latitude}",
-                "summary": "false" if include_geometry else "true",
-                "priority": "RECOMMEND",
-            },
-            self.client.key,
-        )
+        return await self.client.directions(origin, destination, include_geometry=include_geometry)

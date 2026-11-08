@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 
 from pydantic import ValidationError
 
-from app.clients.kakao import KakaoError
+from app.clients.kakao import DRIVING_OPTIONS, KakaoError
 from app.core.exceptions import ServiceError
 from app.schemas.location import Coordinates
 from app.schemas.map import MultiLineString
@@ -33,9 +33,42 @@ def nonnegative(value, *, integer=False):
 
 
 class PlaceQueryService:
-    def __init__(self, provider, *, cursors=None):
+    def __init__(self, provider, *, cursors=None, driving_requests=None, cache_namespace=None):
         self.provider = provider
         self.cursors = cursors if cursors is not None else QUERY_CURSORS
+        self.driving_requests, self.cache_namespace = driving_requests, cache_namespace
+
+    def route_key(self, origin, destination, include_geometry):
+        return (
+            self.cache_namespace,
+            "v1/directions",
+            tuple(sorted(DRIVING_OPTIONS.items())),
+            origin.longitude,
+            origin.latitude,
+            destination.longitude,
+            destination.latitude,
+            include_geometry,
+        )
+
+    def remember_route(self, origin, destination, route):
+        if self.driving_requests is None or route.value is None or route.collected_at is None:
+            return
+        value = DrivingData(
+            origin=origin,
+            destination=destination,
+            checked_at=route.collected_at,
+            route=route.model_dump()
+            | {
+                "value": DrivingRoute(
+                    **route.value.model_dump(),
+                    geometry=None,
+                    geometry_reason="NOT_REQUESTED",
+                    taxi_fare_krw=None,
+                    toll_fare_krw=None,
+                )
+            },
+        )
+        self.driving_requests.remember(self.route_key(origin, destination, False), value)
 
     async def search(
         self, query, limit=10, cursor=None, *, center=None, radius=None, category=None
@@ -109,19 +142,34 @@ class PlaceQueryService:
             raise provider_error() from None
 
     async def driving(self, origin, destination, *, include_geometry=True):
+        if self.driving_requests is None:
+            return await self._driving(origin, destination, include_geometry=include_geometry)
+        value = await self.driving_requests.get(
+            self.route_key(origin, destination, include_geometry),
+            lambda: self._driving(origin, destination, include_geometry=include_geometry),
+            aliases=(self.route_key(origin, destination, True),) if not include_geometry else (),
+        )
+        if not include_geometry:
+            value.route.value.geometry = None
+            value.route.value.geometry_reason = "NOT_REQUESTED"
+        return value
+
+    async def _driving(self, origin, destination, *, include_geometry):
         try:
             body = await self.provider.driving(
                 origin, destination, include_geometry=include_geometry
             )
+            if not isinstance(body, dict):
+                raise ValueError("Invalid route response")
             routes = body.get("routes")
             if not isinstance(routes, list) or not routes or not isinstance(routes[0], dict):
-                raise provider_error()
+                raise ValueError("Invalid routes")
             route = routes[0]
             if type(route.get("result_code")) is not int:
-                raise provider_error()
+                raise ValueError("Invalid route result code")
             if route["result_code"] != 0:
                 if route["result_code"] not in {1, 101, 102, 103, 104, 105, 106, 107}:
-                    raise provider_error()
+                    raise ValueError("Unknown route result code")
                 raise ServiceError("NOT_FOUND", "자동차 경로를 찾을 수 없습니다.", retryable=False)
             summary = route["summary"]
             seconds = nonnegative(summary["duration"], integer=True)
@@ -179,4 +227,4 @@ class PlaceQueryService:
         except KakaoError as exc:
             raise provider_failure(exc) from None
         except ValidationError, KeyError, TypeError, ValueError:
-            raise provider_error() from None
+            raise ServiceError("PROVIDER_ERROR", "자동차 경로 자료를 확인할 수 없습니다.") from None
