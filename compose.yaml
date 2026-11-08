@@ -69,6 +69,7 @@ services:
       APP_OPENAI_API_KEY: ${APP_OPENAI_API_KEY:-}
       APP_OPENAI_MODEL: ${APP_OPENAI_MODEL:-gpt-4.1-mini}
       APP_OPENAI_TIMEOUT_SECONDS: ${APP_OPENAI_TIMEOUT_SECONDS:-20}
+      APP_RESULT_CONTEXT_TTL_SECONDS: ${APP_RESULT_CONTEXT_TTL_SECONDS:-1800}
     init: true
     restart: unless-stopped
     ports:

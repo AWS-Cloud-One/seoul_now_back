@@ -14,6 +14,7 @@ from app.repositories.health import HealthRepository
 from app.repositories.map import MapRepository
 from app.repositories.parking_detail import ParkingDetailRepository
 from app.repositories.parking_nearby import ParkingNearbyRepository
+from app.repositories.recommendation_context import RecommendationContextRepository
 from app.services.chat import RecommendationChatProcessor
 from app.services.health import HealthService
 from app.services.locations import LocationResolveService, LocationSearchService
@@ -25,6 +26,7 @@ from app.services.recommendation_adapters import (
     RecommendationConditionsValidator,
     RecommendationSource,
 )
+from app.services.recommendation_context import RecommendationContextService
 from app.services.recommendations import RecommendationService
 
 
@@ -54,6 +56,27 @@ def get_health_service(
 
 Session = Annotated[AsyncSession, Depends(get_session)]
 WriteSession = Annotated[AsyncSession, Depends(get_write_session)]
+
+
+def get_context_reader(
+    session: Session,
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> RecommendationContextService:
+    return RecommendationContextService(
+        RecommendationContextRepository(session),
+        ttl_seconds=settings.result_context_ttl_seconds,
+    )
+
+
+def get_context_writer(
+    session: WriteSession,
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> RecommendationContextService:
+    # The invoking orchestrator owns session.begin() and commits before returning its response.
+    return RecommendationContextService(
+        RecommendationContextRepository(session),
+        ttl_seconds=settings.result_context_ttl_seconds,
+    )
 
 
 async def get_http_client() -> AsyncIterator[httpx.AsyncClient]:

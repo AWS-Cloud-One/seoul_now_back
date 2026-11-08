@@ -46,6 +46,7 @@ class Settings(BaseSettings):
     )
     db_connect_timeout_seconds: int = Field(default=3, ge=1, le=30)
     health_timeout_seconds: float = Field(default=5, gt=0, le=30)
+    result_context_ttl_seconds: int = Field(default=1800, ge=1, le=86400)
 
     @field_validator("database_url")
     @classmethod

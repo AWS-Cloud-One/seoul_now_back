@@ -14,6 +14,14 @@ def test_environment_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     assert settings.docs_enabled is False
 
 
+def test_context_ttl_from_environment(monkeypatch):
+    monkeypatch.setenv("APP_RESULT_CONTEXT_TTL_SECONDS", "3600")
+    assert Settings(_env_file=None).result_context_ttl_seconds == 3600
+    monkeypatch.setenv("APP_RESULT_CONTEXT_TTL_SECONDS", "0")
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
 @pytest.mark.parametrize("url", ["sqlite:///test.db", "postgresql://u:p@localhost/db"])
 def test_database_driver_must_match_project(url: str) -> None:
     with pytest.raises(ValidationError):
