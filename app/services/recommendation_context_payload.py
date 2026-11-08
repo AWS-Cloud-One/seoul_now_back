@@ -1,56 +1,25 @@
-"""Validate the current engine payload before converting it into historical rows.
-
-These internal types do not expand the public API or claim to replay P02 items.
-Only ETA and registered parking distance can become stored recommendation facts.
-"""
+"""Validate shared result facts and retain them in explicit historical rows."""
 
 import re
 from datetime import datetime
 from decimal import Decimal
-from typing import Literal
 from uuid import UUID
 
-from pydantic import AwareDatetime, Field
-
-from app.models import RecommendationCard, RecommendationEvidence, RecommendationResult
+from app.models import (
+    RecommendationCard,
+    RecommendationEvidence,
+    RecommendationResult,
+    RecommendationSearchArea,
+)
 from app.repositories.recommendation_context import RecommendationSnapshot
-from app.schemas.common import ContractModel, Information
-from app.schemas.parking_nearby import ParkingSummary
-from app.schemas.pending import Place, RouteValue
-from app.schemas.recommendations import Conditions, RecommendationResponse
-
-
-class ParkingDistance(ContractModel):
-    distance_meters: float = Field(ge=0)
-
-
-class ContextEvidence(ContractModel):
-    type: Literal["eta", "parking"]
-    text: str = Field(min_length=1)
-    information: Information[RouteValue | ParkingDistance]
-
-
-class ContextReason(ContractModel):
-    text: str = Field(min_length=1)
-    source: Literal["ai", "fallback", "none"]
-    evidence: list[ContextEvidence]
-
-
-class ContextCard(ContractModel):
-    rank: int | None = Field(strict=True, ge=1, le=3)
-    place: Information[Place]
-    route: Information[RouteValue]
-    parking: ParkingSummary
-    reason: ContextReason
-
-
-class ContextResult(ContractModel):
-    result_id: UUID
-    created_at: AwareDatetime
-    conditions: Conditions
-    context_token: str | None
-    context_expires_at: AwareDatetime | None
-    cards: list[ContextCard] = Field(min_length=1, max_length=3)
+from app.schemas.pending import RouteValue
+from app.schemas.recommendation_result import (
+    ContextCard,
+    ContextResult,
+    ParkingDistance,
+    validate_ranking_decision,
+)
+from app.schemas.recommendations import RecommendationResponse
 
 
 def _decimal(value: float | None) -> Decimal | None:
@@ -92,6 +61,7 @@ def _validate_card(card: ContextCard, position: int, kind: str) -> None:
             or route.status not in {"unavailable", "error"}
             or reason.source != "none"
             or reason.evidence
+            or card.ranking is not None
         ):
             raise ValueError("General candidates cannot claim rank, ETA or recommendation evidence")
         return
@@ -104,6 +74,9 @@ def _validate_card(card: ContextCard, position: int, kind: str) -> None:
         raise ValueError("Each recommendation requires ETA evidence without duplicate facts")
     for item in reason.evidence:
         info = item.information
+        if item.type == "traffic":
+            # The shared type preserves unavailable traffic separately from confirmed values.
+            continue
         if info.status != "available" or info.value is None or not item.text.strip():
             raise ValueError("Only confirmed evidence can be stored")
         if item.type == "eta":
@@ -115,6 +88,43 @@ def _validate_card(card: ContextCard, position: int, kind: str) -> None:
             or info.value.distance_meters != parking.nearest_distance_meters
         ):
             raise ValueError("Parking evidence must match the confirmed nearest distance")
+
+
+def _validate_ranking(card, payload):
+    traffic = next((e.information for e in card.reason.evidence if e.type == "traffic"), None)
+    validate_ranking_decision(
+        card.ranking,
+        payload.ranking_policy,
+        traffic=traffic,
+        duration_seconds=card.route.value.duration_seconds,
+        parking_status=card.parking.status,
+        parking_distance=card.parking.nearest_distance_meters,
+        created_at=payload.created_at,
+    )
+
+
+def _validate_order(payload):
+    if payload.ranking_policy is None:
+        return
+    groups, keys = {}, []
+    grades = {"원활": 0, "서행": 1, "정체": 2}
+    for card in payload.cards:
+        decision = card.ranking
+        if decision is None:
+            raise ValueError("Ranked cards require retained comparison decisions")
+        current = (decision.traffic_applied, decision.evaluated_at)
+        if groups.setdefault(decision.eta_bucket, current) != current:
+            raise ValueError("A time bucket must use one comparison mode")
+        keys.append(
+            (
+                decision.eta_bucket,
+                grades[decision.adjusted_traffic_grade] if decision.traffic_applied else 0,
+                card.route.value.duration_seconds,
+                card.place.value.place_id,
+            )
+        )
+    if keys != sorted(keys):
+        raise ValueError("Card order must agree with the retained ranking decisions")
 
 
 def prepare_snapshot(
@@ -161,10 +171,24 @@ def prepare_snapshot(
         created_at=payload.created_at,
         context_token_digest=token_digest,
         context_expires_at=expires_at,
+        ranking_policy=payload.ranking_policy.name if payload.ranking_policy else None,
+        time_bucket_seconds=payload.ranking_policy.time_bucket_seconds
+        if payload.ranking_policy
+        else None,
+        parking_bonus_radius_m=payload.ranking_policy.parking_bonus_radius_m
+        if payload.ranking_policy
+        else None,
+        traffic_max_age_seconds=payload.ranking_policy.traffic_max_age_seconds
+        if payload.ranking_policy
+        else None,
+        search_fallback=payload.search_scope.fallback if payload.search_scope else None,
+        search_more_available=payload.search_scope.more_available if payload.search_scope else None,
     )
     cards, evidence, seen = [], [], set()
     for position, card in enumerate(payload.cards):
         _validate_card(card, position, response.kind)
+        if response.kind == "recommendation":
+            _validate_ranking(card, payload)
         place = card.place.value
         if place.place_id in seen:
             raise ValueError("A result cannot repeat a place")
@@ -206,6 +230,15 @@ def prepare_snapshot(
                 parking_total_count=parking.total_count,
                 reason_text=card.reason.text,
                 reason_source=card.reason.source,
+                ranking_evaluated_at=card.ranking.evaluated_at if card.ranking else None,
+                ranking_eta_bucket=card.ranking.eta_bucket if card.ranking else None,
+                ranking_traffic_applied=card.ranking.traffic_applied if card.ranking else None,
+                ranking_parking_adjustment=card.ranking.parking_adjustment
+                if card.ranking
+                else None,
+                ranking_adjusted_grade=card.ranking.adjusted_traffic_grade
+                if card.ranking
+                else None,
             )
         )
         for index, item in enumerate(card.reason.evidence):
@@ -218,8 +251,14 @@ def prepare_snapshot(
                     position=index,
                     type=item.type,
                     text=item.text,
+                    status=info.status,
                     duration_seconds=info.value.duration_seconds if item.type == "eta" else None,
-                    distance_meters=_decimal(info.value.distance_meters),
+                    distance_meters=_decimal(info.value.distance_meters)
+                    if item.type in {"eta", "parking"}
+                    else None,
+                    traffic_grade=info.value.grade
+                    if item.type == "traffic" and info.value is not None
+                    else None,
                     freshness=info.freshness,
                     observed_at=info.observed_at,
                     collected_at=info.collected_at,
@@ -227,4 +266,18 @@ def prepare_snapshot(
                     reason_code=info.reason_code,
                 )
             )
-    return RecommendationSnapshot(result, payload.conditions, tuple(cards), tuple(evidence))
+    if response.kind == "recommendation":
+        _validate_order(payload)
+    areas = []
+    for position, area in enumerate(payload.search_scope.areas if payload.search_scope else []):
+        areas.append(
+            RecommendationSearchArea(
+                result_id=result.result_id,
+                position=position,
+                **area.model_dump(exclude={"center"}),
+                center=f"SRID=4326;POINT({area.center.longitude} {area.center.latitude})",
+            )
+        )
+    return RecommendationSnapshot(
+        result, payload.conditions, tuple(cards), tuple(evidence), tuple(areas)
+    )

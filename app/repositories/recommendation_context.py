@@ -22,6 +22,7 @@ from app.models import (
     RecommendationCard,
     RecommendationEvidence,
     RecommendationResult,
+    RecommendationSearchArea,
 )
 from app.schemas.location import Coordinates, Location
 from app.schemas.recommendations import Conditions, Purpose
@@ -41,6 +42,9 @@ class RecommendationSnapshot:
     conditions: Conditions
     cards: tuple[RecommendationCard, ...]
     evidence: tuple[RecommendationEvidence, ...]
+    search_areas: tuple[RecommendationSearchArea, ...] = ()
+    # Derived from the saved geography on read; never from the mutable place cache.
+    card_coordinates: tuple[Coordinates, ...] = ()
 
 
 def _values(row):
@@ -68,6 +72,15 @@ def _validate_membership(snapshot: RecommendationSnapshot) -> None:
         positions[item.place_id].append(item.position)
     if any(sorted(items) != list(range(len(items))) for items in positions.values()):
         raise ValueError("Evidence positions must be consecutive within each card")
+    areas = snapshot.search_areas
+    if (
+        any(area.result_id != result.result_id for area in areas)
+        or sorted(a.position for a in areas) != list(range(len(areas)))
+        or len({a.area_id for a in areas}) != len(areas)
+        or (areas and result.search_fallback is not False)
+        or (not areas and result.search_fallback is False)
+    ):
+        raise ValueError("Search areas must match the result's ordered coverage")
 
 
 class RecommendationContextRepository:
@@ -86,6 +99,7 @@ class RecommendationContextRepository:
         result = _values(snapshot.result)
         cards = [_values(card) for card in snapshot.cards]
         evidence = [_values(item) for item in snapshot.evidence]
+        areas = [_values(area) for area in snapshot.search_areas]
         expected = snapshot.conditions.model_copy(deep=True)
         async with self.session.begin_nested():
             stored = await self._conditions(
@@ -99,6 +113,8 @@ class RecommendationContextRepository:
             await self.session.execute(RecommendationCard.__table__.insert(), cards)
             if evidence:
                 await self.session.execute(RecommendationEvidence.__table__.insert(), evidence)
+            if areas:
+                await self.session.execute(RecommendationSearchArea.__table__.insert(), areas)
 
     async def get(self, trip_id: UUID, result_id: UUID) -> RecommendationSnapshot | None:
         """Read stored facts in display order, scoped to the owning trip.
@@ -116,8 +132,13 @@ class RecommendationContextRepository:
         if result is None:
             return None
         conditions = await self._conditions(trip_id, result["condition_version"])
+        location = cast(RecommendationCard.place_location, Geometry("POINT", srid=4326))
         cards = await self.session.execute(
-            select(RecommendationCard.__table__)
+            select(
+                RecommendationCard.__table__,
+                func.ST_X(location).label("longitude"),
+                func.ST_Y(location).label("latitude"),
+            )
             .where(RecommendationCard.result_id == result_id)
             .order_by(RecommendationCard.position)
         )
@@ -131,11 +152,25 @@ class RecommendationContextRepository:
             .where(RecommendationEvidence.result_id == result_id)
             .order_by(RecommendationCard.position, RecommendationEvidence.position)
         )
+        areas = await self.session.execute(
+            select(RecommendationSearchArea.__table__)
+            .where(RecommendationSearchArea.result_id == result_id)
+            .order_by(RecommendationSearchArea.position)
+        )
+        card_rows, coordinates = [], []
+        for row in cards.mappings():
+            values = dict(row)
+            coordinates.append(
+                Coordinates(longitude=values.pop("longitude"), latitude=values.pop("latitude"))
+            )
+            card_rows.append(RecommendationCard(**values))
         return RecommendationSnapshot(
             result=RecommendationResult(**result),
             conditions=conditions,
-            cards=tuple(RecommendationCard(**row) for row in cards.mappings()),
+            cards=tuple(card_rows),
             evidence=tuple(RecommendationEvidence(**row) for row in evidence.mappings()),
+            search_areas=tuple(RecommendationSearchArea(**row) for row in areas.mappings()),
+            card_coordinates=tuple(coordinates),
         )
 
     async def get_by_token_digest(self, digest: str) -> RecommendationSnapshot | None:

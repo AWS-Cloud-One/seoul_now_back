@@ -11,6 +11,12 @@ from app.models import RecommendationCard, RecommendationEvidence
 from app.repositories.recommendation_context import RecommendationSnapshot
 from app.schemas.common import Information
 from app.schemas.pending import Answer, ChatData, ChatRequest, ChatStages
+from app.schemas.recommendation_result import (
+    RankingDecision,
+    RankingPolicySnapshot,
+    TrafficEvidence,
+    validate_ranking_decision,
+)
 from app.schemas.recommendations import Conditions, ConditionUpdate
 from app.services.recommendation_context import RecommendationContextService
 
@@ -45,7 +51,9 @@ def _information(card: RecommendationCard, item: RecommendationEvidence) -> Info
     """Expose original provenance, including unknown times; never substitute the answer time."""
     if item.type == "eta":
         if (
-            card.route_status != "available"
+            item.status != "available"
+            or item.traffic_grade is not None
+            or card.route_status != "available"
             or item.duration_seconds is None
             or item.distance_meters is None
             or item.duration_seconds != card.duration_seconds
@@ -62,23 +70,97 @@ def _information(card: RecommendationCard, item: RecommendationEvidence) -> Info
         }
     elif item.type == "parking":
         if (
-            card.parking_status != "available"
+            item.status != "available"
+            or item.traffic_grade is not None
+            or card.parking_status != "available"
             or item.duration_seconds is not None
             or item.distance_meters is None
             or item.distance_meters != card.parking_nearest_distance_meters
         ):
             raise _unavailable()
         value = {"distance_meters": float(item.distance_meters)}
+    elif item.type == "traffic":
+        if item.duration_seconds is not None or item.distance_meters is not None:
+            raise _unavailable()
+        value = {"grade": item.traffic_grade} if item.traffic_grade is not None else None
     else:
         raise _unavailable()
     try:
-        return Information[JsonValue](
+        info = Information[JsonValue](
             value=value,
-            status="available",
+            status=item.status,
             **{field: getattr(item, field) for field in PROVENANCE_FIELDS},
         )
+        if item.type == "traffic":
+            TrafficEvidence(type="traffic", text=item.text, information=info.model_dump())
+        return info
     except ValidationError:
         raise _unavailable() from None
+
+
+def _ranking_text(card, result, evidence, information):
+    try:
+        policy = (
+            RankingPolicySnapshot(
+                name=result.ranking_policy,
+                time_bucket_seconds=result.time_bucket_seconds,
+                parking_bonus_radius_m=result.parking_bonus_radius_m,
+                traffic_max_age_seconds=result.traffic_max_age_seconds,
+            )
+            if result.ranking_policy is not None
+            else None
+        )
+        decision = (
+            RankingDecision(
+                evaluated_at=card.ranking_evaluated_at,
+                eta_bucket=card.ranking_eta_bucket,
+                traffic_applied=card.ranking_traffic_applied,
+                parking_adjustment=card.ranking_parking_adjustment,
+                adjusted_traffic_grade=card.ranking_adjusted_grade,
+            )
+            if card.ranking_evaluated_at is not None
+            else None
+        )
+        traffic = next(
+            (
+                TrafficEvidence(
+                    type="traffic", text=item.text, information=info.model_dump()
+                ).information
+                for item, info in zip(evidence, information, strict=True)
+                if item.type == "traffic"
+            ),
+            None,
+        )
+        validate_ranking_decision(
+            decision,
+            policy,
+            traffic=traffic,
+            duration_seconds=card.duration_seconds,
+            parking_status=card.parking_status,
+            parking_distance=card.parking_nearest_distance_meters,
+            created_at=result.created_at,
+        )
+    except ValueError, TypeError:
+        raise _unavailable() from None
+    if policy is None:
+        return ""
+    interval = (
+        f"{policy.time_bucket_seconds // 60}분"
+        if policy.time_bucket_seconds % 60 == 0
+        else f"{policy.time_bucket_seconds}초"
+    )
+    if not decision.traffic_applied:
+        return (
+            f" 당시 같은 {interval} 구간에 도로 정보 미확인 후보가 있어 "
+            "도로·주차 보정 없이 이동시간 순으로 비교했습니다."
+        )
+    message = f" 당시 같은 {interval} 구간에서 도로 등급을 비교했습니다."
+    if decision.parking_adjustment:
+        message += (
+            f" 직선거리 {policy.parking_bonus_radius_m}m 이내 등록 주차장이 확인되어 "
+            "순위 계산에 한 단계 보정을 적용했습니다. 실제 도로 등급을 바꾼 것은 아닙니다."
+        )
+    return message
 
 
 class RecommendationReasonService:
@@ -145,6 +227,7 @@ class RecommendationReasonService:
             message = (
                 _condition_text(stored.conditions)
                 + f"{card.place_name}에 저장된 당시 추천 이유: {card.reason_text}"
+                + _ranking_text(card, stored.result, evidence, information)
             )
         else:
             raise _unavailable()

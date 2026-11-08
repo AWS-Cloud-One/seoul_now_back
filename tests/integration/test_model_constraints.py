@@ -54,6 +54,81 @@ def table(name):
     return Base.metadata.tables[name]
 
 
+def test_traffic_evidence_requires_consistent_status_value_and_provenance(db, result_snapshot):
+    db.execute(table("recommendation_cards").insert().values(**snapshot_card(result_snapshot)))
+    facts = dict(
+        result_id=result_snapshot["result_id"],
+        place_id="kakao:place",
+        result_kind="recommendation",
+        position=0,
+        type="traffic",
+        text="당시 도로 정체",
+        status="available",
+        traffic_grade="정체",
+        freshness="fresh",
+        source="verified-road",
+        observed_at=result_snapshot["created_at"],
+    )
+    for patch, constraint in (
+        ({"status": "unavailable", "reason_code": "NO_OBSERVATION"}, "evidence_value"),
+        ({"source": None}, "evidence_value"),
+        ({"observed_at": None}, "evidence_value"),
+        ({"traffic_grade": "추정 원활"}, "traffic_grade"),
+        ({"duration_seconds": 0}, "evidence_value"),
+        ({"distance_meters": 0}, "evidence_value"),
+    ):
+        rejects(
+            db, table("recommendation_evidence").insert().values(**{**facts, **patch}), constraint
+        )
+    db.execute(table("recommendation_evidence").insert().values(**facts))
+    db.execute(
+        table("recommendation_evidence")
+        .insert()
+        .values(
+            **{
+                **facts,
+                "position": 1,
+                "status": "unavailable",
+                "traffic_grade": None,
+                "source": None,
+                "observed_at": None,
+                "freshness": "unknown",
+                "reason_code": "NO_OBSERVATION",
+            }
+        )
+    )
+
+
+def test_partial_or_inconsistent_ranking_decisions_cannot_be_saved(db, result_snapshot):
+    card = snapshot_card(result_snapshot)
+    rejects(
+        db,
+        table("recommendation_cards").insert().values(**card, ranking_traffic_applied=True),
+        "ranking_decision",
+    )
+    decision = dict(
+        ranking_evaluated_at=result_snapshot["created_at"],
+        ranking_eta_bucket=2,
+        ranking_traffic_applied=False,
+        ranking_parking_adjustment=0,
+        ranking_adjusted_grade=None,
+    )
+    rejects(
+        db,
+        table("recommendation_cards")
+        .insert()
+        .values(
+            **card,
+            **{
+                **decision,
+                "ranking_adjusted_grade": "원활",
+            },
+        ),
+        "ranking_decision",
+    )
+    db.execute(table("recommendation_cards").insert().values(**card, **decision))
+
+
 @pytest.fixture
 def evidence(db):
     now, run_id = datetime.now(UTC), uuid4()

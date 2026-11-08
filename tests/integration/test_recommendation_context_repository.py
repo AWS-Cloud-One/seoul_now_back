@@ -106,6 +106,7 @@ def snapshot():
                     result_kind="recommendation",
                     position=index,
                     type=kind,
+                    status="available",
                     text=f"당시 {kind} 근거",
                     duration_seconds=600 + position if kind == "eta" else None,
                     distance_meters=Decimal("1234.5") if kind == "eta" else Decimal("95.25"),

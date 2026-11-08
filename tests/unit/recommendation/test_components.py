@@ -191,7 +191,13 @@ def test_parking_database_failure_becomes_a_shared_service_error():
 )
 def test_five_minute_congestion_and_parking_bonus(seconds, grades, distances, expected):
     values = [
-        candidate(key, eta, meters).model_copy(update={"congestion": grade})
+        candidate(key, eta, meters).model_copy(
+            update={
+                "congestion": grade,
+                "congestion_source": "verified-road",
+                "congestion_observed_at": datetime.now(UTC),
+            }
+        )
         for key, eta, meters, grade in zip(("a", "b"), seconds, distances, grades, strict=True)
     ]
     assert [c.place.place_id for c in rank_candidates(values)] == expected

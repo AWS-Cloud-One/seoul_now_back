@@ -31,7 +31,12 @@ from .parking import (
     ParkingSourceRecord,
 )
 from .places import Place, PlaceCategory
-from .recommendation import RecommendationCard, RecommendationEvidence, RecommendationResult
+from .recommendation import (
+    RecommendationCard,
+    RecommendationEvidence,
+    RecommendationResult,
+    RecommendationSearchArea,
+)
 from .sensors import PedestrianSensor, PedestrianSensorLatest
 from .traffic import (
     RoadAreaMapping,
@@ -45,6 +50,7 @@ __all__ = [
     "RecommendationResult",
     "RecommendationCard",
     "RecommendationEvidence",
+    "RecommendationSearchArea",
     "ChatConditionAgeGroup",
     "ChatConditionPurpose",
     "ChatConditionVersion",

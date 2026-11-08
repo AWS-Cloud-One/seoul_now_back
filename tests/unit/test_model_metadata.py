@@ -7,8 +7,8 @@ from app.models import Base
 
 
 def test_runtime_models_use_relational_postgresql_schema():
-    # 0013 adds three result-context tables to the 34 existing tables.
-    assert len(Base.metadata.tables) == 37
+    # 0013 adds result/card/evidence and compact search-area snapshots.
+    assert len(Base.metadata.tables) == 38
     assert "provider_snapshots" not in Base.metadata.tables
     for table in Base.metadata.sorted_tables:
         assert all(not isinstance(c.type, postgresql.JSON) for c in table.columns)

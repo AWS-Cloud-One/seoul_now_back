@@ -1,4 +1,7 @@
-"""Real engine card shapes with fixed facts; no external calls."""
+"""Legacy ETA/parking snapshots with fixed facts; no external calls.
+
+Current-policy engine round trips are exercised in the result-contract tests.
+"""
 
 from datetime import UTC, datetime
 from uuid import uuid4
@@ -71,6 +74,11 @@ def response(*, general=False):
         ],
     )
     payload["created_at"] = NOW.isoformat()
+    for item in payload["cards"]:
+        item.pop("ranking", None)
+        item["reason"]["evidence"] = [
+            e for e in item["reason"]["evidence"] if e["type"] != "traffic"
+        ]
     return RecommendationResponse(
         trip_id=uuid4(),
         base_condition_version=0,

@@ -2,7 +2,7 @@
 
 import asyncio
 from copy import deepcopy
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 from app.core.exceptions import ServiceError
 from app.modules.ai.explanation import explain
@@ -10,6 +10,7 @@ from app.modules.recommendation.areas import select_areas
 from app.modules.recommendation.cards import card, result, unavailable_parking
 from app.modules.recommendation.progress import DEFAULT_PROGRESS_STORE, SearchProgress, fingerprint
 from app.modules.recommendation.ranking import DEFAULT_POLICY, rank_candidates
+from app.schemas.recommendation_result import SearchAreaSnapshot, SearchScope
 from app.schemas.recommendations import ConditionUpdate, RecommendationResponse, Stages
 
 PURPOSE_QUERIES = {"food": "음식점", "cafe": "카페", "walk": "공원", "exhibition": "전시관"}
@@ -127,11 +128,14 @@ class DestinationRecommendationEngine:
             )
         response = await self._response(request, conditions, selected, failed, successes, warnings)
         if response.result is not None:
-            response.result["search_scope"] = {
-                "areas": [a.model_dump(mode="json") for a in progress.areas],
-                "fallback": not bool(progress.areas),
-                "more_available": bool(progress.remaining) or len(progress.ended) < len(targets),
-            }
+            response.result["search_scope"] = SearchScope(
+                areas=[
+                    SearchAreaSnapshot.model_validate(a.model_dump(exclude={"rings"}))
+                    for a in progress.areas
+                ],
+                fallback=not bool(progress.areas),
+                more_available=bool(progress.remaining) or len(progress.ended) < len(targets),
+            ).model_dump(mode="json")
         trip.search = progress
         return response
 
@@ -180,13 +184,6 @@ class DestinationRecommendationEngine:
                 candidate.route_collected_at
             ) = None
             candidate.parking = None
-            observed = candidate.congestion_observed_at
-            if (
-                not candidate.congestion_source
-                or observed is None
-                or not timedelta(0) <= datetime.now(UTC) - observed <= timedelta(minutes=30)
-            ):
-                candidate.congestion = "확인 불가"
             if isinstance(answer, ServiceError):
                 if answer.code in FATAL_ERRORS:
                     raise answer
@@ -265,10 +262,7 @@ class DestinationRecommendationEngine:
             if value != before[field]
         ]
         if payload is not None:
-            payload["ranking_policy"] = {
-                "time_bucket_seconds": self.policy.time_bucket_seconds,
-                "parking_bonus_radius_m": self.policy.parking_bonus_radius_m,
-            }
+            payload["ranking_policy"] = self.policy.snapshot().model_dump(mode="json")
         return RecommendationResponse(
             trip_id=request.trip_id,
             base_condition_version=request.condition_version,
