@@ -45,11 +45,11 @@ class KakaoLocalClient:
             self.key,
         )
 
-    async def address(self, query: str, *, size: int) -> dict:
+    async def address(self, query: str, *, size: int, page: int = 1) -> dict:
         return await kakao_get(
             self.http,
             "https://dapi.kakao.com/v2/local/search/address.json",
-            {"query": query, "page": 1, "size": size},
+            {"query": query, "page": page, "size": size},
             self.key,
         )
 

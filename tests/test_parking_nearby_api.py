@@ -95,17 +95,30 @@ def test_unprepared_inventory_has_unknown_count_and_radius(api):
 def test_limit_cannot_expand_radius_or_silently_truncate(api):
     client, repo, _, _ = api
     repo.summarize_radius.return_value = (21, 20)
+    rows = [
+        (uuid4(), "unverified", {"name": "등록 주차장"}, 37.567, 126.978, 20 + i) for i in range(21)
+    ]
+    repo.list_facilities.side_effect = lambda coordinates, radius, limit, offset: rows[
+        offset : offset + limit
+    ]
     response = client.get(URL)
-    assert response.status_code == 503
-    assert response.json()["error"]["retryable"] is False
+    assert response.status_code == 200
+    summary = response.json()["data"]["parking"]
+    assert len(summary["items"]) == 20 and summary["total_count"] == 21
+    assert summary["next_cursor"]
     repo.summarize_radius.assert_awaited_once()
-    repo.list_facilities.assert_not_awaited()
+    second = client.get(URL + "&cursor=" + summary["next_cursor"])
+    assert second.status_code == 200
+    data = second.json()["data"]["parking"]
+    assert len(data["items"]) == 1 and data["next_cursor"] is None
+    assert data["nearest_distance_meters"] == 20
+    assert [call.args[1] for call in repo.summarize_radius.await_args_list] == [300, 300]
 
 
 def test_cursor_is_explicitly_pending(api):
     client, repo, provider, _ = api
     response = client.get(URL + "&cursor=pending")
-    assert response.status_code == 503
+    assert response.status_code == 422
     repo.get_version.assert_not_awaited()
     provider.region.assert_not_awaited()
 
