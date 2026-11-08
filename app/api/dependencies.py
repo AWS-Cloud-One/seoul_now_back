@@ -27,6 +27,7 @@ from app.services.recommendation_adapters import (
     RecommendationSource,
 )
 from app.services.recommendation_context import RecommendationContextService
+from app.services.recommendation_reason import RecommendationReasonService
 from app.services.recommendations import RecommendationService
 
 
@@ -77,6 +78,12 @@ def get_context_writer(
         RecommendationContextRepository(session),
         ttl_seconds=settings.result_context_ttl_seconds,
     )
+
+
+def get_recommendation_reason_service(
+    contexts: Annotated[RecommendationContextService, Depends(get_context_reader)],
+) -> RecommendationReasonService:
+    return RecommendationReasonService(contexts)
 
 
 async def get_http_client() -> AsyncIterator[httpx.AsyncClient]:
