@@ -41,8 +41,8 @@ def conversation_response(outcome: ConversationOutcome, response: Response, requ
     "/chat/messages",
     tags=["chat"],
     response_model=ChatResponse,
-    summary="채팅·조건 변경·추천 — 연결 틀",
-    description="부분 초안의 연결 틀. AI·검증·추천 미연결 시 503이며 조건을 변경하지 않습니다.",
+    summary="채팅·조건 변경·추천",
+    description="질문과 조건 변경을 해석해 추천하거나 선택한 카드의 당시 추천 이유를 답합니다.",
     responses={code: {"model": ChatResponse} for code in ERRORS},
 )
 async def chat_messages(body: ChatRequest, response: Response, service: Service):

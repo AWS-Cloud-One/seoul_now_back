@@ -69,11 +69,13 @@ def test_http_chat_reason_resolves_persisted_context_before_interpretation(norma
                 assert registered.result["context_token"] not in reply.text
                 assert reply.headers["cache-control"] == "no-store"
                 body["target"]["place_id"] = "kakao:other"
+                body["request_id"] = str(uuid4())
                 invalid = await client.post("/api/v1/chat/messages", json=body)
                 assert invalid.status_code == 422
                 assert invalid.json()["error"]["code"] == "INVALID_CONTEXT"
                 model.complete.assert_awaited_once()
                 recommendations.execute.assert_not_awaited()
+                recommendations.prepare.assert_not_awaited()
                 kakao.keyword.assert_not_awaited()
 
     asyncio.run(run())

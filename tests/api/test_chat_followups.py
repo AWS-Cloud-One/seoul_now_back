@@ -5,19 +5,24 @@ from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.api.dependencies import (
     get_ai_provider,
     get_context_reader,
     get_kakao_local_client,
+    get_recommendation_execution,
     get_recommendation_service,
 )
 from app.core.exceptions import ServiceError
 from app.modules.ai.interpretation import Interpretation
+from app.modules.recommendation.progress import MemoryProgressStore, TripProgress
 from app.repositories.recommendation_context import RecommendationContextRepository
-from app.schemas.recommendations import Change
+from app.schemas.recommendations import Change, Conditions
 from app.services.recommendation_context import RecommendationContextService
 from app.services.recommendation_context_payload import prepare_snapshot
+from app.services.recommendation_execution import RecommendationExecution
+from app.services.recommendation_persistence import RecommendationPersistence
 from app.services.recommendations import RecommendationOutcome
 from tests.fixtures.recommendation_context import NOW, response
 
@@ -59,6 +64,14 @@ def followups(app):
         },
     }
     body["current_conditions"]["headcount"] = 4
+    store = MemoryProgressStore()
+    store.trips[body["trip_id"]] = TripProgress(
+        store.clock() + store.ttl_seconds,
+        version=7,
+        conditions=Conditions.model_validate(body["current_conditions"]),
+    )
+    execution = RecommendationExecution(store)
+    app.dependency_overrides[get_recommendation_execution] = lambda: execution
     return body, repo, model, kakao, recommendations, clock
 
 
@@ -67,6 +80,7 @@ def assert_no_new_recommendation(followups):
     repo.save.assert_not_awaited()
     kakao.keyword.assert_not_awaited()
     recommendations.execute.assert_not_awaited()
+    recommendations.prepare.assert_not_awaited()
 
 
 def assert_preserved(data, body):
@@ -162,7 +176,12 @@ def test_target_selection_clarification_can_be_sent_back_unchanged(client, follo
     target = body.pop("target")
     first = client.post("/api/v1/chat/messages", json=body).json()["data"]
     assert first["kind"] == "clarification"
-    body.update(target=target, pending_clarification=first["clarification"], message="이 카드")
+    body.update(
+        target=target,
+        pending_clarification=first["clarification"],
+        message="이 카드",
+        request_id=str(uuid4()),
+    )
     result = client.post("/api/v1/chat/messages", json=body)
     assert result.status_code == 200 and result.json()["data"]["kind"] == "answer"
     assert model.complete.await_count == 2  # Once per request, including the selection response.
@@ -255,7 +274,7 @@ def test_condition_clarification_round_trip_preserves_explicit_clear_and_applies
     )
     model.complete.return_value = Interpretation(intent="recommendation")
 
-    async def execute(request):
+    async def prepare(request, work):
         assert request.conditions_patch.model_dump(exclude_unset=True) == {"headcount": None}
         data = response()
         data.trip_id = request.trip_id
@@ -266,12 +285,13 @@ def test_condition_clarification_round_trip_preserves_explicit_clear_and_applies
         data.condition_update.changes = [Change(field="headcount", before=4, after=None)]
         return RecommendationOutcome(data)
 
-    recommendations.execute.side_effect = execute
+    recommendations.prepare.side_effect = prepare
     result = client.post("/api/v1/chat/messages", json=body)
     assert result.status_code == 200 and result.json()["data"]["kind"] == "recommendation"
     assert result.json()["data"]["condition_update"]["conditions"]["headcount"] is None
     assert model.complete.await_count == 2
-    recommendations.execute.assert_awaited_once()
+    recommendations.prepare.assert_awaited_once()
+    recommendations.execute.assert_not_awaited()
 
 
 def test_scope_notice_ignores_pending_condition_changes(client, followups):
@@ -286,4 +306,98 @@ def test_scope_notice_ignores_pending_condition_changes(client, followups):
     result = client.post("/api/v1/chat/messages", json=body)
     assert result.status_code == 200 and result.json()["data"]["answer"]["topic"] == "scope_notice"
     assert_preserved(result.json()["data"], body)
+    assert_no_new_recommendation(followups)
+
+
+@pytest.mark.parametrize("changed", ["message", "pending_null", "target", "operation"])
+def test_same_request_id_with_different_original_input_conflicts_before_interpretation(
+    client, followups, changed
+):
+    body, repo, model, _, _, _ = followups
+    body["pending_clarification"] = {
+        "question": "확인",
+        "required_fields": ["headcount"],
+        "pending_patch": {},
+        "choices": [],
+    }
+    first = client.post("/api/v1/chat/messages", json=body)
+    assert first.status_code == 200
+    replay = client.post("/api/v1/chat/messages", json=body)
+    assert replay.json()["data"] == first.json()["data"]
+    altered = deepcopy(body)
+    endpoint = "/api/v1/chat/messages"
+    if changed == "message":
+        altered["message"] = "다른 질문"
+    elif changed == "pending_null":
+        altered["pending_clarification"]["pending_patch"]["headcount"] = None
+    elif changed == "target":
+        altered["target"]["place_id"] = "kakao:other"
+    else:
+        endpoint = "/api/v1/recommendations"
+        altered = {
+            key: value
+            for key, value in body.items()
+            if key not in {"message", "target", "pending_clarification"}
+        }
+        altered["conditions_patch"] = {}
+        # Use a real service sharing this test execution owner for the other operation.
+        from app.services.recommendations import RecommendationService
+
+        execution = client.app.dependency_overrides[get_recommendation_execution]()
+        client.app.dependency_overrides[get_recommendation_service] = lambda: RecommendationService(
+            execution=execution
+        )
+    conflict = client.post(endpoint, json=altered)
+    assert conflict.status_code == 409 and conflict.json()["error"]["code"] == "REQUEST_ID_CONFLICT"
+    model.complete.assert_awaited_once()
+    assert repo.get_by_token_digest.await_count == 2
+
+
+@pytest.mark.parametrize("invalid", ["expired", "trip", "result", "place", "token"])
+def test_cached_reason_revalidates_expiry_and_all_target_bindings(client, followups, invalid):
+    body, repo, model, _, _, clock = followups
+    first = client.post("/api/v1/chat/messages", json=body)
+    assert first.status_code == 200
+    stored = repo.get_by_token_digest.side_effect(hashlib.sha256(TOKEN.encode()).hexdigest())
+    if invalid == "expired":
+        clock[0] = NOW + timedelta(minutes=30)
+    elif invalid == "trip":
+        stored.result.trip_id = uuid4()
+    elif invalid == "result":
+        stored.result.result_id = uuid4()
+    elif invalid == "place":
+        for card in stored.cards:
+            card.place_id = "kakao:other"
+    else:
+        stored.result.context_token_digest = "b" * 64
+    replay = client.post("/api/v1/chat/messages", json=body)
+    assert replay.status_code == (410 if invalid == "expired" else 422)
+    assert replay.json()["data"]["answer"] is None
+    assert replay.json()["data"]["stages"]["interpretation"] == "skipped"
+    model.complete.assert_awaited_once()
+    assert repo.get_by_token_digest.await_count == 2
+
+
+@pytest.mark.parametrize("stage", ["interpretation", "db_preflight"])
+def test_cached_failure_preserves_the_stage_that_actually_completed(client, followups, stage):
+    body, _, model, _, _, _ = followups
+    if stage == "interpretation":
+        model.complete.side_effect = TimeoutError("private provider detail")
+        status, code, interpretation = 504, "PROVIDER_TIMEOUT", "failed"
+    else:
+        body.pop("target")
+        model.complete.return_value = Interpretation(intent="recommendation")
+        execution = client.app.dependency_overrides[get_recommendation_execution]()
+        execution.persistence = AsyncMock(spec=RecommendationPersistence)
+        execution.persistence.check_current.side_effect = SQLAlchemyError("private database detail")
+        status, code, interpretation = 503, "DATA_UNAVAILABLE", "ok"
+    first = client.post("/api/v1/chat/messages", json=body)
+    assert first.status_code == status and first.json()["error"]["code"] == code
+    assert first.json()["data"]["stages"]["interpretation"] == interpretation
+    assert not first.json()["data"]["condition_update"]["applied"]
+    assert "private" not in first.text
+    replay = client.post("/api/v1/chat/messages", json=body)
+    assert replay.json()["data"] == first.json()["data"]
+    assert replay.json()["error"] == first.json()["error"]
+    model.complete.assert_awaited_once()
     assert_no_new_recommendation(followups)

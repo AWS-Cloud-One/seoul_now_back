@@ -1,5 +1,7 @@
 """C01 adapter: interpret once, then call the same structured recommendation service."""
 
+from sqlalchemy.exc import SQLAlchemyError
+
 from app.clients.kakao import KakaoError
 from app.core.exceptions import ServiceError
 from app.modules.ai.interpretation import interpret
@@ -13,7 +15,7 @@ from app.schemas.recommendations import (
     RecommendationRequest,
 )
 from app.services.locations import documents, provider_failure, text
-from app.services.pending import PendingFailure
+from app.services.pending import ConversationOutcome, PendingFailure, PendingService
 
 FOLLOWUP_TOPICS = {
     "recommendation_reason": "당시 추천 이유",
@@ -24,9 +26,10 @@ FOLLOWUP_TOPICS = {
 
 
 class RecommendationChatProcessor:
-    def __init__(self, model, kakao, recommendations, *, contexts=None, reasons=None):
+    def __init__(self, model, kakao, recommendations, *, execution, contexts=None, reasons=None):
         self.model, self.kakao, self.recommendations = model, kakao, recommendations
         self.contexts, self.reasons = contexts, reasons
+        self.execution = execution
 
     @staticmethod
     def response(request, kind, message, **values):
@@ -50,21 +53,70 @@ class RecommendationChatProcessor:
 
     async def process(self, request):
         request = request.model_copy(deep=True)
-        stored, selected_place = None, None
-        if request.target is not None:
-            if self.contexts is None:
-                raise ServiceError(
-                    "SERVICE_UNAVAILABLE",
-                    "추천 문맥 검증 기능이 연결되지 않았습니다.",
-                    retryable=False,
+        stored, interpretation = None, "skipped"
+
+        async def guard():
+            nonlocal stored
+            if request.target is not None:
+                if self.contexts is None:
+                    raise ServiceError(
+                        "SERVICE_UNAVAILABLE",
+                        "추천 문맥 검증 기능이 연결되지 않았습니다.",
+                        retryable=False,
+                    )
+                stored = await self.contexts.resolve(
+                    request.target.context_token,
+                    trip_id=request.trip_id,
+                    result_id=request.target.result_id,
+                    place_id=request.target.place_id,
                 )
-            # Validate before paying for interpretation; never send the token or identifiers.
-            stored = await self.contexts.resolve(
+
+        def rejected(original, error):
+            failure = self.failure(original, error, interpretation=interpretation)
+            return ConversationOutcome(failure.data, failure)
+
+        async def compute(work):
+            nonlocal interpretation
+            try:
+                data = await self.prepare(request, work, stored)
+                outcome = ConversationOutcome(data)
+            except PendingFailure as exc:
+                outcome = ConversationOutcome(exc.data, exc)
+            interpretation = outcome.response.stages.interpretation
+            # Recheck after provider work, including accepted-condition failures.
+            self.verify_target(request, stored)
+            # Validate before persistence, not only after process() returns to HTTP.
+            PendingService.validate_context(outcome.response, request, retry=False)
+            return outcome
+
+        outcome = await self.execution.run(
+            request, "chat", compute, rejected, require_current=False, guard=guard
+        )
+        if outcome.failure is not None:
+            exc = outcome.failure
+            raise PendingFailure(
+                exc.code,
+                exc.message,
+                data=outcome.response,
+                retryable=exc.retryable,
+                retry_after_seconds=exc.retry_after_seconds,
+            )
+        return outcome.response
+
+    def verify_target(self, request, stored):
+        if request.target is not None:
+            self.contexts.verify_loaded(
+                stored,
                 request.target.context_token,
                 trip_id=request.trip_id,
                 result_id=request.target.result_id,
                 place_id=request.target.place_id,
             )
+
+    async def prepare(self, request, work, stored):
+        """Interpret once inside the outer chat execution; never acquire its lock again."""
+        selected_place = None
+        if request.target is not None:
             selected = next(
                 card for card in stored.cards if card.place_id == request.target.place_id
             )
@@ -74,12 +126,31 @@ class RecommendationChatProcessor:
             extracted_patch = parsed.patch()
         except ServiceError as exc:
             raise self.failure(request, exc, interpretation="failed") from None
+        except TimeoutError:
+            raise self.failure(
+                request,
+                ServiceError("PROVIDER_TIMEOUT", "질문 해석 시간이 초과되었습니다."),
+                interpretation="failed",
+            ) from None
         try:
-            return await self.dispatch(request, parsed, extracted_patch, stored)
+            self.verify_target(request, stored)
+            return await self.dispatch(request, parsed, extracted_patch, stored, work)
         except PendingFailure:
             raise
         except ServiceError as exc:
             raise self.failure(request, exc, interpretation="ok") from None
+        except SQLAlchemyError:
+            raise self.failure(
+                request,
+                ServiceError("DATA_UNAVAILABLE", "추천 상태를 조회할 수 없습니다."),
+                interpretation="ok",
+            ) from None
+        except TimeoutError:
+            raise self.failure(
+                request,
+                ServiceError("PROVIDER_TIMEOUT", "추천 처리 시간이 초과되었습니다."),
+                interpretation="ok",
+            ) from None
 
     def failure(self, request, error, *, interpretation):
         data = self.response(request, "failure", error.message)
@@ -121,7 +192,7 @@ class RecommendationChatProcessor:
             ),
         )
 
-    async def dispatch(self, request, parsed, extracted_patch, stored):
+    async def dispatch(self, request, parsed, extracted_patch, stored, work):
         if parsed.intent == "intent_clarification":
             return self.clarify_intent(request)
         if parsed.target_ambiguous:
@@ -217,6 +288,7 @@ class RecommendationChatProcessor:
                     question=message, required_fields=required, pending_patch=patch, choices=[]
                 ),
             )
+        await self.execution.check_current(request, work)
         structured = RecommendationRequest(
             **request.model_dump(
                 include={
@@ -229,7 +301,7 @@ class RecommendationChatProcessor:
             ),
             conditions_patch=patch,
         )
-        outcome = await self.recommendations.execute(structured)
+        outcome = await self.recommendations.prepare(structured, work)
         values = outcome.response.model_dump()
         values["stages"]["interpretation"] = "ok"
         data = ChatData.model_validate(values)

@@ -7,14 +7,21 @@ from uuid import uuid4
 
 import pytest
 
-from app.api.dependencies import get_ai_provider, get_kakao_local_client, get_recommendation_source
+from app.api.dependencies import (
+    get_ai_provider,
+    get_kakao_local_client,
+    get_recommendation_execution,
+    get_recommendation_source,
+)
 from app.core.exceptions import ServiceError
 from app.modules.ai.explanation import ExplanationPlan
 from app.modules.ai.interpretation import Interpretation
 from app.modules.recommendation.cards import unavailable_parking
+from app.modules.recommendation.progress import MemoryProgressStore
 from app.modules.recommendation.types import Candidate
 from app.schemas.pending import Place
 from app.schemas.recommendations import Conditions
+from app.services.recommendation_execution import RecommendationExecution
 
 
 @pytest.fixture
@@ -80,6 +87,8 @@ def ports(app):
     app.dependency_overrides[get_recommendation_source] = lambda: source
     app.dependency_overrides[get_ai_provider] = lambda: model
     app.dependency_overrides[get_kakao_local_client] = lambda: kakao
+    execution = RecommendationExecution(MemoryProgressStore())
+    app.dependency_overrides[get_recommendation_execution] = lambda: execution
     return source, model, kakao
 
 

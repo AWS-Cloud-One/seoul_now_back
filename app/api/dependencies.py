@@ -27,6 +27,8 @@ from app.services.recommendation_adapters import (
     RecommendationSource,
 )
 from app.services.recommendation_context import RecommendationContextService
+from app.services.recommendation_execution import RecommendationExecution
+from app.services.recommendation_persistence import RecommendationPersistence
 from app.services.recommendation_reason import RecommendationReasonService
 from app.services.recommendations import RecommendationService
 
@@ -139,12 +141,26 @@ def get_recommendation_source(
     return RecommendationSource(provider, parking)
 
 
+def get_recommendation_execution(request: Request) -> RecommendationExecution:
+    return RecommendationExecution(
+        request.app.state.recommendation_progress,
+        RecommendationPersistence(
+            request.app.state.session_factory,
+            request.app.state.write_session_factory,
+            context_ttl_seconds=request.app.state.settings.result_context_ttl_seconds,
+        ),
+    )
+
+
 def get_recommendation_service(
     source: Annotated[RecommendationSource, Depends(get_recommendation_source)],
     model: Annotated[OpenAIProvider, Depends(get_ai_provider)],
+    execution: Annotated[RecommendationExecution, Depends(get_recommendation_execution)],
 ) -> RecommendationService:
     return RecommendationService(
-        RecommendationConditionsValidator(source), DestinationRecommendationEngine(source, model)
+        RecommendationConditionsValidator(source),
+        DestinationRecommendationEngine(source, model),
+        execution=execution,
     )
 
 
@@ -154,6 +170,7 @@ def get_pending_service(
     recommendations: Annotated[RecommendationService, Depends(get_recommendation_service)],
     contexts: Annotated[RecommendationContextService, Depends(get_context_reader)],
     reasons: Annotated[RecommendationReasonService, Depends(get_recommendation_reason_service)],
+    execution: Annotated[RecommendationExecution, Depends(get_recommendation_execution)],
 ) -> PendingService:
     # Current fact readers, route retry and administrative status await their owning parts.
     return PendingService(
@@ -161,9 +178,10 @@ def get_pending_service(
             model,
             provider,
             recommendations,
+            execution=execution,
             contexts=contexts,
             reasons=reasons,
-        )
+        ),
     )
 
 

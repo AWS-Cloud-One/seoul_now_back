@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.router import router
 from app.core.config import Settings
 from app.db.session import create_engine, read_session_factory, write_session_factory
+from app.modules.recommendation.progress import MemoryProgressStore
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -17,6 +18,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         engine = create_engine(config)
         app.state.session_factory = read_session_factory(engine)
         app.state.write_session_factory = write_session_factory(engine)
+        app.state.recommendation_progress = MemoryProgressStore()
         try:
             yield
         finally:
