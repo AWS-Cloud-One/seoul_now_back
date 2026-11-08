@@ -30,7 +30,7 @@ PARAMS = {
 
 
 @pytest.fixture
-def driving_provider(app):
+def driving_provider(app, geography):
     state = SimpleNamespace(mode="ok", calls=[])
 
     def respond(req):

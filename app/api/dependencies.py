@@ -19,6 +19,7 @@ from app.repositories.map import MapRepository
 from app.repositories.parking_detail import ParkingDetailRepository
 from app.repositories.parking_nearby import ParkingNearbyRepository
 from app.repositories.recommendation_context import RecommendationContextRepository
+from app.repositories.recommendation_geography import RecommendationGeographyRepository
 from app.services.area_queries import AreaQueryService
 from app.services.chat import RecommendationChatProcessor
 from app.services.health import HealthService
@@ -35,6 +36,7 @@ from app.services.recommendation_adapters import (
 )
 from app.services.recommendation_context import RecommendationContextService
 from app.services.recommendation_execution import RecommendationExecution
+from app.services.recommendation_geography import RecommendationGeographyService
 from app.services.recommendation_persistence import RecommendationPersistence
 from app.services.recommendation_reason import RecommendationReasonService
 from app.services.recommendation_retry import RecommendationRouteRetryProcessor
@@ -189,14 +191,31 @@ def get_recommendation_execution(request: Request) -> RecommendationExecution:
     )
 
 
+def get_recommendation_geography(
+    session: Session,
+    http: Annotated[httpx.AsyncClient, Depends(get_http_client)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> RecommendationGeographyService:
+    return RecommendationGeographyService(
+        RecommendationGeographyRepository(session),
+        SeoulAreaExtras(http, settings.seoul_citydata_api_key.get_secret_value()),
+    )
+
+
 def get_recommendation_service(
     source: Annotated[RecommendationSource, Depends(get_recommendation_source)],
     model: Annotated[OpenAIProvider, Depends(get_ai_provider)],
     execution: Annotated[RecommendationExecution, Depends(get_recommendation_execution)],
+    geography: Annotated[RecommendationGeographyService, Depends(get_recommendation_geography)],
 ) -> RecommendationService:
     return RecommendationService(
         RecommendationConditionsValidator(source),
-        DestinationRecommendationEngine(source, model),
+        DestinationRecommendationEngine(
+            source,
+            model,
+            area_provider=geography,
+            traffic_provider=geography,
+        ),
         execution=execution,
     )
 

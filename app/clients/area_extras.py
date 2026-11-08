@@ -14,6 +14,9 @@ class SeoulAreaExtras:
         self.http, self.key = http, key
 
     async def fetch(self, area_code, area_name):
+        return await self.fetch_sections(area_code, area_name, ("WEATHER_STTS", "LIVE_CMRCL_STTS"))
+
+    async def fetch_sections(self, area_code, area_name, sections):
         if not self.key.strip():
             raise ServiceError("SERVICE_UNAVAILABLE", "도시데이터 조회 키가 설정되지 않았습니다.")
         url = (
@@ -31,8 +34,7 @@ class SeoulAreaExtras:
                 expected_name=area_name,
                 require_envelope=True,
             )
-            # Keep only the two selected sections while returning from this client.
-            return {name: city.get(name) for name in ("WEATHER_STTS", "LIVE_CMRCL_STTS")}
+            return {name: city.get(name) for name in sections}
         except CityDataError as exc:
             if str(exc) == "provider_quota_exceeded":
                 raise ServiceError("RATE_LIMITED", "도시데이터 조회 한도를 초과했습니다.") from None

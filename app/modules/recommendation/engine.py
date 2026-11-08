@@ -19,9 +19,18 @@ FATAL_ERRORS = {"RATE_LIMITED", "SERVICE_UNAVAILABLE"}
 
 
 class DestinationRecommendationEngine:
-    def __init__(self, source, model=None, policy=DEFAULT_POLICY, *, area_provider=None):
+    def __init__(
+        self,
+        source,
+        model=None,
+        policy=DEFAULT_POLICY,
+        *,
+        area_provider=None,
+        traffic_provider=None,
+    ):
         self.source, self.model, self.policy = source, model, policy
         self.area_provider = area_provider
+        self.traffic_provider = traffic_provider
 
     async def recommend(self, request, conditions, *, work: RecommendationWork):
         async with asyncio.timeout(90):
@@ -124,7 +133,7 @@ class DestinationRecommendationEngine:
         if response.result is not None:
             response.result["search_scope"] = SearchScope(
                 areas=[
-                    SearchAreaSnapshot.model_validate(a.model_dump(exclude={"rings"}))
+                    SearchAreaSnapshot.model_validate(a.model_dump(exclude={"rings", "polygons"}))
                     for a in progress.areas
                 ],
                 fallback=not bool(progress.areas),
@@ -197,6 +206,13 @@ class DestinationRecommendationEngine:
             candidate.route_collected_at = (
                 answer.collected_at if isinstance(answer, RouteEstimate) else datetime.now(UTC)
             )
+            if self.traffic_provider is not None:
+                # Refresh original retry/leftover candidates too; never retain old grades.
+                traffic = await self.traffic_provider.traffic(candidate.place.coordinates)
+                candidate.congestion = traffic.grade or "확인 불가"
+                candidate.congestion_observed_at = traffic.observed_at
+                candidate.congestion_source = traffic.source
+                candidate.congestion_reason_code = traffic.reason
             try:
                 candidate.parking = await self.source.parking(candidate.place.coordinates)
             except ServiceError:

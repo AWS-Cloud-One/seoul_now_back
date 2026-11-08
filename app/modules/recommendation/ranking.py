@@ -56,7 +56,8 @@ def rank_candidates(
             if c.congestion_observed_at is not None
             else None
         )
-        c.congestion_freshness, c.congestion_reason_code = "unknown", "NO_OBSERVATION"
+        c.congestion_freshness = "unknown"
+        c.congestion_reason_code = c.congestion_reason_code or "NO_OBSERVATION"
         if age is not None and age > policy.traffic_max_age_seconds:
             c.congestion_freshness, c.congestion_reason_code = "stale", "STALE_DATA"
         elif age is not None and age < 0:

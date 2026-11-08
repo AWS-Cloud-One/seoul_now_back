@@ -67,7 +67,7 @@ def candidate(identifier, latitude=37.57, category="CE7"):
 
 
 @pytest.fixture
-def ports(app):
+def ports(app, geography):
     source, model, kakao = AsyncMock(), AsyncMock(), AsyncMock()
     source.region.return_value = "seoul"
     source.search.return_value = ([candidate("b"), candidate("a")], True)

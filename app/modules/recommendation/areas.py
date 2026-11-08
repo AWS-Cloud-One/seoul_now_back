@@ -14,7 +14,8 @@ class SearchArea(ContractModel):
     name: str
     center: Coordinates
     # Polygon rings: longitude/latitude, outer ring followed by optional holes.
-    rings: list[list[tuple[float, float]]] = Field(min_length=1)
+    rings: list[list[tuple[float, float]]] = Field(default_factory=list)
+    polygons: list[list[list[tuple[float, float]]]] = Field(default_factory=list)
     source: str
     geometry_version: str
     congestion: Literal["원활", "서행", "정체", "확인 불가"] = "확인 불가"
@@ -35,10 +36,12 @@ class SearchArea(ContractModel):
                     result = not result
             return result
 
-        return (
-            len(self.rings[0]) >= 3
-            and inside(self.rings[0])
-            and not any(inside(ring) for ring in self.rings[1:])
+        return any(
+            polygon
+            and len(polygon[0]) >= 3
+            and inside(polygon[0])
+            and not any(inside(ring) for ring in polygon[1:])
+            for polygon in (self.polygons or [self.rings])
         )
 
 
