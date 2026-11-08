@@ -38,6 +38,12 @@ async def get_session(request: Request) -> AsyncIterator[AsyncSession]:
         yield session
 
 
+async def get_write_session(request: Request) -> AsyncIterator[AsyncSession]:
+    # The service must use session.begin(); never commit after yielding an HTTP response.
+    async with request.app.state.write_session_factory() as session:
+        yield session
+
+
 def get_health_service(
     session: Annotated[AsyncSession, Depends(get_session)],
     settings: Annotated[Settings, Depends(get_settings)],
@@ -47,6 +53,7 @@ def get_health_service(
 
 
 Session = Annotated[AsyncSession, Depends(get_session)]
+WriteSession = Annotated[AsyncSession, Depends(get_write_session)]
 
 
 async def get_http_client() -> AsyncIterator[httpx.AsyncClient]:

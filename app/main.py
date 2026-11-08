@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.router import router
 from app.core.config import Settings
-from app.db.session import create_engine, read_session_factory
+from app.db.session import create_engine, read_session_factory, write_session_factory
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -16,6 +16,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         engine = create_engine(config)
         app.state.session_factory = read_session_factory(engine)
+        app.state.write_session_factory = write_session_factory(engine)
         try:
             yield
         finally:
