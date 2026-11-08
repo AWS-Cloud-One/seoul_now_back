@@ -16,24 +16,20 @@ from sqlalchemy.exc import InvalidRequestError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import (
-    ChatConditionAgeGroup,
-    ChatConditionPurpose,
-    ChatConditionVersion,
     RecommendationCard,
     RecommendationEvidence,
     RecommendationResult,
     RecommendationSearchArea,
 )
-from app.schemas.location import Coordinates, Location
-from app.schemas.recommendations import Conditions, Purpose
-
-
-class ConditionVersionNotFound(LookupError):
-    """The condition owner must persist the accepted version before its result."""
-
-
-class ConditionVersionMismatch(ValueError):
-    """An existing version cannot be reused with different condition values."""
+from app.repositories.recommendation_conditions import (
+    ConditionVersionMismatch,
+    RecommendationConditionsRepository,
+)
+from app.repositories.recommendation_conditions import (
+    ConditionVersionNotFound as ConditionVersionNotFound,
+)
+from app.schemas.location import Coordinates
+from app.schemas.recommendations import Conditions
 
 
 @dataclass(frozen=True)
@@ -102,7 +98,7 @@ class RecommendationContextRepository:
         areas = [_values(area) for area in snapshot.search_areas]
         expected = snapshot.conditions.model_copy(deep=True)
         async with self.session.begin_nested():
-            stored = await self._conditions(
+            stored = await RecommendationConditionsRepository(self.session).get_version(
                 result["trip_id"], result["condition_version"], lock=True
             )
             if stored != expected:
@@ -131,7 +127,9 @@ class RecommendationContextRepository:
         result = results.mappings().one_or_none()
         if result is None:
             return None
-        conditions = await self._conditions(trip_id, result["condition_version"])
+        conditions = await RecommendationConditionsRepository(self.session).get_version(
+            trip_id, result["condition_version"]
+        )
         location = cast(RecommendationCard.place_location, Geometry("POINT", srid=4326))
         cards = await self.session.execute(
             select(
@@ -184,49 +182,3 @@ class RecommendationContextRepository:
         if identity is None:
             return None
         return await self.get(identity.trip_id, identity.result_id)
-
-    async def _conditions(self, trip_id: UUID, version: int, *, lock=False) -> Conditions:
-        table = ChatConditionVersion.__table__
-        point = cast(table.c.origin_location, Geometry("POINT", srid=4326))
-        statement = select(
-            table, func.ST_X(point).label("longitude"), func.ST_Y(point).label("latitude")
-        ).where(table.c.trip_id == trip_id, table.c.version == version)
-        if lock:
-            # Condition versions are immutable; cooperating condition writers must
-            # lock this parent before modifying its purpose/age children as well.
-            statement = statement.with_for_update(read=True)
-        rows = await self.session.execute(statement)
-        row = rows.mappings().one_or_none()
-        if row is None:
-            raise ConditionVersionNotFound("The accepted condition version is not stored")
-
-        purposes = await self._condition_children(ChatConditionPurpose, trip_id, version, lock=lock)
-        ages = await self._condition_children(ChatConditionAgeGroup, trip_id, version, lock=lock)
-        origin = None
-        if row["origin_label"] is not None:
-            origin = Location(
-                label=row["origin_label"],
-                coordinates=Coordinates(latitude=row["latitude"], longitude=row["longitude"]),
-                address=row["origin_address"],
-                region=row["origin_region"],
-                supported=row["origin_supported"],
-            )
-        return Conditions(
-            origin=origin,
-            purposes=[Purpose(purpose=p["purpose"], keyword=p["keyword"]) for p in purposes],
-            group_type=row["group_type"],
-            # Accepted conditions use None for unspecified ages, never an empty list.
-            age_groups=[age["age_group"] for age in ages] or None,
-            headcount=row["headcount"],
-            max_travel_seconds=row["max_travel_seconds"],
-        )
-
-    async def _condition_children(self, model, trip_id, version, *, lock):
-        statement = (
-            select(model.__table__)
-            .where(model.trip_id == trip_id, model.condition_version == version)
-            .order_by(model.position)
-        )
-        if lock:
-            statement = statement.with_for_update(read=True)
-        return (await self.session.execute(statement)).mappings().all()
