@@ -15,10 +15,18 @@ from app.schemas.recommendations import (
 from app.services.locations import documents, provider_failure, text
 from app.services.pending import PendingFailure
 
+FOLLOWUP_TOPICS = {
+    "recommendation_reason": "당시 추천 이유",
+    "travel_time": "현재 자동차 이동시간",
+    "parking": "현재 등록 주차 정보",
+    "population": "현재 인구 현황",
+}
+
 
 class RecommendationChatProcessor:
-    def __init__(self, model, kakao, recommendations):
+    def __init__(self, model, kakao, recommendations, *, contexts=None, reasons=None):
         self.model, self.kakao, self.recommendations = model, kakao, recommendations
+        self.contexts, self.reasons = contexts, reasons
 
     @staticmethod
     def response(request, kind, message, **values):
@@ -29,7 +37,7 @@ class RecommendationChatProcessor:
             message=message,
             condition_update=ConditionUpdate(
                 applied=False,
-                conditions=request.current_conditions,
+                conditions=request.current_conditions.model_copy(deep=True),
                 version=request.condition_version,
                 changes=[],
             ),
@@ -41,25 +49,104 @@ class RecommendationChatProcessor:
         )
 
     async def process(self, request):
+        request = request.model_copy(deep=True)
+        stored, selected_place = None, None
         if request.target is not None:
-            raise ServiceError(
-                "SERVICE_UNAVAILABLE",
-                "과거 추천 문맥 검증·답변 기능이 아직 연결되지 않았습니다.",
-                retryable=False,
+            if self.contexts is None:
+                raise ServiceError(
+                    "SERVICE_UNAVAILABLE",
+                    "추천 문맥 검증 기능이 연결되지 않았습니다.",
+                    retryable=False,
+                )
+            # Validate before paying for interpretation; never send the token or identifiers.
+            stored = await self.contexts.resolve(
+                request.target.context_token,
+                trip_id=request.trip_id,
+                result_id=request.target.result_id,
+                place_id=request.target.place_id,
             )
+            selected = next(
+                card for card in stored.cards if card.place_id == request.target.place_id
+            )
+            selected_place = {"name": selected.place_name, "kind": stored.result.kind}
         try:
-            parsed = await interpret(self.model, request)
+            parsed = await interpret(self.model, request, selected_place=selected_place)
             extracted_patch = parsed.patch()
         except ServiceError as exc:
-            data = self.response(request, "failure", exc.message)
-            data.stages.interpretation = "failed"
-            raise PendingFailure(
-                exc.code,
-                exc.message,
-                data=data,
-                retryable=exc.retryable,
-                retry_after_seconds=exc.retry_after_seconds,
-            ) from None
+            raise self.failure(request, exc, interpretation="failed") from None
+        try:
+            return await self.dispatch(request, parsed, extracted_patch, stored)
+        except PendingFailure:
+            raise
+        except ServiceError as exc:
+            raise self.failure(request, exc, interpretation="ok") from None
+
+    def failure(self, request, error, *, interpretation):
+        data = self.response(request, "failure", error.message)
+        data.stages.interpretation = interpretation
+        return PendingFailure(
+            error.code,
+            error.message,
+            data=data,
+            retryable=error.retryable,
+            retry_after_seconds=error.retry_after_seconds,
+        )
+
+    def clarify_target(self, request, intent):
+        topic = FOLLOWUP_TOPICS.get(intent, "정보")
+        question = f"{topic}에 대해 답할 수 있도록 대상 카드를 선택해 주세요."
+        return self.response(
+            request,
+            "clarification",
+            question,
+            clarification=Clarification(
+                question=question,
+                required_fields=["target"],
+                pending_patch=ConditionsPatch(),
+                choices=[],
+            ),
+        )
+
+    def clarify_intent(self, request):
+        question = "장소에 대해 질문할지, 조건을 바꿔 새 추천을 받을지 알려 주세요."
+        return self.response(
+            request,
+            "clarification",
+            question,
+            clarification=Clarification(
+                question=question,
+                required_fields=["intent"],
+                pending_patch=ConditionsPatch(),
+                choices=[],
+            ),
+        )
+
+    async def dispatch(self, request, parsed, extracted_patch, stored):
+        if parsed.intent == "intent_clarification":
+            return self.clarify_intent(request)
+        if parsed.target_ambiguous:
+            return self.clarify_target(request, parsed.intent)
+        if parsed.intent in FOLLOWUP_TOPICS:
+            if parsed.origin_name or extracted_patch.model_fields_set:
+                return self.clarify_intent(request)
+            if request.target is None:
+                return self.clarify_target(request, parsed.intent)
+            if parsed.intent == "recommendation_reason":
+                if self.reasons is None:
+                    raise ServiceError(
+                        "SERVICE_UNAVAILABLE",
+                        "당시 추천 이유 답변이 연결되지 않았습니다.",
+                        retryable=False,
+                    )
+                data = self.reasons.answer_from_context(request, stored)
+                data.stages.interpretation = "ok"
+                return data
+            # Part 1 owns current facts. Never turn these questions into a new recommendation.
+            raise ServiceError(
+                "SERVICE_UNAVAILABLE",
+                f"{FOLLOWUP_TOPICS[parsed.intent]} 조회가 아직 연결되지 않았습니다.",
+                retryable=False,
+            )
         if parsed.intent == "scope_notice":
             message = (
                 "현재 출발하는 자동차 이동 기준 장소 추천을 지원합니다. "
@@ -81,7 +168,11 @@ class RecommendationChatProcessor:
             )
         patch = (
             request.pending_clarification.pending_patch.model_dump(exclude_unset=True)
-            if (request.pending_clarification)
+            if (
+                request.pending_clarification
+                and set(request.pending_clarification.required_fields)
+                <= set(Conditions.model_fields)
+            )
             else {}
         )
         patch.update(extracted_patch.model_dump(exclude_unset=True))

@@ -6,6 +6,7 @@ from uuid import UUID
 from pydantic import (
     Field,
     JsonValue,
+    field_serializer,
     field_validator,
     model_validator,
 )
@@ -83,6 +84,11 @@ class Clarification(ContractModel):
     required_fields: list[str]
     pending_patch: ConditionsPatch
     choices: list[Choice]
+
+    @field_serializer("pending_patch")
+    def serialize_pending_patch(self, value, info):
+        # Omitted means unchanged; explicit null means clear. Preserve both on round-trip.
+        return value.model_dump(mode=info.mode, exclude_unset=True)
 
 
 class Stages(ContractModel):

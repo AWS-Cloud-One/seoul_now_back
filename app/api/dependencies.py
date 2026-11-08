@@ -152,9 +152,19 @@ def get_pending_service(
     model: Annotated[OpenAIProvider, Depends(get_ai_provider)],
     provider: Annotated[KakaoLocalClient, Depends(get_kakao_local_client)],
     recommendations: Annotated[RecommendationService, Depends(get_recommendation_service)],
+    contexts: Annotated[RecommendationContextService, Depends(get_context_reader)],
+    reasons: Annotated[RecommendationReasonService, Depends(get_recommendation_reason_service)],
 ) -> PendingService:
-    # Historical context readers and administrative status remain unconnected.
-    return PendingService(chat=RecommendationChatProcessor(model, provider, recommendations))
+    # Current fact readers, route retry and administrative status await their owning parts.
+    return PendingService(
+        chat=RecommendationChatProcessor(
+            model,
+            provider,
+            recommendations,
+            contexts=contexts,
+            reasons=reasons,
+        )
+    )
 
 
 async def require_data_status_access():
