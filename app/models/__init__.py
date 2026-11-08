@@ -1,4 +1,4 @@
-"""Transition to revision 0012; apply only after all readers and writers are converted."""
+"""Normalized models matching revision 0013, including recommendation snapshots."""
 
 from .areas import (
     AdministrativeArea,
@@ -31,6 +31,7 @@ from .parking import (
     ParkingSourceRecord,
 )
 from .places import Place, PlaceCategory
+from .recommendation import RecommendationCard, RecommendationEvidence, RecommendationResult
 from .sensors import PedestrianSensor, PedestrianSensorLatest
 from .traffic import (
     RoadAreaMapping,
@@ -41,6 +42,9 @@ from .traffic import (
 )
 
 __all__ = [
+    "RecommendationResult",
+    "RecommendationCard",
+    "RecommendationEvidence",
     "ChatConditionAgeGroup",
     "ChatConditionPurpose",
     "ChatConditionVersion",
