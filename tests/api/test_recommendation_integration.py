@@ -257,7 +257,7 @@ def test_chat_clarification_keeps_pending_changes_unapplied(client, context, por
     source.search.assert_not_awaited()
 
 
-def test_chat_resolves_exact_origin_and_revalidates_coordinates(client, context, ports):
+def test_chat_confirms_exact_origin_then_revalidates_selected_coordinates(client, context, ports):
     source, model, kakao = ports
     original = model.complete.side_effect
 
@@ -269,12 +269,51 @@ def test_chat_resolves_exact_origin_and_revalidates_coordinates(client, context,
     model.complete.side_effect = complete
     kakao.keyword.return_value = {
         "documents": [
-            {"place_name": "시청역", "x": "126.977", "y": "37.5657", "address_name": "서울"}
+            {
+                "id": "1",
+                "place_name": "시청역",
+                "x": "126.977",
+                "y": "37.5657",
+                "address_name": "서울 중구",
+                "category_group_code": "SW8",
+            }
         ],
         "meta": {"is_end": True},
     }
+    kakao.region.return_value = {
+        "documents": [
+            {
+                "region_type": "B",
+                "region_1depth_name": "서울특별시",
+                "region_2depth_name": "중구",
+                "region_3depth_name": "",
+            }
+        ]
+    }
     response = client.post("/api/v1/chat/messages", json=context | {"message": "시청역 출발"})
     assert response.status_code == 200
+    first = response.json()["data"]
+    assert first["kind"] == "clarification" and not first["condition_update"]["applied"]
+    question = first["clarification"]
+    assert question["origin_context"]["mode"] == "confirm"
+    source.search.assert_not_awaited()
+    source.region.assert_not_awaited()
+    selected = client.post(
+        "/api/v1/chat/messages",
+        json=context
+        | {
+            "request_id": str(uuid4()),
+            "message": "여기서 출발",
+            "origin_action": {
+                "action": "select",
+                "context_token": question["origin_context"]["context_token"],
+                "candidate_id": question["choices"][0]["value"]["candidate_id"],
+            },
+        },
+    )
+    assert selected.status_code == 200
+    assert selected.json()["data"]["kind"] == "recommendation"
+    assert selected.json()["data"]["stages"]["interpretation"] == "skipped"
     assert source.region.call_args_list[0].args[0].latitude == 37.5657
 
 

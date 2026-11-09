@@ -27,6 +27,8 @@ from app.services.current_place_answers import CurrentPlaceAnswers
 from app.services.health import HealthService
 from app.services.locations import LocationResolveService, LocationSearchService
 from app.services.map import MapService
+from app.services.origin_context import OriginContextStore
+from app.services.origin_search import OriginSearchService
 from app.services.parking_detail import ParkingDetailService
 from app.services.parking_nearby import ParkingNearbyService
 from app.services.parking_search import ParkingSearchService
@@ -252,6 +254,16 @@ def get_recommendation_service(
     )
 
 
+def get_origin_context_store(request: Request) -> OriginContextStore:
+    return request.app.state.origin_contexts
+
+
+def get_origin_search_service(
+    provider: Annotated[KakaoLocalClient, Depends(get_kakao_local_client)],
+) -> OriginSearchService:
+    return OriginSearchService(provider)
+
+
 def get_pending_service(
     model: Annotated[OpenAIProvider, Depends(get_ai_provider)],
     provider: Annotated[KakaoLocalClient, Depends(get_kakao_local_client)],
@@ -262,6 +274,8 @@ def get_pending_service(
     places: Annotated[PlaceDetailReader, Depends(get_place_detail_reader)],
     travel: Annotated[TravelTimeReader, Depends(get_travel_time_reader)],
     current_answers: Annotated[CurrentPlaceAnswers, Depends(get_current_place_answers)],
+    origin_contexts: Annotated[OriginContextStore, Depends(get_origin_context_store)],
+    origin_search: Annotated[OriginSearchService, Depends(get_origin_search_service)],
 ) -> PendingService:
     return PendingService(
         places=places,
@@ -274,6 +288,8 @@ def get_pending_service(
             contexts=contexts,
             reasons=reasons,
             current_answers=current_answers,
+            origin_contexts=origin_contexts,
+            origin_search=origin_search,
         ),
         retry=RecommendationRouteRetryProcessor(
             recommendations, contexts=contexts, execution=execution

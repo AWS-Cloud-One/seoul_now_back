@@ -39,6 +39,8 @@ class RecommendationExecution:
         source_result_id=None,
         require_current=True,
         guard=None,
+        publish=None,
+        replay_guard=None,
     ):
         request = request.model_copy(deep=True)
 
@@ -54,6 +56,9 @@ class RecommendationExecution:
                         request, outcome.response, work, source_result_id=source_result_id
                     )
                     outcome = replace(outcome, response=finalized)
+                if publish is not None:
+                    # Synchronous, pre-reserved state changes only. No I/O after commit.
+                    publish(outcome)
                 return outcome
             except CommitUncertain as exc:
                 work.invalidated = True
@@ -72,7 +77,17 @@ class RecommendationExecution:
 
         try:
             return await self.store.run(
-                request, operation, perform, extra, require_current=require_current, guard=guard
+                request,
+                operation,
+                perform,
+                extra,
+                require_current=require_current,
+                guard=guard,
+                replay_guard=replay_guard,
             )
         except ServiceError as exc:
             return rejected(request, exc)
+        except SQLAlchemyError:
+            return rejected(
+                request, ServiceError("DATA_UNAVAILABLE", "추천 상태를 저장·조회할 수 없습니다.")
+            )

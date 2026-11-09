@@ -103,8 +103,26 @@ class MemoryProgressStore:
                 retryable=False,
             )
 
+    @staticmethod
+    def working_copy(entry):
+        return RecommendationWork(
+            version=entry.version,
+            conditions=deepcopy(entry.conditions),
+            excluded=set(entry.excluded),
+            search=deepcopy(entry.search),
+            expired=entry.expired,
+        )
+
     async def run(
-        self, request, operation, callback, extra=None, *, require_current=True, guard=None
+        self,
+        request,
+        operation,
+        callback,
+        extra=None,
+        *,
+        require_current=True,
+        guard=None,
+        replay_guard=None,
     ):
         now = self.clock()
         # Keep small tombstones: an expired ID must not silently lose exclusions.
@@ -150,20 +168,19 @@ class MemoryProgressStore:
             if guard is not None:
                 await guard()
             if cached:
-                return clone(cached[1])
+                outcome = clone(cached[1])
+                if replay_guard is not None:
+                    # A cached question may itself carry a now-expired context,
+                    # even when the original request contained no context token.
+                    await replay_guard(outcome, self.working_copy(entry))
+                return outcome
             if len(entry.requests) >= self.max_requests:
                 raise ServiceError(
                     "CONTEXT_EXPIRED",
                     "여행별 요청 한도에 도달했습니다. 새 여행을 시작해 주세요.",
                     retryable=False,
                 )
-            work = RecommendationWork(
-                version=entry.version,
-                conditions=deepcopy(entry.conditions),
-                excluded=set(entry.excluded),
-                search=deepcopy(entry.search),
-                expired=entry.expired,
-            )
+            work = self.working_copy(entry)
             if require_current:
                 self.check_current(request, work)
             try:
