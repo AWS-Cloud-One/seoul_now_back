@@ -48,11 +48,16 @@ class KakaoLocalClient:
     def __init__(self, http: httpx.AsyncClient, key: str):
         self.http, self.key = http, key
 
-    async def keyword(self, query: str, *, page: int, size: int) -> dict:
+    async def keyword(
+        self, query: str, *, page: int, size: int, category: str | None = None
+    ) -> dict:
+        params = {"query": query, "page": page, "size": size}
+        if category is not None:
+            params["category_group_code"] = category
         return await kakao_get(
             self.http,
             "https://dapi.kakao.com/v2/local/search/keyword.json",
-            {"query": query, "page": page, "size": size},
+            params,
             self.key,
         )
 
