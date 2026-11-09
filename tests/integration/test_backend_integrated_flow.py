@@ -57,7 +57,14 @@ async def integrated_runtime(url):
         settings.kakao_rest_api_key = SecretStr("test-key")
         settings.seoul_citydata_api_key = SecretStr("test-key")
         state = env.provider = SimpleNamespace(
-            calls=[], mode="ok", seconds=600, grade="서행", candidates=12
+            calls=[],
+            mode="ok",
+            seconds=600,
+            grade="서행",
+            candidates=12,
+            origins={},
+            origin_regions={},
+            origin_status=200,
         )
         async with env.app.state.write_session_factory.begin() as session:
             await seed(session)
@@ -67,13 +74,22 @@ async def integrated_runtime(url):
             state.calls.append(request)
             if request.url.host == "dapi.kakao.com":
                 if request.url.path.endswith("coord2regioncode.json"):
+                    province = state.origin_regions.get(request.url.params["x"], "서울특별시")
                     return httpx.Response(
                         200,
+                        json={"documents": [{"region_type": "B", "region_1depth_name": province}]},
+                    )
+                if request.url.path.endswith("address.json"):
+                    return httpx.Response(200, json={"documents": [], "meta": {"is_end": True}})
+                assert request.url.path.endswith("keyword.json")
+                if request.url.params["query"] in state.origins:
+                    return httpx.Response(
+                        state.origin_status,
                         json={
-                            "documents": [{"region_type": "B", "region_1depth_name": "서울특별시"}]
+                            "documents": state.origins[request.url.params["query"]],
+                            "meta": {"is_end": True},
                         },
                     )
-                assert request.url.path.endswith("keyword.json")
                 return httpx.Response(
                     200,
                     json={
