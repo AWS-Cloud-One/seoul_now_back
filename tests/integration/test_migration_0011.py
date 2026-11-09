@@ -6,9 +6,10 @@ from uuid import uuid4
 import pytest
 import sqlalchemy as sa
 from alembic import command
-from test_migration_0009 import config
-from test_migration_0009 import migration_database as migration_database
-from test_migration_0010 import fail_upgrade_at
+
+from tests.integration.test_migration_0009 import config
+from tests.integration.test_migration_0009 import migration_database as migration_database
+from tests.integration.test_migration_0010 import fail_upgrade_at
 
 pytestmark = pytest.mark.integration
 

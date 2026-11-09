@@ -1,11 +1,14 @@
 from collections.abc import Iterator
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from app.api.dependencies import get_recommendation_geography
 from app.core.config import Settings
 from app.main import create_app
+from app.services.recommendation_geography import RoadGrade
 
 
 @pytest.fixture
@@ -25,3 +28,12 @@ def app() -> FastAPI:
 def client(app: FastAPI) -> Iterator[TestClient]:
     with TestClient(app) as test_client:
         yield test_client
+
+
+@pytest.fixture
+def geography(app):
+    reader = AsyncMock()
+    reader.areas.return_value = []
+    reader.traffic.return_value = RoadGrade()
+    app.dependency_overrides[get_recommendation_geography] = lambda: reader
+    return reader

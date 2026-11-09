@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 from app.schemas.parking_nearby import ParkingSummary
+from app.schemas.recommendation_result import ContextCard, ContextResult
 
 
 def unavailable_parking(reason="NO_RECORD", *, error=False):
@@ -32,15 +33,15 @@ def information(value, source, *, collected=None, freshness="unknown", reason=No
 
 
 def result(conditions, cards):
-    # Result-context retention/authentication is still a separate, unconnected port.
-    return dict(
+    # The execution owner attaches the context token after persistence.
+    return ContextResult(
         result_id=str(uuid4()),
         created_at=datetime.now(UTC).isoformat(),
         conditions=conditions.model_dump(mode="json"),
         context_token=None,
         context_expires_at=None,
         cards=cards,
-    )
+    ).model_dump(mode="json", exclude_unset=True)
 
 
 def card(candidate, rank=None, explanation=None, source="none"):
@@ -71,7 +72,9 @@ def card(candidate, rank=None, explanation=None, source="none"):
                     if candidate.congestion == "확인 불가"
                     else {"grade": candidate.congestion},
                     candidate.congestion_source,
-                    reason="NO_OBSERVATION" if candidate.congestion == "확인 불가" else None,
+                    freshness=candidate.congestion_freshness,
+                    reason=candidate.congestion_reason_code
+                    or ("NO_OBSERVATION" if candidate.congestion == "확인 불가" else None),
                 ),
             )
         )
@@ -100,12 +103,12 @@ def card(candidate, rank=None, explanation=None, source="none"):
                     ),
                 )
             )
-    return dict(
+    return ContextCard(
         rank=rank,
         place=information(
             candidate.place.model_dump(mode="json"),
             "kakao_local",
-            collected=candidate.collected_at.isoformat(),
+            collected=candidate.collected_at.isoformat() if candidate.collected_at else None,
         ),
         route=route,
         parking=parking.model_dump(mode="json"),
@@ -114,4 +117,5 @@ def card(candidate, rank=None, explanation=None, source="none"):
             source=source,
             evidence=evidence,
         ),
-    )
+        ranking=candidate.ranking if routed else None,
+    ).model_dump(mode="json")

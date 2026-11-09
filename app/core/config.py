@@ -27,6 +27,10 @@ class Settings(BaseSettings):
     sgis_consumer_secret: SecretStr = SecretStr("")
 
     kakao_rest_api_key: SecretStr = SecretStr("")
+    # Per-process rolling 24h allowance; shared app usage is still tracked by Kakao.
+    mobility_request_budget: int = Field(default=8000, ge=1, le=10000)
+    mobility_max_concurrency: int = Field(default=3, ge=1, le=5)
+    mobility_requests_per_second: int = Field(default=3, ge=1, le=5)
     openai_api_key: SecretStr = SecretStr("")
     openai_model: str = "gpt-4.1-mini"
     openai_timeout_seconds: float = Field(default=20, gt=0, le=120)
@@ -46,6 +50,7 @@ class Settings(BaseSettings):
     )
     db_connect_timeout_seconds: int = Field(default=3, ge=1, le=30)
     health_timeout_seconds: float = Field(default=5, gt=0, le=30)
+    result_context_ttl_seconds: int = Field(default=1800, ge=1, le=86400)
 
     @field_validator("database_url")
     @classmethod

@@ -55,9 +55,11 @@ class ParkingNearbyRepository:
         )
         return result.one()
 
-    async def list_facilities(self, coordinates, radius):
+    async def list_facilities(self, coordinates, radius, *, limit=None, offset=0, name=None):
         statement, distance = self.spatial_query(coordinates, radius)
-        rows = await self.session.execute(
+        if name:
+            statement = statement.where(ParkingFacility.name.contains(name, autoescape=True))
+        query = (
             statement.with_only_columns(
                 ParkingFacility.parking_id,
                 ParkingFacility.identity_status,
@@ -65,8 +67,13 @@ class ParkingNearbyRepository:
                 func.ST_Y(MapFeature.geometry),
                 func.ST_X(MapFeature.geometry),
                 distance,
-            ).order_by(distance, ParkingFacility.parking_id)
+            )
+            .order_by(distance, ParkingFacility.parking_id)
+            .offset(offset)
         )
+        if limit is not None:
+            query = query.limit(limit)
+        rows = await self.session.execute(query)
         return rows.all()
 
     async def list_records(self, ids):

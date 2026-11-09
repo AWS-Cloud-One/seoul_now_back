@@ -8,8 +8,9 @@ from uuid import uuid4
 import pytest
 import sqlalchemy as sa
 from alembic import command
-from test_migration_0009 import config
-from test_migration_0009 import migration_database as migration_database
+
+from tests.integration.test_migration_0009 import config
+from tests.integration.test_migration_0009 import migration_database as migration_database
 
 pytestmark = pytest.mark.integration
 
@@ -86,7 +87,7 @@ def test_0010_preserves_legacy_hours_ids_and_rolls_back_atomically(migration_dat
             == 0
         )
         assert (
-            connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar() == "0012"
+            connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar() == "0013"
         )
 
 

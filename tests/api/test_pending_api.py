@@ -70,7 +70,8 @@ def answer_data(context):
 
 @pytest.mark.parametrize("retry", [False, True])
 def test_unconnected_conversation_preserves_context(api, context, retry):
-    _, client = api
+    app, client = api
+    app.dependency_overrides[get_pending_service] = lambda: PendingService()
     body = context | (
         {"result_id": "r1", "context_token": "opaque"} if retry else {"message": "카페 찾아줘"}
     )
@@ -339,7 +340,9 @@ def test_place_requires_context_and_does_not_fake_success(api):
     client = api[1]
     assert client.get("/api/v1/places/p1").status_code == 422
     response = client.get("/api/v1/places/p1", headers={"Result-Context": "opaque"})
-    assert response.status_code == 503
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "INVALID_CONTEXT"
+    assert response.headers["cache-control"] == "no-store"
     assert response.json()["data"] is None
 
 
@@ -348,7 +351,8 @@ def test_travel_request_and_context_failure(api, context):
     body = {key: context[key] for key in ("request_id", "trip_id", "condition_version")}
     body.update(result_id="r1", context_token="opaque")
     response = client.post("/api/v1/places/p1/travel-time", json=body)
-    assert response.status_code == 503
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "INVALID_CONTEXT"
     assert response.json()["request_id"] == body["request_id"]
     adapter = AsyncMock()
     adapter.check.side_effect = ServiceError("CONTEXT_EXPIRED", "문맥 만료")

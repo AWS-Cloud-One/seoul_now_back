@@ -1,15 +1,16 @@
 """Part 2 search progression, comparison and original-candidate route retry."""
 
 import asyncio
-from copy import deepcopy
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 from app.core.exceptions import ServiceError
 from app.modules.ai.explanation import explain
 from app.modules.recommendation.areas import select_areas
 from app.modules.recommendation.cards import card, result, unavailable_parking
-from app.modules.recommendation.progress import DEFAULT_PROGRESS_STORE, SearchProgress, fingerprint
+from app.modules.recommendation.progress import RecommendationWork, SearchProgress, fingerprint
 from app.modules.recommendation.ranking import DEFAULT_POLICY, rank_candidates
+from app.modules.recommendation.types import RouteEstimate
+from app.schemas.recommendation_result import SearchAreaSnapshot, SearchScope
 from app.schemas.recommendations import ConditionUpdate, RecommendationResponse, Stages
 
 PURPOSE_QUERIES = {"food": "음식점", "cafe": "카페", "walk": "공원", "exhibition": "전시관"}
@@ -19,27 +20,30 @@ FATAL_ERRORS = {"RATE_LIMITED", "SERVICE_UNAVAILABLE"}
 
 class DestinationRecommendationEngine:
     def __init__(
-        self, source, model=None, policy=DEFAULT_POLICY, *, progress_store=None, area_provider=None
+        self,
+        source,
+        model=None,
+        policy=DEFAULT_POLICY,
+        *,
+        area_provider=None,
+        traffic_provider=None,
     ):
         self.source, self.model, self.policy = source, model, policy
-        self.progress_store = (
-            progress_store if progress_store is not None else DEFAULT_PROGRESS_STORE
-        )
         self.area_provider = area_provider
+        self.traffic_provider = traffic_provider
 
-    async def recommend(self, request, conditions):
+    async def recommend(self, request, conditions, *, work: RecommendationWork):
         async with asyncio.timeout(90):
-            return await self._recommend(request, conditions)
+            return await self._recommend(request, conditions, work)
 
-    async def _recommend(self, request, conditions):
-        trip = self.progress_store.trip(request.trip_id)
+    async def _recommend(self, request, conditions, work):
         signature = fingerprint(conditions.model_dump(mode="json"))
         progress = (
-            deepcopy(trip.search)
-            if trip.search.fingerprint == signature
+            work.search
+            if work.search.fingerprint == signature
             else SearchProgress(fingerprint=signature)
         )
-        excluded = trip.excluded | set(request.excluded_place_ids)
+        excluded = work.excluded | set(request.excluded_place_ids)
         warnings = []
         if progress.areas is None:
             if self.area_provider is None:
@@ -127,20 +131,22 @@ class DestinationRecommendationEngine:
             )
         response = await self._response(request, conditions, selected, failed, successes, warnings)
         if response.result is not None:
-            response.result["search_scope"] = {
-                "areas": [a.model_dump(mode="json") for a in progress.areas],
-                "fallback": not bool(progress.areas),
-                "more_available": bool(progress.remaining) or len(progress.ended) < len(targets),
-            }
-        trip.search = progress
+            response.result["search_scope"] = SearchScope(
+                areas=[
+                    SearchAreaSnapshot.model_validate(a.model_dump(exclude={"rings", "polygons"}))
+                    for a in progress.areas
+                ],
+                fallback=not bool(progress.areas),
+                more_available=bool(progress.remaining) or len(progress.ended) < len(targets),
+            ).model_dump(mode="json")
+        work.search = progress
         return response
 
-    async def retry_routes(self, request, conditions, candidates):
+    async def retry_routes(self, request, conditions, candidates, *, work: RecommendationWork):
         """Only Part 3's authenticated original candidates; no search or interpretation."""
         if not 1 <= len(candidates) <= 3:
             raise ServiceError("VALIDATION_ERROR", "재시도할 원래 후보는 1~3곳이어야 합니다.")
-        trip = self.progress_store.trip(request.trip_id)
-        excluded = trip.excluded | set(request.excluded_place_ids)
+        excluded = work.excluded | set(request.excluded_place_ids)
         warnings = []
         async with asyncio.timeout(90):
             eligible, failed, successes = await self._evaluate(
@@ -180,19 +186,16 @@ class DestinationRecommendationEngine:
                 candidate.route_collected_at
             ) = None
             candidate.parking = None
-            observed = candidate.congestion_observed_at
-            if (
-                not candidate.congestion_source
-                or observed is None
-                or not timedelta(0) <= datetime.now(UTC) - observed <= timedelta(minutes=30)
-            ):
-                candidate.congestion = "확인 불가"
             if isinstance(answer, ServiceError):
                 if answer.code in FATAL_ERRORS:
                     raise answer
                 failed.append(candidate)
                 continue
-            seconds, meters = answer
+            seconds, meters = (
+                (answer.duration_seconds, answer.distance_meters)
+                if isinstance(answer, RouteEstimate)
+                else answer
+            )
             successes += 1
             if (
                 conditions.max_travel_seconds is not None
@@ -200,7 +203,16 @@ class DestinationRecommendationEngine:
             ):
                 continue
             candidate.duration_seconds, candidate.distance_meters = seconds, meters
-            candidate.route_collected_at = datetime.now(UTC)
+            candidate.route_collected_at = (
+                answer.collected_at if isinstance(answer, RouteEstimate) else datetime.now(UTC)
+            )
+            if self.traffic_provider is not None:
+                # Refresh original retry/leftover candidates too; never retain old grades.
+                traffic = await self.traffic_provider.traffic(candidate.place.coordinates)
+                candidate.congestion = traffic.grade or "확인 불가"
+                candidate.congestion_observed_at = traffic.observed_at
+                candidate.congestion_source = traffic.source
+                candidate.congestion_reason_code = traffic.reason
             try:
                 candidate.parking = await self.source.parking(candidate.place.coordinates)
             except ServiceError:
@@ -265,10 +277,7 @@ class DestinationRecommendationEngine:
             if value != before[field]
         ]
         if payload is not None:
-            payload["ranking_policy"] = {
-                "time_bucket_seconds": self.policy.time_bucket_seconds,
-                "parking_bonus_radius_m": self.policy.parking_bonus_radius_m,
-            }
+            payload["ranking_policy"] = self.policy.snapshot().model_dump(mode="json")
         return RecommendationResponse(
             trip_id=request.trip_id,
             base_condition_version=request.condition_version,

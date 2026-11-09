@@ -110,18 +110,26 @@ def test_query_validation(api, params):
 
 def test_more_results_are_not_silently_marked_as_last_page(api):
     client, provider, _ = api
-    provider.keyword.return_value = page([candidate()], is_end=False)
-    response = client.get("/api/v1/locations/search?query=카페")
-    assert response.status_code == 503
-    assert response.json()["data"] is None
-    assert response.json()["error"]["retryable"] is False
-    provider.region.assert_not_awaited()
+    provider.keyword.side_effect = [
+        page([candidate(place_name="first"), candidate(place_name="second")], is_end=False),
+        page([candidate(place_name="third")]),
+    ]
+    response = client.get("/api/v1/locations/search?query=카페&limit=1")
+    assert response.status_code == 200
+    cursor = response.json()["data"]["next_cursor"]
+    assert cursor
+    second = client.get(
+        "/api/v1/locations/search", params={"query": "카페", "limit": 1, "cursor": cursor}
+    )
+    assert second.status_code == 200
+    assert second.json()["data"]["items"][0]["label"] == "second"
+    assert second.json()["data"]["next_cursor"]
 
 
 def test_supplied_cursor_is_unavailable_without_a_policy(api):
     client, provider, _ = api
     response = client.get("/api/v1/locations/search?query=서울&cursor=opaque-token")
-    assert response.status_code == 503
+    assert response.status_code == 422
     provider.keyword.assert_not_awaited()
 
 

@@ -6,6 +6,7 @@ from typing import Protocol
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.core.exceptions import ServiceError
+from app.modules.recommendation.progress import RecommendationWork
 from app.schemas.recommendations import (
     Clarification,
     Conditions,
@@ -14,6 +15,7 @@ from app.schemas.recommendations import (
     RecommendationResponse,
     Stages,
 )
+from app.services.recommendation_execution import RecommendationExecution
 
 
 class ValidationDecision:
@@ -33,8 +35,21 @@ class RecommendationEngine(Protocol):
         self,
         request: RecommendationRequest,
         conditions: Conditions,
+        *,
+        work: RecommendationWork,
     ) -> RecommendationResponse:
         """Return the agreed R01 result without reinterpreting natural language."""
+        ...
+
+    async def retry_routes(
+        self,
+        request: RecommendationRequest,
+        conditions: Conditions,
+        candidates,
+        *,
+        work: RecommendationWork,
+    ) -> RecommendationResponse:
+        """Recheck authenticated original candidates without searching or changing conditions."""
         ...
 
 
@@ -53,8 +68,11 @@ class RecommendationService:
         self,
         validator: ConditionsValidator | None = None,
         engine: RecommendationEngine | None = None,
+        *,
+        execution: RecommendationExecution | None = None,
     ):
         self.validator, self.engine = validator, engine
+        self.execution = execution if execution is not None else RecommendationExecution()
 
     async def execute(self, request: RecommendationRequest) -> RecommendationOutcome:
         return await self._dispatch(request)
@@ -63,30 +81,20 @@ class RecommendationService:
         self, request: RecommendationRequest, candidates
     ) -> RecommendationOutcome:
         """Part 3 must authenticate the original result/conditions before calling this port."""
-        if request.conditions_patch.model_fields_set:
-            return self._rejected(
-                request,
-                RecommendationFailure(
-                    "CONTEXT_CONDITIONS_MISMATCH", "경로 재시도는 원래 조건을 사용해야 합니다."
-                ),
-            )
         return await self._dispatch(request, candidates)
 
     async def _dispatch(self, request, candidates=None):
-        store = vars(self.engine).get("progress_store") if self.engine is not None else None
-        try:
-            if store is None:
-                return await self._execute(request, candidates)
-            return await store.run(
-                request,
-                "recommend" if candidates is None else "retry_routes",
-                lambda: self._execute(request, candidates),
-                None if candidates is None else [c.model_dump(mode="json") for c in candidates],
-            )
-        except ServiceError as exc:
-            return self._rejected(request, exc)
+        request = request.model_copy(deep=True)
+        candidates = None if candidates is None else [c.model_copy(deep=True) for c in candidates]
+        return await self.execution.run(
+            request,
+            "recommend" if candidates is None else "retry_routes",
+            lambda work: self.prepare(request, work, candidates),
+            self.rejected,
+            extra=None if candidates is None else [c.model_dump(mode="json") for c in candidates],
+        )
 
-    def _rejected(self, request, failure):
+    def rejected(self, request, failure):
         return RecommendationOutcome(
             RecommendationResponse(
                 trip_id=request.trip_id,
@@ -107,7 +115,8 @@ class RecommendationService:
             failure,
         )
 
-    async def _execute(self, request, candidates=None):
+    async def prepare(self, request, work: RecommendationWork, candidates=None):
+        """Compute only; a caller already holding the execution lock can reuse this port."""
         update = ConditionUpdate(
             applied=False,
             conditions=request.current_conditions,
@@ -115,12 +124,23 @@ class RecommendationService:
             changes=[],
         )
         try:
-            if self.validator is None or self.engine is None:
+            if self.engine is None or (candidates is None and self.validator is None):
                 raise RecommendationFailure(
                     "SERVICE_UNAVAILABLE",
                     "조건 검증·추천 기능이 아직 연결되지 않았습니다.",
                 )
-            decision = await self.validator.validate(request.model_copy(deep=True))
+            if candidates is None:
+                decision = await self.validator.validate(request.model_copy(deep=True))
+            else:
+                if request.conditions_patch.model_fields_set:
+                    raise RecommendationFailure(
+                        "CONTEXT_CONDITIONS_MISMATCH", "경로 재시도는 원래 조건을 사용해야 합니다."
+                    )
+                # The retry owner already verified the stored conditions and current trip.
+                # Revalidating geography here could alter conditions or ask a new question.
+                decision = ValidationDecision(
+                    update.model_copy(update={"applied": True}, deep=True)
+                )
             candidate_update = decision.update
             if candidate_update.applied:
                 changed = candidate_update.conditions != request.current_conditions
@@ -157,6 +177,7 @@ class RecommendationService:
                         request.model_copy(deep=True),
                         update.conditions.model_copy(deep=True),
                         *args,
+                        work=work,
                     ),
                 )
                 if (

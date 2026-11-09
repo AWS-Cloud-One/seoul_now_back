@@ -86,6 +86,7 @@ def prepare_history(engine, history, tmp_path):
         (scripts / "versions/0010_pipeline_storage.py").unlink()
         (scripts / "versions/0011_topis_cycle_retention.py").unlink()
         (scripts / "versions/0012_direct_collection_storage.py").unlink()
+        (scripts / "versions/0013_recommendation_context.py").unlink()
         shutil.copyfile(LEGACY_MAP, scripts / "versions/0008_map_contract.py")
         command.upgrade(config(scripts), "0008")
     else:
@@ -229,7 +230,7 @@ def test_upgrade_converges_and_preserves_existing_rows(migration_database, tmp_p
     command.upgrade(config(), "head")
     command.check(config())
     with engine.connect() as c:
-        assert c.exec_driver_sql("SELECT version_num FROM alembic_version").scalar_one() == "0012"
+        assert c.exec_driver_sql("SELECT version_num FROM alembic_version").scalar_one() == "0013"
         assert set(sa.inspect(c).get_table_names()) - {"alembic_version", "spatial_ref_sys"} == set(
             Base.metadata.tables
         )

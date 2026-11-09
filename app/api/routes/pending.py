@@ -41,8 +41,11 @@ def conversation_response(outcome: ConversationOutcome, response: Response, requ
     "/chat/messages",
     tags=["chat"],
     response_model=ChatResponse,
-    summary="채팅·조건 변경·추천 — 연결 틀",
-    description="부분 초안의 연결 틀. AI·검증·추천 미연결 시 503이며 조건을 변경하지 않습니다.",
+    summary="채팅·조건 변경·추천",
+    description=(
+        "추천·조건 변경, 선택한 카드의 당시 이유 및 "
+        "현재 이동시간·등록 주차·관측 인구 질문을 처리합니다."
+    ),
     responses={code: {"model": ChatResponse} for code in ERRORS},
 )
 async def chat_messages(body: ChatRequest, response: Response, service: Service):
@@ -53,8 +56,8 @@ async def chat_messages(body: ChatRequest, response: Response, service: Service)
     "/recommendations/retry-routes",
     tags=["recommendations"],
     response_model=RecommendationEnvelope,
-    summary="같은 후보 경로 재확인 — 연결 틀",
-    description="보류 계약. 문맥 검증·경로 서비스 미연결 시 503. 새 후보를 탐색하지 않습니다.",
+    summary="같은 후보 경로 재확인",
+    description="일반 후보 문맥을 검증하고 원래 장소의 경로를 같은 조건으로 재확인·저장합니다.",
     responses={code: {"model": RecommendationEnvelope} for code in ERRORS},
 )
 async def retry_routes(body: RetryRoutesRequest, response: Response, service: Service):
@@ -67,15 +70,17 @@ async def retry_routes(body: RetryRoutesRequest, response: Response, service: Se
     "/places/{place_id}",
     tags=["places"],
     response_model=PlaceDetailResponse,
-    summary="추천 장소 상세 — 연결 틀",
+    summary="추천 장소 상세",
     responses=ERRORS,
-    description="보류 계약. Result-Context 필수. 문맥 검증·상세 서비스 미연결 시 503입니다.",
+    description="Result-Context 검증 후 저장된 장소와 현재 등록 주차 정보를 반환합니다.",
 )
 async def place_detail(
     place_id: PlaceId,
     service: Service,
+    response: Response,
     result_context: Annotated[str, Header(alias="Result-Context", min_length=1)],
 ):
+    response.headers["Cache-Control"] = "no-store"
     return envelope(await service.place_detail(place_id, result_context))
 
 
@@ -83,9 +88,9 @@ async def place_detail(
     "/places/{place_id}/travel-time",
     tags=["places"],
     response_model=TravelTimeResponse,
-    summary="이동시간 재확인 — 연결 틀",
+    summary="이동시간 재확인",
     responses=ERRORS,
-    description="보류 계약. 출발지·목적지는 검증된 문맥에서 얻습니다. 미연결 시 503입니다.",
+    description="결과의 원래 출발지·목적지로 ETA를 확인하고 정상 조회값을 60초간 재사용합니다.",
 )
 async def travel_time(
     place_id: PlaceId, body: TravelTimeRequest, response: Response, service: Service
