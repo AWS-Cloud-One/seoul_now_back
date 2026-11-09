@@ -13,6 +13,7 @@ from pydantic import (
 
 from app.schemas.common import ApiEnvelope, ContractModel
 from app.schemas.location import Location
+from app.schemas.origin import OriginChoiceValue, OriginClarificationContext
 
 PositiveInt = Annotated[int, Field(strict=True, gt=0)]
 GroupType = Literal["solo", "date", "friends", "family", "other"]
@@ -84,6 +85,36 @@ class Clarification(ContractModel):
     required_fields: list[str]
     pending_patch: ConditionsPatch
     choices: list[Choice]
+    origin_context: OriginClarificationContext | None = None
+
+    @model_validator(mode="after")
+    def origin_choices(self):
+        if self.origin_context is None:
+            return self
+        if self.origin_context.mode == "confirmed":
+            if (
+                self.choices
+                or "origin" in self.required_fields
+                or self.pending_patch.origin is None
+            ):
+                raise ValueError("확인된 출발지는 다른 조건 질문의 초안으로만 보관합니다.")
+            return self
+        if "origin" not in self.required_fields or len(self.choices) > 5:
+            raise ValueError("출발지 확인에는 origin 필드와 최대 5개의 후보가 필요합니다.")
+        values = [OriginChoiceValue.model_validate(choice.value) for choice in self.choices]
+        identifiers = [value.candidate_id for value in values]
+        if len(set(identifiers)) != len(identifiers):
+            raise ValueError("출발지 후보 식별자가 중복되었습니다.")
+        context = self.origin_context
+        if context.mode == "refine":
+            if values:
+                raise ValueError("재입력 안내에는 선택 후보를 넣지 않습니다.")
+        elif context.mode == "choose":
+            if len(values) < 2:
+                raise ValueError("후보 비교에는 두 개 이상의 후보가 필요합니다.")
+        elif not identifiers or identifiers[0] != context.preferred_candidate_id:
+            raise ValueError("우선 확인할 후보는 첫 번째 선택지여야 합니다.")
+        return self
 
     @field_serializer("pending_patch")
     def serialize_pending_patch(self, value, info):

@@ -10,6 +10,7 @@ from pydantic import AwareDatetime, Field, JsonValue, model_validator
 
 from app.schemas.common import ApiEnvelope, ContractModel, Information
 from app.schemas.location import Coordinates
+from app.schemas.origin import OriginAction
 from app.schemas.parking_nearby import ParkingSummary
 from app.schemas.recommendations import (
     Clarification,
@@ -35,6 +36,18 @@ class ChatRequest(RequestContext):
     recent_messages: list[RecentMessage] = Field(default_factory=list, max_length=10)
     pending_clarification: Clarification | None = None
     target: ChatTarget | None = None
+    origin_action: OriginAction | None = None
+
+    @model_validator(mode="after")
+    def matching_origin_action(self):
+        if self.origin_action is None:
+            return self
+        if self.target is not None:
+            raise ValueError("출발지 선택과 추천 카드 질문은 한 요청으로 처리하지 않습니다.")
+        context = self.pending_clarification.origin_context if self.pending_clarification else None
+        if context is not None and context.context_token != self.origin_action.context_token:
+            raise ValueError("출발지 선택과 추가 질문의 문맥이 다릅니다.")
+        return self
 
 
 class ChatStages(Stages):
