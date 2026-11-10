@@ -4,13 +4,14 @@ from datetime import datetime
 from decimal import Decimal
 from uuid import UUID
 
-from geoalchemy2 import Geometry
+from geoalchemy2 import Geography, Geometry
 from sqlalchemy import (
     Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
     ForeignKeyConstraint,
+    Index,
     Integer,
     Numeric,
     Text,
@@ -86,6 +87,16 @@ class MapFeature(Base):
     published_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+
+
+# Meter-distance searches cast the published geometry to geography. The geometry
+# index cannot serve that expression; retain the exact published coordinates.
+Index(
+    "idx_map_features_parking_geography",
+    MapFeature.geometry.cast(Geography),
+    postgresql_using="gist",
+    postgresql_where=(MapFeature.layer == "parking") & MapFeature.is_active.is_(True),
+)
 
 
 class PublishedObservation:

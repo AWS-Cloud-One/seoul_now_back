@@ -1,4 +1,4 @@
-"""Normalized models matching revision 0013, including recommendation snapshots."""
+"""Normalized models matching revision 0014, including spatial lookup indexes."""
 
 from .areas import (
     AdministrativeArea,
