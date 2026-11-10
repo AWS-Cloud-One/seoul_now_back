@@ -6,6 +6,7 @@ from app.models import PopulationLatest
 from app.modules.data_pipeline.normalizers.citydata import CityDataError
 from app.modules.data_pipeline.normalizers.citydata_sections import select_citydata, unwrap_citydata
 from app.modules.data_pipeline.normalizers.parking import CITYDATA_PARKING_SOURCE, normalize_parking
+from app.modules.data_pipeline.normalizers.parking_attributes import ParkingCountOutOfRange
 from app.modules.data_pipeline.normalizers.parking_resolution import ParkingCandidate
 from app.modules.data_pipeline.normalizers.storage_fields import population
 from app.modules.data_pipeline.pipelines.parking import CityDataParkingBatch
@@ -90,6 +91,9 @@ async def store_citydata(
             for index, row in enumerate(rows):
                 try:
                     record = normalize_parking(row, received_at, CITYDATA_PARKING_SOURCE)
+                except ParkingCountOutOfRange as exc:
+                    parking.reasons[str(exc)] += 1
+                    continue
                 except ValueError, TypeError, KeyError, AttributeError:
                     parking.reasons["invalid_parking_row"] += 1
                     continue

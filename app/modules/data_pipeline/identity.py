@@ -3,7 +3,7 @@
 import hashlib
 import json
 
-PROCESSOR_VERSION = "direct-2026-11-05.1"
+PROCESSOR_VERSION = "direct-2026-11-10.1"
 
 
 def fingerprint(value):

@@ -8,6 +8,7 @@ from sqlalchemy import select, update
 
 from app.modules.data_pipeline.identity import PROCESSOR_VERSION
 from app.modules.data_pipeline.normalizers import national_parking as normalizer
+from app.modules.data_pipeline.normalizers.parking_attributes import ParkingCountOutOfRange
 from app.repositories.parking_state import ParkingStateWriter
 
 
@@ -66,7 +67,11 @@ class NationalParkingWriter:
                 state.registration(record_id, replace(candidate, record=operation))
                 limitations.update(set(operation["field_issues"].values()))
             elif method == "PrkRealtimeInfo":
-                live = normalizer.availability(candidate.record, candidate.received_at)
+                try:
+                    live = normalizer.availability(candidate.record, candidate.received_at)
+                except ParkingCountOutOfRange as exc:
+                    reasons[str(exc)] += 1
+                    continue
                 state.availability(
                     record_id,
                     replace(
