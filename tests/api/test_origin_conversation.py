@@ -271,16 +271,20 @@ def test_missing_purpose_after_selection_asks_without_reconfirming_origin(client
     flow.kakao.keyword.assert_awaited_once()
 
 
-@pytest.mark.parametrize("legacy", [False, True])
-def test_ambiguous_headcount_remains_pending_after_origin_selection(client, context, flow, legacy):
+@pytest.mark.parametrize("general_question_first", [False, True])
+def test_ambiguous_headcount_remains_pending_after_origin_selection(
+    client, context, flow, general_question_first
+):
     extra = {}
-    if legacy:
-        extra["pending_clarification"] = {
-            "question": "정확히 몇 명인가요?",
-            "required_fields": ["origin", "headcount"],
-            "pending_patch": {"max_travel_seconds": 1200},
-            "choices": [],
-        }
+    if general_question_first:
+        # General questions now resume the server draft, not arbitrary client patches.
+        flow.parsed = Interpretation(
+            intent="clarification", clarification_fields=["headcount"], max_travel_seconds=1200
+        )
+        extra["pending_clarification"] = send(client, context, "6명 이상, 20분 이내")[
+            "clarification"
+        ]
+        flow.parsed = Interpretation(intent="recommendation", origin_name="시청역")
     else:
         flow.parsed = Interpretation(
             intent="clarification",

@@ -14,6 +14,8 @@ from app.schemas.recommendations import (
     ConditionUpdate,
     RecommendationRequest,
 )
+from app.services.chat_conditions import current_draft, is_condition_question, resolve_conditions
+from app.services.chat_tasks import ChatTasksMixin, current_tasks, needs_tasks
 from app.services.origin_context import (
     FIELD_LABELS,
     OriginContextStore,
@@ -33,7 +35,7 @@ FOLLOWUP_TOPICS = {
 }
 
 
-class RecommendationChatProcessor:
+class RecommendationChatProcessor(ChatTasksMixin):
     def __init__(
         self,
         model,
@@ -107,9 +109,15 @@ class RecommendationChatProcessor:
             try:
                 transition.before = origin_draft
                 data = await self.prepare(request, work, stored, origin_draft, transition)
-                outcome = ConversationOutcome(data)
+                draft = current_draft(request, work)
+                if data.kind == "answer" and draft is not None:
+                    draft.paused = True
+                    if data.answer.topic != "conversation":
+                        draft.unanswered_turns += 1
+                    data.pending_update = "clear"
+                outcome = ConversationOutcome(data, targets=tuple(work.answered_targets))
             except PendingFailure as exc:
-                outcome = ConversationOutcome(exc.data, exc)
+                outcome = ConversationOutcome(exc.data, exc, tuple(work.answered_targets))
             interpretation = outcome.response.stages.interpretation
             # Recheck after provider work, including accepted-condition failures.
             self.verify_target(request, stored)
@@ -124,6 +132,14 @@ class RecommendationChatProcessor:
                 self.origin_contexts.publish(transition, request, outcome)
 
         async def replay_guard(outcome, work):
+            for target in outcome.targets:
+                if target != request.target:
+                    await self.contexts.resolve(
+                        target.context_token,
+                        trip_id=request.trip_id,
+                        result_id=target.result_id,
+                        place_id=target.place_id,
+                    )
             question = outcome.response.clarification
             if question is not None and question.origin_context is not None:
                 self.require_origin_services()
@@ -205,8 +221,13 @@ class RecommendationChatProcessor:
                 parsed = Interpretation(intent="recommendation", origin_reply=fast)
             else:
                 model_request = request.model_copy(deep=True)
+                draft = current_draft(request, work) if origin_draft is None else None
                 if origin_draft is not None:
                     model_request.pending_clarification = origin_draft.clarification()
+                elif model_request.pending_clarification is None or is_condition_question(
+                    model_request.pending_clarification
+                ):
+                    model_request.pending_clarification = draft.clarification if draft else None
                 stage = "failed"
                 parsed = await interpret(
                     self.model,
@@ -215,9 +236,20 @@ class RecommendationChatProcessor:
                     origin_confirmation=origin_draft.interpretation_context()
                     if origin_draft
                     else None,
+                    condition_dialogue=draft.context() if draft else None,
+                    task_dialogue=current_tasks(request, work).context()
+                    if current_tasks(request, work)
+                    else None,
                 )
                 stage = "ok"
             self.verify_target(request, stored)
+            request = request.model_copy(deep=True)
+            if origin_draft is None and (
+                request.pending_clarification is None
+                or is_condition_question(request.pending_clarification)
+            ):
+                draft = current_draft(request, work)
+                request.pending_clarification = draft.clarification if draft else None
             data = await self.dispatch(
                 request, parsed, parsed.patch(), stored, work, origin_draft, transition
             )
@@ -267,8 +299,8 @@ class RecommendationChatProcessor:
             ),
         )
 
-    def clarify_intent(self, request):
-        question = "장소에 대해 질문할지, 조건을 바꿔 새 추천을 받을지 알려 주세요."
+    def clarify_intent(self, request, question=None):
+        question = question or "장소에 대해 질문할지, 조건을 바꿔 새 추천을 받을지 알려 주세요."
         return self.response(
             request,
             "clarification",
@@ -281,15 +313,77 @@ class RecommendationChatProcessor:
             ),
         )
 
+    def conversation_notice(self, request, message):
+        return self.response(
+            request,
+            "answer",
+            message,
+            pending_update="clear",
+            answer=Answer(
+                topic="conversation",
+                place_id=None,
+                text=message,
+                original_result_id=None,
+                original_recommended_at=None,
+                checked_at=None,
+                information=[],
+            ),
+        )
+
     async def dispatch(
         self, request, parsed, extracted_patch, stored, work, origin_draft, transition
     ):
+        if (
+            parsed.intent == "intent_clarification"
+            and not parsed.information_requests
+            and not parsed.recommendation_requested
+        ):
+            return self.clarify_intent(request, parsed.question)
+        if needs_tasks(request, parsed, work):
+            return await self.dispatch_tasks(
+                request, parsed, stored, work, origin_draft, transition
+            )
+        return await self.dispatch_single(
+            request, parsed, extracted_patch, stored, work, origin_draft, transition
+        )
+
+    async def dispatch_single(
+        self, request, parsed, extracted_patch, stored, work, origin_draft, transition
+    ):
+        if origin_draft is None and parsed.dialogue_action in {"cancel", "pause", "restart"}:
+            await self.execution.check_current(request, work)
+            if parsed.dialogue_action == "cancel":
+                work.condition_draft = None
+                return self.conversation_notice(
+                    request, "진행 중이던 조건 변경을 취소했어요. 기존 조건과 추천은 유지돼요."
+                )
+            if parsed.dialogue_action == "pause":
+                draft = current_draft(request, work)
+                if draft is not None or extracted_patch.model_fields_set or parsed.headcount_hint:
+                    work.condition_draft, _ = resolve_conditions(request, parsed, draft)
+                    work.condition_draft.paused = True
+                return self.conversation_notice(
+                    request,
+                    "조건 확인은 잠시 보류할게요. "
+                    "이어서 말씀하시면 보관한 초안에서 계속할 수 있어요.",
+                )
+            work.condition_draft = None
+            request.pending_clarification = None
+            if not extracted_patch.model_fields_set and not parsed.origin_name:
+                return self.conversation_notice(
+                    request, "진행 중이던 변경 초안을 비웠어요. 새로 원하는 조건을 알려 주세요."
+                )
         if parsed.intent == "intent_clarification":
-            return self.clarify_intent(request)
+            return self.clarify_intent(request, parsed.question)
         if parsed.target_ambiguous:
             return self.clarify_target(request, parsed.intent)
         if parsed.intent in FOLLOWUP_TOPICS:
-            if parsed.origin_name or parsed.origin_reply or extracted_patch.model_fields_set:
+            if (
+                parsed.origin_name
+                or parsed.origin_reply
+                or extracted_patch.model_fields_set
+                or parsed.headcount_hint
+            ):
                 return self.clarify_intent(request)
             if request.target is None:
                 return self.clarify_target(request, parsed.intent)
@@ -339,32 +433,36 @@ class RecommendationChatProcessor:
             return await self.prepare_origin(
                 request, parsed, extracted_patch, work, origin_draft, transition
             )
-        patch = (
-            request.pending_clarification.pending_patch.model_dump(exclude_unset=True)
-            if (
-                request.pending_clarification
-                and set(request.pending_clarification.required_fields)
-                <= set(Conditions.model_fields)
-            )
-            else {}
+        await self.execution.check_current(request, work)
+        previous = current_draft(request, work)
+        answered = previous is not None and bool(
+            set(previous.clarification.required_fields) & extracted_patch.model_fields_set
         )
-        patch.update(extracted_patch.model_dump(exclude_unset=True))
-        patch = ConditionsPatch.model_validate(patch)
-        merged = request.current_conditions.model_dump()
-        merged.update(patch.model_dump(exclude_unset=True))
-        conditions = Conditions.model_validate(merged)
-        required = list(dict.fromkeys(missing_conditions(conditions) + parsed.clarification_fields))
-        if required or parsed.intent == "clarification":
-            message = parsed.question or "출발지와 추천 목적을 확인해 주세요."
+        draft, warnings = resolve_conditions(request, parsed, previous)
+        question = draft.clarification
+        if question.required_fields or (
+            parsed.intent == "clarification"
+            and parsed.dialogue_action != "proceed"
+            and not answered
+        ):
+            work.condition_draft = draft
             return self.response(
                 request,
                 "clarification",
-                message,
-                clarification=Clarification(
-                    question=message, required_fields=required, pending_patch=patch, choices=[]
-                ),
+                question.question,
+                clarification=question,
             )
-        return await self.recommend(request, patch, work)
+        try:
+            data = await self.recommend(request, question.pending_patch, work)
+        except PendingFailure as exc:
+            if exc.data.condition_update.applied:
+                exc.data.warnings.extend(warnings)
+                exc.data.message = " ".join(w.message for w in warnings) + " " + exc.data.message
+            raise
+        data.warnings.extend(warnings)
+        if warnings:
+            data.message = " ".join(w.message for w in warnings) + " " + data.message
+        return data
 
     async def recommend(self, request, patch, work, origin_draft=None):
         await self.execution.check_current(request, work)
