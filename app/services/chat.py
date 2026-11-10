@@ -375,7 +375,7 @@ class RecommendationChatProcessor(ChatTasksMixin):
                 )
         if parsed.intent == "intent_clarification":
             return self.clarify_intent(request, parsed.question)
-        if parsed.target_ambiguous:
+        if parsed.target_ambiguous and parsed.intent in FOLLOWUP_TOPICS:
             return self.clarify_target(request, parsed.intent)
         if parsed.intent in FOLLOWUP_TOPICS:
             if (

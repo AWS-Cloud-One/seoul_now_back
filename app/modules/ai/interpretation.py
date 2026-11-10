@@ -27,9 +27,23 @@ class HeadcountHint(ContractModel):
 
 
 class InformationRequest(ContractModel):
-    topic: Literal["recommendation_reason", "travel_time", "parking", "population", "scope_notice"]
-    target: Literal["selected", "unresolved", "new_result"] = "selected"
-    quote: str = Field(min_length=1, max_length=120)
+    topic: Literal[
+        "recommendation_reason", "travel_time", "parking", "population", "scope_notice"
+    ] = Field(
+        description="population은 주변 관측 구역 인구. 매장 안의 사람 수·좌석은 scope_notice."
+    )
+    target: Literal["selected", "unresolved", "new_result"] = Field(
+        default="selected",
+        description="이번 질문이 검증된 selected_place를 가리킬 때만 selected. "
+        "다른 장소·다른 카드·이름이 일치하지 않는 대상은 unresolved.",
+    )
+    quote: str = Field(
+        min_length=1,
+        max_length=120,
+        description="이번 발언의 실제 인용. "
+        "'다른 카페', '매장 안', '주변' 등 대상·범위도 포함한다.",
+    )
+
 
 class Interpretation(ContractModel):
     intent: Literal[
@@ -56,23 +70,46 @@ class Interpretation(ContractModel):
     dialogue_action: Literal["continue", "pause", "cancel", "restart", "proceed"] = "continue"
     action_quote: str | None = Field(default=None, min_length=1, max_length=500)
     headcount_hint: HeadcountHint | None = None
-    origin_name: str | None = Field(default=None, min_length=1, max_length=100)
-    origin_hints: list[OriginHint] = Field(default_factory=list, max_length=10)
+    origin_name: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=100,
+        description="새 출발지를 지정/변경하는 발언의 검색어만. "
+        "'이 조건으로 성수동 카페 추천'의 성수동은 방문 지역이므로 null. "
+        "'성수동에서 출발'처럼 출발하는 곳을 지정할 때만 출발지로 추출한다.",
+    )
+    origin_hints: list[OriginHint] = Field(
+        default_factory=list,
+        max_length=10,
+        description="출발지 검색/후보 식별에 쓰이는 원문 단서만. "
+        "확정 출발지 유지, 목적 변경, 정보 질문에서는 []. 방문 지역을 출발지로 만들지 않는다.",
+    )
     origin_reply: OriginReply | None = None
     purposes: list[Purpose] | None = Field(
         default=None,
         min_length=1,
         max_length=2,
         description="이번 발언에서 방문 목적 또는 검색어를 새로 지정/변경할 때만 값. "
+        "'성수동 카페'는 purpose=cafe, keyword=성수동이며 출발지 변경이 아니다. "
         "시간·인원 답변, 정보 질문, 취소·보류·진행만 요청하면 반드시 null. "
         "현재 목적을 복사하지 않는다.",
     )
     group_type: GroupType | None = None
     age_groups: list[AgeGroup] | None = Field(default=None, min_length=1)
-    headcount: PositiveInt | None = None
-    max_travel_seconds: PositiveInt | None = None
-    clear_fields: list[Literal["group_type", "age_groups", "headcount", "max_travel_seconds"]] = Field(
-        default_factory=list
+    headcount: PositiveInt | None = Field(
+        default=None,
+        description="이번 발언에서 명시한 정확한 인원만. 기존 값·초안은 복사하지 않는다.",
+    )
+    max_travel_seconds: PositiveInt | None = Field(
+        default=None,
+        description="이번 발언에서 지정한 시간 제한만 초로 변환. 기존 제한은 복사하지 않는다.",
+    )
+    clear_fields: list[Literal["group_type", "age_groups", "headcount", "max_travel_seconds"]] = (
+        Field(
+            default_factory=list,
+            description="이번 발언에서 명시적으로 해제한 조건만. "
+            "다른 조건이나 출발지를 바꾸더라도 언급하지 않은 조건은 해제하지 않는다.",
+        )
     )
     question: str | None = None
     clarification_fields: list[
@@ -81,6 +118,8 @@ class Interpretation(ContractModel):
         default_factory=list,
         max_length=6,
         description="이번 발언에서 새로 확인이 필요한 항목만. "
+        "'인원도 바꿔줘'처럼 변경을 요청하고 새 값은 안 주면 headcount를 넣는다. "
+        "기존 인원이 있어도 새 인원을 대신할 수 없다. "
         "이전 질문은 서버가 유지하므로 복사하지 않는다.",
     )
 

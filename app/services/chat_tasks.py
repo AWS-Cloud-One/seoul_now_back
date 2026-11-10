@@ -192,7 +192,16 @@ class ChatTasksMixin:
             or parsed.origin_name
             or parsed.origin_reply
             or parsed.headcount_hint
-            or parsed.clarification_fields
+            # A read may carry an echoed old condition question. A condition
+            # request (including the legacy intent) must justify asking it again.
+            or (
+                parsed.clarification_fields
+                and (
+                    parsed.recommendation_requested
+                    or parsed.intent in {"recommendation", "clarification"}
+                    or not infos
+                )
+            )
         )
         wants_conditions = (
             parsed.recommendation_requested
