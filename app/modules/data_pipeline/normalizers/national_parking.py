@@ -4,7 +4,7 @@ from collections import Counter, defaultdict
 from datetime import time
 
 from app.modules.data_pipeline.normalizers.parking import parking_identity
-from app.modules.data_pipeline.normalizers.parking_attributes import text_value
+from app.modules.data_pipeline.normalizers.parking_attributes import parking_count, text_value
 from app.modules.data_pipeline.normalizers.values import number
 
 SOURCE = "national_parking"
@@ -121,7 +121,7 @@ def facility(row):
         row.get("prk_plce_entrc_la"),
         row.get("prk_plce_entrc_lo"),
     )
-    capacity = number(row.get("prk_cmprt_co"), integer=True)
+    capacity = parking_count(row.get("prk_cmprt_co"))
     payment = text_value(row.get("parkng_chrge_se"))
     paid = {"1": False, "2": True}.get(payment)
     issues = {}
@@ -261,8 +261,8 @@ def operation(row):
 
 
 def availability(row, received_at):
-    total = number(row.get("pkfc_ParkingLots_total"), integer=True)
-    available = number(row.get("pkfc_Available_ParkingLots_total"), integer=True)
+    total = parking_count(row.get("pkfc_ParkingLots_total"))
+    available = parking_count(row.get("pkfc_Available_ParkingLots_total"))
     reason = (
         "INVALID_OR_MISSING_COUNT"
         if total.value is None or available.value is None

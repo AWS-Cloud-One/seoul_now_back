@@ -1,7 +1,7 @@
 """P02 spatial lookup against published facilities, separate from legacy sorting."""
 
 from geoalchemy2 import Geography
-from sqlalchemy import String, cast, func, select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -34,7 +34,7 @@ class ParkingNearbyRepository:
                 MapFeature,
                 (
                     (MapFeature.layer == "parking")
-                    & (MapFeature.feature_id == cast(ParkingFacility.parking_id, String))
+                    & (MapFeature.parking_id == ParkingFacility.parking_id)
                 ),
             )
             .where(

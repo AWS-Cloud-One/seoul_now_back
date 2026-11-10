@@ -31,6 +31,9 @@ class RecommendationWork:
     search: SearchProgress
     invalidated: bool = False
     expired: bool = False
+    condition_draft: object = None
+    conversation_draft: object = None
+    answered_targets: list = field(default_factory=list)
 
 
 @dataclass
@@ -43,6 +46,8 @@ class TripProgress:
     search: SearchProgress = field(default_factory=SearchProgress)
     requests: dict = field(default_factory=dict)
     expired: bool = False
+    condition_draft: object = None
+    conversation_draft: object = None
 
     def expire(self):
         self.expired = True
@@ -50,6 +55,8 @@ class TripProgress:
         self.excluded.clear()
         self.search = SearchProgress()
         self.conditions = None
+        self.condition_draft = None
+        self.conversation_draft = None
 
 
 def fingerprint(value):
@@ -111,6 +118,8 @@ class MemoryProgressStore:
             excluded=set(entry.excluded),
             search=deepcopy(entry.search),
             expired=entry.expired,
+            condition_draft=deepcopy(entry.condition_draft),
+            conversation_draft=deepcopy(entry.conversation_draft),
         )
 
     async def run(
@@ -198,6 +207,10 @@ class MemoryProgressStore:
             cached_outcome = clone(outcome)
             update = outcome.response.condition_update
             if update.applied:
+                entry.condition_draft = None
+                entry.conversation_draft = (
+                    deepcopy(work.conversation_draft) if operation == "chat" else None
+                )
                 entry.conditions = update.conditions.model_copy(deep=True)
                 entry.version = update.version
                 entry.excluded.update(request.excluded_place_ids)
@@ -207,6 +220,9 @@ class MemoryProgressStore:
                     entry.excluded.update(
                         c["place"]["value"]["place_id"] for c in outcome.response.result["cards"]
                     )
+            elif operation == "chat" and outcome.failure is None:
+                entry.condition_draft = deepcopy(work.condition_draft)
+                entry.conversation_draft = deepcopy(work.conversation_draft)
             entry.requests[request_id] = signature, cached_outcome
             entry.expires_at = self.clock() + self.ttl_seconds
             return clone(outcome)

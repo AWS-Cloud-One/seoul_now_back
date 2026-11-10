@@ -1,5 +1,6 @@
 """Natural-language extraction uses current Conditions fields, not a second public API."""
 
+import re
 from pathlib import Path
 from typing import Literal
 
@@ -9,6 +10,39 @@ from app.core.exceptions import ServiceError
 from app.schemas.common import ContractModel
 from app.schemas.origin import OriginHint, OriginInterpretationContext, OriginReply
 from app.schemas.recommendations import AgeGroup, ConditionsPatch, GroupType, PositiveInt, Purpose
+
+
+class HeadcountHint(ContractModel):
+    minimum: PositiveInt | None
+    quote: str = Field(min_length=1, max_length=100)
+
+    @model_validator(mode="after")
+    def literal_minimum(self):
+        if self.minimum is None:
+            return self
+        matches = re.findall(r"(?<![\d.\-])([0-9]+)\s*명\s*이상|최소\s*([0-9]+)\s*명", self.quote)
+        if len(matches) != 1 or int(next(value for value in matches[0] if value)) != self.minimum:
+            raise ValueError("인원 기준값은 사용자가 명시한 최소 인원이어야 합니다.")
+        return self
+
+
+class InformationRequest(ContractModel):
+    topic: Literal[
+        "recommendation_reason", "travel_time", "parking", "population", "scope_notice"
+    ] = Field(
+        description="population은 주변 관측 구역 인구. 매장 안의 사람 수·좌석은 scope_notice."
+    )
+    target: Literal["selected", "unresolved", "new_result"] = Field(
+        default="selected",
+        description="이번 질문이 검증된 selected_place를 가리킬 때만 selected. "
+        "다른 장소·다른 카드·이름이 일치하지 않는 대상은 unresolved.",
+    )
+    quote: str = Field(
+        min_length=1,
+        max_length=120,
+        description="이번 발언의 실제 인용. "
+        "'다른 카페', '매장 안', '주변' 등 대상·범위도 포함한다.",
+    )
 
 
 class Interpretation(ContractModel):
@@ -23,21 +57,71 @@ class Interpretation(ContractModel):
         "intent_clarification",
     ]
     target_ambiguous: bool = False
-    origin_name: str | None = Field(default=None, min_length=1, max_length=100)
-    origin_hints: list[OriginHint] = Field(default_factory=list, max_length=10)
+    information_requests: list[InformationRequest] = Field(default_factory=list, max_length=5)
+    recommendation_requested: bool = False
+    recommendation_quote: str | None = Field(default=None, max_length=120)
+    request_relation: Literal[
+        "independent", "information_first", "recommendation_first", "conditional"
+    ] = "independent"
+    relation_quote: str | None = Field(default=None, max_length=120)
+    resume_information: bool = False
+    resume_quote: str | None = Field(default=None, max_length=120)
+    dialogue_scope: Literal["conditions", "information", "all"] = "conditions"
+    dialogue_action: Literal["continue", "pause", "cancel", "restart", "proceed"] = "continue"
+    action_quote: str | None = Field(default=None, min_length=1, max_length=500)
+    headcount_hint: HeadcountHint | None = None
+    origin_name: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=100,
+        description="새 출발지를 지정/변경하는 발언의 검색어만. "
+        "'이 조건으로 성수동 카페 추천'의 성수동은 방문 지역이므로 null. "
+        "'성수동에서 출발'처럼 출발하는 곳을 지정할 때만 출발지로 추출한다.",
+    )
+    origin_hints: list[OriginHint] = Field(
+        default_factory=list,
+        max_length=10,
+        description="출발지 검색/후보 식별에 쓰이는 원문 단서만. "
+        "확정 출발지 유지, 목적 변경, 정보 질문에서는 []. 방문 지역을 출발지로 만들지 않는다.",
+    )
     origin_reply: OriginReply | None = None
-    purposes: list[Purpose] | None = Field(default=None, min_length=1, max_length=2)
+    purposes: list[Purpose] | None = Field(
+        default=None,
+        min_length=1,
+        max_length=2,
+        description="이번 발언에서 방문 목적 또는 검색어를 새로 지정/변경할 때만 값. "
+        "'성수동 카페'는 purpose=cafe, keyword=성수동이며 출발지 변경이 아니다. "
+        "시간·인원 답변, 정보 질문, 취소·보류·진행만 요청하면 반드시 null. "
+        "현재 목적을 복사하지 않는다.",
+    )
     group_type: GroupType | None = None
     age_groups: list[AgeGroup] | None = Field(default=None, min_length=1)
-    headcount: PositiveInt | None = None
-    max_travel_seconds: PositiveInt | None = None
+    headcount: PositiveInt | None = Field(
+        default=None,
+        description="이번 발언에서 명시한 정확한 인원만. 기존 값·초안은 복사하지 않는다.",
+    )
+    max_travel_seconds: PositiveInt | None = Field(
+        default=None,
+        description="이번 발언에서 지정한 시간 제한만 초로 변환. 기존 제한은 복사하지 않는다.",
+    )
     clear_fields: list[Literal["group_type", "age_groups", "headcount", "max_travel_seconds"]] = (
-        Field(default_factory=list)
+        Field(
+            default_factory=list,
+            description="이번 발언에서 명시적으로 해제한 조건만. "
+            "다른 조건이나 출발지를 바꾸더라도 언급하지 않은 조건은 해제하지 않는다.",
+        )
     )
     question: str | None = None
     clarification_fields: list[
         Literal["origin", "purposes", "group_type", "age_groups", "headcount", "max_travel_seconds"]
-    ] = Field(default_factory=list, max_length=6)
+    ] = Field(
+        default_factory=list,
+        max_length=6,
+        description="이번 발언에서 새로 확인이 필요한 항목만. "
+        "'인원도 바꿔줘'처럼 변경을 요청하고 새 값은 안 주면 headcount를 넣는다. "
+        "기존 인원이 있어도 새 인원을 대신할 수 없다. "
+        "이전 질문은 서버가 유지하므로 복사하지 않는다.",
+    )
 
     @model_validator(mode="after")
     def origin_operation(self):
@@ -52,7 +136,18 @@ class Interpretation(ContractModel):
         values = self.model_dump(
             exclude={
                 "intent",
+                "information_requests",
+                "recommendation_requested",
+                "recommendation_quote",
+                "request_relation",
+                "relation_quote",
+                "resume_information",
+                "resume_quote",
+                "dialogue_scope",
                 "target_ambiguous",
+                "dialogue_action",
+                "action_quote",
+                "headcount_hint",
                 "origin_name",
                 "origin_hints",
                 "origin_reply",
@@ -112,6 +207,8 @@ async def interpret(
     *,
     selected_place=None,
     origin_confirmation: OriginInterpretationContext | None = None,
+    condition_dialogue=None,
+    task_dialogue=None,
 ):
     try:
         parsed = Interpretation.model_validate(
@@ -124,6 +221,8 @@ async def interpret(
                     "message": request.message,
                     # Only a verified display label/kind, never a bearer token or result IDs.
                     "selected_place": selected_place,
+                    "condition_dialogue": condition_dialogue,
+                    "task_dialogue": task_dialogue,
                     "current_conditions": request.current_conditions.model_dump(mode="json"),
                     "recent_messages": [
                         message.model_dump() for message in request.recent_messages
@@ -139,6 +238,45 @@ async def interpret(
             )
         )
         validate_origin_evidence(parsed, request, origin_confirmation)
+        # A stored prerequisite is context, not a newly imposed condition. In
+        # particular, do not re-arm it when the user explicitly proceeds without it.
+        if (
+            parsed.request_relation != "independent"
+            and parsed.relation_quote
+            and task_dialogue is not None
+            and parsed.relation_quote == task_dialogue.get("condition_quote")
+            and parsed.relation_quote not in request.message
+        ):
+            parsed.request_relation = "independent"
+            parsed.relation_quote = None
+        quotes = [item.quote for item in parsed.information_requests]
+        if parsed.recommendation_requested:
+            quotes.append(parsed.recommendation_quote)
+        if parsed.request_relation != "independent":
+            quotes.append(parsed.relation_quote)
+        if parsed.resume_information:
+            quotes.append(parsed.resume_quote)
+        if any(not quote or quote not in request.message for quote in quotes):
+            raise ValueError("복수 작업의 근거는 이번 사용자 발언이어야 합니다.")
+        if parsed.dialogue_action != "continue" and (
+            not parsed.action_quote or parsed.action_quote not in request.message
+        ):
+            raise ValueError("대화 작업의 근거는 이번 사용자 발언이어야 합니다.")
+        # Some models echo the server's old clue despite delta-only instructions.
+        # It is already verified and stored; do not mistake an echo for new evidence.
+        if (
+            parsed.headcount_hint is not None
+            and parsed.headcount_hint.quote not in request.message
+            and condition_dialogue is not None
+            and parsed.headcount_hint.model_dump() == condition_dialogue.get("headcount_hint")
+        ):
+            parsed.headcount_hint = None
+        if parsed.headcount_hint is not None and (
+            parsed.headcount_hint.quote not in request.message
+            or parsed.headcount is not None
+            or "headcount" in parsed.clear_fields
+        ):
+            raise ValueError("인원 범위를 정확한 인원 또는 조건 해제와 섞지 않습니다.")
         return parsed
     except ValueError, TypeError:
         raise ServiceError(

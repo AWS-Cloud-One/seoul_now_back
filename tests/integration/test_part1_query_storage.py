@@ -70,6 +70,29 @@ def test_part1_radius_pages_name_filter_and_area_savepoint(normalized_database):
                             geometry=f"SRID=4326;POINT({lon} 37.5665)",
                         )
                     )
+                # Enough distant rows to expose a full-layer distance scan. These
+                # stay outside both the search radius and the population polygon.
+                await session.flush()
+                await session.execute(
+                    text("""
+                    INSERT INTO parking_facilities (parking_id, name, location, identity_status)
+                    SELECT gen_random_uuid(), 'distant-' || n,
+                        ST_SetSRID(ST_MakePoint(127 + n * 0.00001, 37.65), 4326)::geography,
+                        'unverified'
+                    FROM generate_series(1, 1000) AS n
+                """)
+                )
+                await session.execute(
+                    text("""
+                    INSERT INTO map_features
+                        (layer, feature_id, parking_id, name, identity_status, geometry)
+                    SELECT 'parking', parking_id::text, parking_id, name, identity_status,
+                        location::geometry
+                    FROM parking_facilities WHERE name LIKE 'distant-%'
+                """)
+                )
+                await session.execute(text("ANALYZE map_features"))
+                await session.execute(text("ANALYZE parking_facilities"))
                 await session.commit()
             async with read_session_factory(engine)() as session:
                 center = Coordinates(latitude=37.5665, longitude=126.978)
@@ -78,6 +101,20 @@ def test_part1_radius_pages_name_filter_and_area_savepoint(normalized_database):
                 assert count == 2 and nearest == 0
                 names = await repo.list_facilities(center, 2000, name="beta", limit=10)
                 assert len(names) == 1 and names[0][0] == keys[1]
+                # Check the real plan instead of a machine-dependent time limit.
+                statement, _ = repo.spatial_query(center, 300)
+                sql = str(
+                    statement.compile(
+                        engine.sync_engine,
+                        compile_kwargs={
+                            "literal_binds": True,
+                        },
+                    )
+                )
+                plan = (await session.execute(text("EXPLAIN " + sql))).scalars().all()
+                assert any("idx_map_features_parking_geography" in line for line in plan), (
+                    "\n".join(plan)
+                )
                 provider = AsyncMock()
                 provider.region.return_value = {
                     "documents": [{"region_type": "B", "region_1depth_name": "서울특별시"}]

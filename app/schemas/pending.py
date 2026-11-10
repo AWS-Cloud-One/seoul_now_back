@@ -55,7 +55,14 @@ class ChatStages(Stages):
 
 
 class Answer(ContractModel):
-    topic: Literal["recommendation_reason", "travel_time", "parking", "population", "scope_notice"]
+    topic: Literal[
+        "recommendation_reason",
+        "travel_time",
+        "parking",
+        "population",
+        "scope_notice",
+        "conversation",
+    ]
     place_id: str | None
     text: str
     original_result_id: str | None
@@ -63,6 +70,24 @@ class Answer(ContractModel):
     checked_at: AwareDatetime | None
     # The information value differs by topic; no AI-generated facts are added here.
     information: list[Information[JsonValue]]
+
+
+class ChatTaskResult(ContractModel):
+    task_id: str
+    topic: Literal["recommendation_reason", "travel_time", "parking", "population", "scope_notice"]
+    status: Literal["completed", "needs_input", "failed", "waiting"]
+    message: str
+    answer: Answer | None = None
+    error_code: str | None = None
+    retryable: bool = False
+
+    @model_validator(mode="after")
+    def matching_status(self):
+        if (self.answer is not None) != (self.status == "completed"):
+            raise ValueError("완료한 정보 작업에만 답변이 필요합니다.")
+        if self.answer is not None and self.answer.topic != self.topic:
+            raise ValueError("정보 작업과 답변 주제가 다릅니다.")
+        return self
 
 
 class ChatData(RecommendationResponse):
@@ -76,6 +101,9 @@ class ChatData(RecommendationResponse):
     ]
     stages: ChatStages
     answer: Answer | None = None
+    pending_update: Literal["keep", "clear"] = "keep"
+    task_results: list[ChatTaskResult] = Field(default_factory=list, max_length=5)
+    task_clarification: Clarification | None = None
 
     @model_validator(mode="after")
     def matching_answer(self):
@@ -83,6 +111,12 @@ class ChatData(RecommendationResponse):
             raise ValueError("answer는 답변 종류에서만 필요합니다.")
         if self.kind in {"answer", "clarification"} and self.condition_update.applied:
             raise ValueError("답변·추가 질문은 조건을 적용하지 않습니다.")
+        if self.task_clarification is not None and (
+            self.task_clarification.origin_context is not None
+            or self.task_clarification.pending_patch.model_fields_set
+            or self.task_clarification.required_fields != ["target"]
+        ):
+            raise ValueError("정보 작업의 추가 질문은 대상 선택에만 사용합니다.")
         return self
 
 

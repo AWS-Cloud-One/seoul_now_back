@@ -22,11 +22,13 @@ def missing(value):
     return value is None or (isinstance(value, str) and not value.strip())
 
 
-def number(value, *, integer=False):
+def number(value, *, integer=False, maximum=None):
     if missing(value):
         return FieldValue(reason="MISSING_VALUE")
     if isinstance(value, bool) or not isinstance(value, (str, int, float, Decimal)):
         return FieldValue(reason="INVALID_NUMBER")
+    if maximum is not None and isinstance(value, int) and value > maximum:
+        return FieldValue(reason="INTEGER_OUT_OF_RANGE" if integer else "NUMBER_OUT_OF_RANGE")
     try:
         parsed = Decimal(str(value).strip())
     except InvalidOperation, ValueError:
@@ -35,6 +37,10 @@ def number(value, *, integer=False):
         return FieldValue(reason="INVALID_NUMBER")
     if integer and parsed != parsed.to_integral_value():
         return FieldValue(reason="INVALID_INTEGER")
+    # Compare as Decimal before int(): even enormous exponent-form input must
+    # be rejected without constructing an equally enormous Python integer.
+    if maximum is not None and parsed > maximum:
+        return FieldValue(reason="INTEGER_OUT_OF_RANGE" if integer else "NUMBER_OUT_OF_RANGE")
     return FieldValue(int(parsed) if integer else parsed)
 
 

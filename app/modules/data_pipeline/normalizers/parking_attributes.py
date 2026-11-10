@@ -8,6 +8,20 @@ SOURCE = "seoul_getparkinfo"
 MUNICIPAL_PARKING_SOURCE = "seoul_municipal_parking"
 CITYDATA_PARKING_SOURCE = "seoul_citydata_prk"
 
+
+class ParkingCountOutOfRange(ValueError):
+    def __init__(self):
+        super().__init__("parking_count_out_of_range")
+
+
+def parking_count(value):
+    """Reject the source row before registration or attempt Integer columns are written."""
+    parsed = number(value, integer=True, maximum=2**31 - 1)
+    if parsed.reason == "INTEGER_OUT_OF_RANGE":
+        raise ParkingCountOutOfRange()
+    return parsed
+
+
 # Source fields remain explicit: similarly named codes need not share meanings.
 FEE_FIELDS = {
     SOURCE: ("PRK_HM", "PRK_CRG", "ADD_UNIT_TM_MNT", "ADD_CRG", "DLY_MAX_CRG"),
@@ -179,9 +193,8 @@ def normalize_attributes(row, collected_at, source):
 
     capacity = parse(
         "registered_capacity",
-        number,
+        parking_count,
         row.get("CPCTY" if source == CITYDATA_PARKING_SOURCE else "TPKCT"),
-        integer=True,
     )
     updated = (
         parse("source_updated_at", timestamp, row.get("LAST_DATA_SYNC_TM"), not_after=collected_at)
@@ -231,9 +244,8 @@ def _availability(row, source, total, received_at, parse, issues):
     )
     count = parse(
         "availability.occupied_spaces" if municipal else "availability.reported_available_spaces",
-        number,
+        parking_count,
         row.get("NOW_PRK_VHCL_CNT" if municipal else "CUR_PRK_CNT"),
-        integer=True,
     )
     reason = None
     if state != "provided":

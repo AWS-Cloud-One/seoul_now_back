@@ -336,11 +336,10 @@ def test_expiry_during_current_lookup_blocks_answer(client, followups, current_r
     "parsed,field",
     [
         (Interpretation(intent="recommendation_reason", target_ambiguous=True), "target"),
-        (Interpretation(intent="recommendation_reason", headcount=3), "intent"),
         (Interpretation(intent="intent_clarification"), "intent"),
     ],
 )
-def test_ambiguous_target_or_mixed_operations_require_confirmation(
+def test_ambiguous_target_or_unspecified_intent_requires_confirmation(
     client, followups, parsed, field
 ):
     body, _, model, _, _, _ = followups

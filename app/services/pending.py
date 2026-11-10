@@ -40,6 +40,8 @@ class PendingFailure(ServiceError):
 class ConversationOutcome:
     response: ChatData | RecommendationResponse
     failure: ServiceError | None = None
+    # Private replay bindings; never serialized into the public response.
+    targets: tuple = ()
 
 
 class ChatProcessor(Protocol):
