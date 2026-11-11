@@ -1,0 +1,65 @@
+# One-shot DB maintenance Job rendered by deploy.sh (string.Template placeholders).
+# Same shape as the verified W4 Jobs: Pod Identity role per service account,
+# Secret bootstrap through the image ENTRYPOINT, script delivered by ConfigMap.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ${JOB_NAME}
+  labels:
+    app.kubernetes.io/name: seoul-now
+    app.kubernetes.io/component: db-maintenance
+    seoul-now/deploy-run: ${RUN_ID}
+spec:
+  activeDeadlineSeconds: 600
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: seoul-now
+        app.kubernetes.io/component: db-maintenance
+        seoul-now/deploy-run: ${RUN_ID}
+    spec:
+      serviceAccountName: ${SERVICE_ACCOUNT}
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      nodeSelector:
+        kubernetes.io/os: linux
+        kubernetes.io/arch: arm64
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: work
+          image: ${IMAGE}
+          args: ["sh", "-c", "${SCRIPT}"]
+          env:
+            - {name: AWS_REGION, value: ap-northeast-2}
+            - {name: PYTHONPATH, value: /app}
+            - {name: APP_RUNTIME_ENV, value: aws}
+            - {name: APP_RUNTIME_ROLE, value: ${RUNTIME_ROLE}}
+            - {name: APP_SETTINGS_SECRET_ID, value: "${SECRET_ID}"}
+            - {name: APP_DB_SSLMODE, value: verify-full}
+            - {name: APP_DB_SSLROOTCERT, value: /app/certs/rds/ap-northeast-2-bundle.pem}
+            - {name: APP_AI_PROVIDER, value: bedrock}
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: 1000m, memory: 1Gi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - {name: scripts, mountPath: /work, readOnly: true}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: scripts
+          configMap:
+            name: ${JOB_NAME}
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi

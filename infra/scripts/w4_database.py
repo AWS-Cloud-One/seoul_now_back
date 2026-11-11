@@ -246,13 +246,39 @@ def migrate(settings):
         )
 
 
+def revision(settings):
+    """Report the database revision and the migrations shipped in this image, read-only.
+
+    Runs with the image being deployed (possibly an older one), before anything
+    changes; infra/cicd/db_compat.py decides from this whether the deploy may proceed.
+    """
+    if settings.runtime_role != "migration":
+        raise RuntimeError("migration_role_required")
+    scripts = ScriptDirectory.from_config(Config("alembic.ini"))
+    with connect(settings) as conn:
+        conn.execute("SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY")
+        rows = conn.execute("SELECT version_num FROM alembic_version").fetchall()
+    if len(rows) != 1:
+        raise RuntimeError("unexpected_revision")
+    emit(
+        "w4_revision",
+        status="pass",
+        db_revision=rows[0][0],
+        image_head=scripts.get_current_head(),
+        image_revisions=sorted(item.revision for item in scripts.walk_revisions()),
+    )
+
+
+OPERATIONS = {"migrate": migrate, "grants": grants, "probe": probe, "revision": revision}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=("migrate", "grants", "probe"))
+    parser.add_argument("operation", choices=tuple(OPERATIONS))
     args = parser.parse_args()
     try:
         settings = Settings()
-        {"migrate": migrate, "grants": grants, "probe": probe}[args.operation](settings)
+        OPERATIONS[args.operation](settings)
         return 0
     except Exception as error:
         emit(
