@@ -11,7 +11,7 @@ from app.clients.kakao import KakaoLocalClient
 from app.clients.query_kakao import KakaoQueryClient
 from app.core.config import Settings
 from app.core.exceptions import ServiceError
-from app.modules.ai.providers.openai import OpenAIProvider
+from app.modules.ai.providers.base import AIProvider
 from app.modules.recommendation.engine import DestinationRecommendationEngine
 from app.repositories.area_queries import AreaQueryRepository
 from app.repositories.health import HealthRepository
@@ -25,7 +25,11 @@ from app.services.area_queries import AreaQueryService
 from app.services.chat import RecommendationChatProcessor
 from app.services.current_place_answers import CurrentPlaceAnswers
 from app.services.health import HealthService
-from app.services.locations import LocationResolveService, LocationSearchService
+from app.services.locations import (
+    LocationResolveService,
+    LocationSearchService,
+    ProviderLocationPagination,
+)
 from app.services.map import MapService
 from app.services.origin_context import OriginContextStore
 from app.services.origin_search import OriginSearchService
@@ -123,10 +127,16 @@ def get_map_service(session: Session) -> MapService:
     return MapService(MapRepository(session))
 
 
+def shared_cursors(request: Request):
+    """Cursors shared through PostgreSQL; None falls back to the in-process store."""
+    return getattr(request.app.state, "query_cursors", None)
+
+
 def get_location_search_service(
+    request: Request,
     provider: Annotated[KakaoLocalClient, Depends(get_kakao_local_client)],
 ) -> LocationSearchService:
-    return LocationSearchService(provider)
+    return LocationSearchService(provider, ProviderLocationPagination(shared_cursors(request)))
 
 
 def get_location_resolve_service(
@@ -136,14 +146,17 @@ def get_location_resolve_service(
 
 
 def get_parking_nearby_service(
+    request: Request,
     session: Session,
     provider: Annotated[KakaoLocalClient, Depends(get_kakao_local_client)],
 ) -> ParkingNearbyService:
-    return ParkingNearbyService(ParkingNearbyRepository(session), provider)
+    return ParkingNearbyService(
+        ParkingNearbyRepository(session), provider, cursors=shared_cursors(request)
+    )
 
 
-def get_parking_search_service(session: Session) -> ParkingSearchService:
-    return ParkingSearchService(ParkingNearbyRepository(session))
+def get_parking_search_service(request: Request, session: Session) -> ParkingSearchService:
+    return ParkingSearchService(ParkingNearbyRepository(session), cursors=shared_cursors(request))
 
 
 def get_place_query_service(
@@ -154,6 +167,7 @@ def get_place_query_service(
     key = settings.kakao_rest_api_key.get_secret_value().strip()
     return PlaceQueryService(
         KakaoQueryClient(provider),
+        cursors=shared_cursors(request),
         driving_requests=request.app.state.driving_requests,
         cache_namespace=hashlib.sha256(key.encode()).hexdigest(),
     )
@@ -191,11 +205,8 @@ def get_area_query_service(
     )
 
 
-def get_ai_provider(
-    http: Annotated[httpx.AsyncClient, Depends(get_http_client)],
-    settings: Annotated[Settings, Depends(get_settings)],
-) -> OpenAIProvider:
-    return OpenAIProvider(http, settings)
+def get_ai_provider(request: Request) -> AIProvider:
+    return request.app.state.ai_provider
 
 
 def get_current_place_answers(
@@ -238,7 +249,7 @@ def get_recommendation_geography(
 
 def get_recommendation_service(
     source: Annotated[RecommendationSource, Depends(get_recommendation_source)],
-    model: Annotated[OpenAIProvider, Depends(get_ai_provider)],
+    model: Annotated[AIProvider, Depends(get_ai_provider)],
     execution: Annotated[RecommendationExecution, Depends(get_recommendation_execution)],
     geography: Annotated[RecommendationGeographyService, Depends(get_recommendation_geography)],
 ) -> RecommendationService:
@@ -265,7 +276,7 @@ def get_origin_search_service(
 
 
 def get_pending_service(
-    model: Annotated[OpenAIProvider, Depends(get_ai_provider)],
+    model: Annotated[AIProvider, Depends(get_ai_provider)],
     provider: Annotated[KakaoLocalClient, Depends(get_kakao_local_client)],
     recommendations: Annotated[RecommendationService, Depends(get_recommendation_service)],
     contexts: Annotated[RecommendationContextService, Depends(get_context_reader)],

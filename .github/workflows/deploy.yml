@@ -1,0 +1,138 @@
+# Deploy main to the lab EKS cluster after CI passes, or roll back to an earlier
+# pipeline image by hand. Uses GitHub OIDC; no AWS keys are stored in GitHub.
+#   release (CI on main, or manual without image_digest):
+#     arm64 production image -> ECR tag git-<sha> (immutable, reused on re-run)
+#     -> CodeBuild deploy.sh: DB compat check, migrate + grants, API probe, rollout
+#   rollback (manual with image_digest of a git-<sha> image):
+#     manifests and config of <sha>, scripts and migration graph of main
+#     -> CodeBuild deploy.sh: DB compat check (DB never changed), rollout
+#   Both: public health check; any failure restores the pre-run revision.
+name: Deploy
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      image_digest:
+        description: Roll back to this earlier pipeline image (sha256:..., tagged git-<sha>). Leave empty to build and release the selected commit.
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-lab
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: ap-northeast-2
+  DEPLOY_ROLE_ARN: arn:aws:iam::963701985499:role/seoul-now-lab-github-deploy
+  REGISTRY: 963701985499.dkr.ecr.ap-northeast-2.amazonaws.com
+  ECR_REPOSITORY: seoul-now/lab/backend
+  ARTIFACT_BUCKET: seoul-now-lab-963701985499-ap-northeast-2-cicd
+  DEPLOY_PROJECT: seoul-now-lab-deploy
+
+jobs:
+  deploy:
+    name: Build and deploy
+    # Only a successful CI run for a push to main of this repository, or a manual run.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    # No `environment:` here: it would change the OIDC subject to
+    # repo:...:environment:<name>, which the deploy role's trust policy does not accept
+    # (it trusts repo:...:ref:refs/heads/main only).
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      GIT_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+      REQUESTED_DIGEST: ${{ inputs.image_digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.GIT_SHA }}
+          # Full history: a rollback reads the manifests of the older image's commit.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ env.DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: deploy-${{ github.run_id }}
+
+      - name: Resolve image
+        run: |
+          set -euo pipefail
+          if [[ -n "$REQUESTED_DIGEST" ]]; then
+            [[ "$REQUESTED_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "invalid image_digest" >&2; exit 1; }
+            tags="$(aws ecr describe-images --repository-name "$ECR_REPOSITORY" \
+              --image-ids "imageDigest=$REQUESTED_DIGEST" \
+              --query 'imageDetails[0].imageTags' --output text)"
+            # A digest may have several commit tags: refuse ambiguity instead of
+            # selecting a manifest/config from the order returned by ECR.
+            target="$(python3 infra/cicd/resolve_manifest.py <<<"$tags")"
+            git merge-base --is-ancestor "$target" HEAD \
+              || { echo "commit $target is not in the history of $GIT_SHA" >&2; exit 1; }
+            {
+              echo "IMAGE_DIGEST=$REQUESTED_DIGEST"
+              echo "DEPLOY_ACTION=rollback"
+              echo "MANIFEST_SHA=$target"
+            } >> "$GITHUB_ENV"
+            echo "Rolling back to $REQUESTED_DIGEST (commit $target)"
+            exit 0
+          fi
+          {
+            echo "DEPLOY_ACTION=release"
+            echo "MANIFEST_SHA=$GIT_SHA"
+          } >> "$GITHUB_ENV"
+          tag="git-${GIT_SHA}"
+          if digest="$(aws ecr describe-images --repository-name "$ECR_REPOSITORY" \
+              --image-ids "imageTag=$tag" --query 'imageDetails[0].imageDigest' --output text 2>/dev/null)"; then
+            echo "Image $tag already in ECR"
+          else
+            aws ecr get-login-password | docker login --username AWS --password-stdin "$REGISTRY"
+            docker build --target production --provenance=false -t "$REGISTRY/$ECR_REPOSITORY:$tag" .
+            docker push "$REGISTRY/$ECR_REPOSITORY:$tag"
+            digest="$(aws ecr describe-images --repository-name "$ECR_REPOSITORY" \
+              --image-ids "imageTag=$tag" --query 'imageDetails[0].imageDigest' --output text)"
+          fi
+          echo "IMAGE_DIGEST=$digest" >> "$GITHUB_ENV"
+          echo "Image $tag = $digest"
+
+      - name: Upload deploy bundle
+        run: |
+          set -euo pipefail
+          bash infra/cicd/make-bundle.sh bundle.zip "$MANIFEST_SHA"
+          key="deploy/${MANIFEST_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.zip"
+          aws s3 cp bundle.zip "s3://${ARTIFACT_BUCKET}/${key}" --only-show-errors
+          echo "BUNDLE_KEY=$key" >> "$GITHUB_ENV"
+
+      - name: Deploy in VPC (CodeBuild)
+        env:
+          DEPLOY_MODE: deploy
+          # Commit whose manifests are deployed (labels and logs).
+          GIT_SHA: ${{ env.MANIFEST_SHA }}
+        run: bash infra/cicd/run-codebuild.sh
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### Deploy"
+            echo "- action: ${DEPLOY_ACTION:-unresolved}"
+            echo "- workflow commit: \`${GIT_SHA}\`"
+            echo "- manifests: \`${MANIFEST_SHA:-unresolved}\`"
+            echo "- image: \`${IMAGE_DIGEST:-unresolved}\`"
+            echo "- result: ${{ job.status }}"
+            echo "- rollback: run this workflow on main with the image_digest of an earlier git-<sha> image"
+          } >> "$GITHUB_STEP_SUMMARY"

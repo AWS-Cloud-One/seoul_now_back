@@ -10,6 +10,7 @@ from sqlalchemy import update
 from app.models import ChatSession
 from app.modules.ai.interpretation import Interpretation
 from tests.api.test_chat_tasks import info
+from tests.fixtures.state_inspection import origin_draft, trip_state
 from tests.integration.test_recommendation_chat_api_storage import (
     C01,
     R01,
@@ -100,10 +101,7 @@ def test_cancel_change_still_answers_the_requested_reason(normalized_database, i
             )
             assert not data["condition_update"]["applied"]
             assert data["task_results"][0]["status"] == "completed"
-            assert (
-                env.app.state.recommendation_progress.trip(current["trip_id"]).condition_draft
-                is None
-            )
+            assert (await trip_state(env.app, current["trip_id"])).condition_draft is None
             assert await counts(env) == (1, 1, 1)
 
     asyncio.run(run())
@@ -318,7 +316,7 @@ def test_commit_failure_preserves_draft_and_retry_does_not_lose_change(normalize
                 clarification_fields=["headcount"],
                 information_requests=[info("recommendation_reason", "이유")],
             )
-            before = deepcopy(env.app.state.recommendation_progress.trip(current["trip_id"]))
+            before = deepcopy(await trip_state(env.app, current["trip_id"]))
             writers = env.app.state.write_session_factory
 
             async def break_commit(session):
@@ -330,9 +328,8 @@ def test_commit_failure_preserves_draft_and_retry_does_not_lose_change(normalize
             failed = (await post(env, C01, value, 503)).json()["data"]
             assert not failed["condition_update"]["applied"]
             assert (
-                env.app.state.recommendation_progress.trip(current["trip_id"]).condition_draft
-                == before.condition_draft
-            )
+                await trip_state(env.app, current["trip_id"])
+            ).condition_draft == before.condition_draft
             env.app.state.write_session_factory = writers
             value["request_id"] = str(uuid4())
             accepted = (await post(env, C01, value)).json()["data"]
@@ -371,7 +368,7 @@ def test_origin_confirmation_can_coexist_with_reason_without_losing_its_token(no
             read["pending_clarification"] = question
             answer = (await post(env, C01, read)).json()["data"]
             assert not answer["condition_update"]["applied"]
-            assert env.app.state.origin_contexts.entries[token].used_by is None
+            assert (await origin_draft(env.app, token)).used_by is None
             selected = (await post(env, C01, select_origin(current, question))).json()["data"]
             assert selected["condition_update"]["conditions"]["headcount"] == 4
             assert (

@@ -28,6 +28,6 @@ def test_default_evaluation_does_not_construct_a_provider(monkeypatch, capsys):
         pytest.fail("Model calls require explicit --live")
 
     monkeypatch.setattr("sys.argv", ["chat_language"])
-    monkeypatch.setattr("tests.evaluations.chat_language.OpenAIProvider", unexpected)
+    monkeypatch.setattr("tests.evaluations.chat_language.open_ai_provider", unexpected)
     assert main() == 0
     assert '"live": false' in capsys.readouterr().out

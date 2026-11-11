@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from app.core.config import Settings
+from app.db.connection import connection_args
 
 
 def create_engine(settings: Settings) -> AsyncEngine:
@@ -16,7 +17,7 @@ def create_engine(settings: Settings) -> AsyncEngine:
         pool_size=5,
         max_overflow=5,
         pool_timeout=settings.db_connect_timeout_seconds,
-        connect_args={"connect_timeout": settings.db_connect_timeout_seconds},
+        connect_args=connection_args(settings),
     )
 
 

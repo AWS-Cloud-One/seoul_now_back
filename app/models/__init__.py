@@ -1,4 +1,4 @@
-"""Normalized models matching revision 0014, including spatial lookup indexes."""
+"""Normalized models matching revision 0016, including spatial lookup indexes."""
 
 from .areas import (
     AdministrativeArea,
@@ -36,6 +36,13 @@ from .recommendation import (
     RecommendationEvidence,
     RecommendationResult,
     RecommendationSearchArea,
+)
+from .runtime_state import (
+    OriginContextRecord,
+    QueryCursor,
+    ReadReplayEntry,
+    TripProgressRecord,
+    TripRequestRecord,
 )
 from .sensors import PedestrianSensor, PedestrianSensorLatest
 from .traffic import (
@@ -79,6 +86,11 @@ __all__ = [
     "PopulationArea",
     "PopulationLatest",
     "PopulationAttemptLatest",
+    "OriginContextRecord",
+    "QueryCursor",
+    "ReadReplayEntry",
+    "TripProgressRecord",
+    "TripRequestRecord",
     "RegionBoundary",
     "RoadAreaMapping",
     "RoadLink",

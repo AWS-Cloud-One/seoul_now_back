@@ -1,18 +1,22 @@
 """Origin dialogue over HTTP, real PostGIS and commit boundaries; external I/O is mocked."""
 
 import asyncio
+from contextlib import asynccontextmanager
 from copy import deepcopy
-from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from uuid import UUID, uuid4
 
+import httpx
 import pytest
 from sqlalchemy import update
 
+from app.main import create_app
 from app.models import ChatSession
 from app.modules.ai.interpretation import Interpretation
 from app.repositories.recommendation_conditions import RecommendationConditionsRepository
 from app.repositories.recommendation_context import RecommendationContextRepository
 from app.services.recommendation_context import RecommendationContextService
+from tests.fixtures.state_inspection import expire_origin_drafts, origin_draft, trip_state
 from tests.integration.test_backend_integrated_flow import integrated_runtime, provider_calls
 from tests.integration.test_recommendation_chat_api_storage import (
     C01,
@@ -109,7 +113,7 @@ def test_confirm_select_commit_replay_and_historical_questions_with_real_storage
                 b = asyncio.create_task(post(env, C01, deepcopy(chosen)))
                 assert await counts(env) == (0, 0, 0)
                 token = question["origin_context"]["context_token"]
-                assert env.app.state.origin_contexts.entries[token].used_by is None
+                assert (await origin_draft(env.app, token)).used_by is None
                 assert not a.done() and not b.done()
                 release.set()
                 one, two = await asyncio.wait_for(asyncio.gather(a, b), 5)
@@ -220,11 +224,9 @@ def test_expired_and_outdated_questions_preserve_persisted_trip(normalized_datab
             saved = (await post(env, R01, original)).json()["data"]
             base = following(original, saved)
             setup_origins(env)
-            clock = [datetime.now(UTC)]
-            env.app.state.origin_contexts.clock = lambda: clock[0]
             query = chat(base, message="시청역에서 출발")
             question = (await post(env, C01, query)).json()["data"]["clarification"]
-            clock[0] += timedelta(minutes=5)
+            await expire_origin_drafts(env.app)
             calls = len(env.provider.calls), env.model.complete.await_count
             expired = select_origin(base, question)
             assert_unapplied((await post(env, C01, expired, 410)).json()["data"], base)
@@ -234,7 +236,7 @@ def test_expired_and_outdated_questions_preserve_persisted_trip(normalized_datab
             assert (await current(env, base)).conditions.model_dump(mode="json") == base[
                 "current_conditions"
             ]
-            assert not env.app.state.recommendation_progress.trip(UUID(base["trip_id"])).expired
+            assert not (await trip_state(env.app, UUID(base["trip_id"]))).expired
             query["request_id"] = str(uuid4())
             fresh = (await post(env, C01, query)).json()["data"]["clarification"]
             changed = following(original, saved)
@@ -274,7 +276,7 @@ def test_rolled_back_selection_keeps_server_choice_for_new_request(normalized_da
             assert_unapplied(failed.json()["data"], original)
             assert await counts(env) == (0, 0, 0)
             token = question["origin_context"]["context_token"]
-            assert env.app.state.origin_contexts.entries[token].used_by is None
+            assert (await origin_draft(env.app, token)).used_by is None
             calls = len(env.provider.calls), env.model.complete.await_count
             assert (await post(env, C01, chosen, 503)).json()["data"] == failed.json()["data"]
             assert calls == (len(env.provider.calls), env.model.complete.await_count)
@@ -286,9 +288,7 @@ def test_rolled_back_selection_keeps_server_choice_for_new_request(normalized_da
                 recovered["condition_update"]["conditions"]["origin"]
                 == question["choices"][0]["value"]["location"]
             )
-            assert env.app.state.origin_contexts.entries[token].used_by == UUID(
-                chosen["request_id"]
-            )
+            assert (await origin_draft(env.app, token)).used_by == UUID(chosen["request_id"])
 
     asyncio.run(run())
 
@@ -325,3 +325,62 @@ def test_unusable_origin_never_writes_conditions_or_runs_routes(normalized_datab
             assert not provider_calls(env, "/v1/directions")
 
     asyncio.run(run())
+
+
+@asynccontextmanager
+async def second_pod(env):
+    """Another API process on the same database and the same external providers."""
+    app = create_app(env.app.state.settings)
+    app.dependency_overrides.update(env.app.dependency_overrides)
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app), base_url="http://test"
+        ) as client:
+            yield SimpleNamespace(**{**vars(env), "app": app, "client": client})
+
+
+def test_conversation_moves_between_pods_mid_origin_question(normalized_database):
+    """A rolling update sends the next turn to a different pod; nothing is lost."""
+
+    async def run():
+        async with integrated_runtime(normalized_database) as a, second_pod(a) as b:
+            original = body()
+            saved = (await post(a, R01, original)).json()["data"]
+            base = following(original, saved)
+
+            # Pod A asks which origin; pod B receives the answer.
+            setup_origins(a)
+            question = (await post(a, C01, chat(base, message="시청역에서 출발"))).json()["data"][
+                "clarification"
+            ]
+            assert question["origin_context"]["mode"] == "choose"
+            interpreted = interpretation_count(a)
+            chosen = select_origin(base, question, 1)
+            selected = (await post(b, C01, chosen)).json()["data"]
+            assert selected["kind"] == "recommendation"
+            assert selected["stages"]["interpretation"] == "skipped"
+            accepted = selected["condition_update"]
+            assert accepted["applied"] and accepted["version"] == 1
+            assert accepted["conditions"]["origin"] == question["choices"][1]["value"]["location"]
+            assert interpretation_count(a) == interpreted  # no AI call for the selection
+            assert set(ids(saved)).isdisjoint(ids(selected))  # exclusions came along
+
+            # The same request retried on pod A replays B's answer without any provider.
+            calls = len(a.provider.calls), a.model.complete.await_count
+            assert (await post(a, C01, deepcopy(chosen))).json()["data"] == selected
+            assert calls == (len(a.provider.calls), a.model.complete.await_count)
+
+            # The consumed question cannot be reused from either pod.
+            token = question["origin_context"]["context_token"]
+            assert (await origin_draft(b.app, token)).used_by == UUID(chosen["request_id"])
+            reuse = select_origin(base, question, 0)
+            assert_unapplied((await post(a, C01, reuse, 409)).json()["data"], reuse)
+            state = await trip_state(a.app, original["trip_id"])
+            assert state.version == 1 and not state.expired
+            assert await counts(a) == (1, 2, 2)
+
+    asyncio.run(run())
+
+
+def ids(data):
+    return [card["place"]["value"]["place_id"] for card in data["result"]["cards"]]

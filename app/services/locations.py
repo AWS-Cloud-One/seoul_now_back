@@ -72,7 +72,7 @@ class ProviderLocationPagination:
     async def search(self, provider, query, cursor, limit):
         scope = ("locations", query, limit)
         state = (
-            self.cursors.read(cursor, scope)
+            await self.cursors.read(cursor, scope)
             if cursor
             else {
                 "mode": "keyword",
@@ -105,7 +105,7 @@ class ProviderLocationPagination:
             state["ended"] = ended
         state["buffer"] = rows[limit:]
         more = bool(state["buffer"]) or not state["ended"]
-        token = self.cursors.issue(scope, state) if more else None
+        token = await self.cursors.issue(scope, state) if more else None
         return SearchPage(rows[:limit], more, token)
 
 

@@ -94,6 +94,7 @@ def test_geometry_preserves_layer_shapes_and_holes(api, layer, shape):
     repository.select_features.return_value = [feature(layer, key, shape)]
     response = client.get(f"/api/v1/map/layers/{layer}/geometry?{QUERY}")
     assert response.status_code == 200
+    assert response.headers["Cache-Control"] == "public, max-age=0, s-maxage=300"
     data = response.json()["data"]
     assert data["bbox"] == [126.95, 37.54, 127.03, 37.59]
     actual = data["feature_collection"]["features"][0]
@@ -130,6 +131,7 @@ def test_empty_ready_range_is_success(api):
     client, _ = api
     response = client.get(f"/api/v1/map/layers/roads/status?{QUERY}&geometry_version=v1")
     assert response.status_code == 200
+    assert response.headers["Cache-Control"] == "no-store"
     assert response.json()["data"]["items"] == []
     assert response.json()["data"]["status"] == "ok"
 
@@ -188,9 +190,21 @@ def test_errors_are_safe_common_envelopes(api, failure, status, code):
     repository.get_version.side_effect = failure
     response = client.get(f"/api/v1/map/layers/roads/geometry?{QUERY}")
     assert response.status_code == status
+    assert response.headers["Cache-Control"] == "no-store"
     assert response.json()["data"] is None
     assert response.json()["error"]["code"] == code
     assert "secret" not in response.text
+
+
+def test_geometry_origin_refresh_and_validation_errors_are_not_cached(api):
+    client, _ = api
+    url = f"/api/v1/map/layers/roads/geometry?{QUERY}"
+    refreshed = client.get(url + f"&cache_refresh={uuid4()}")
+    assert refreshed.status_code == 200
+    assert refreshed.headers["Cache-Control"] == "no-store"
+    invalid = client.get(url + "&cache_refresh=invalid")
+    assert invalid.status_code == 422
+    assert invalid.headers["Cache-Control"] == "no-store"
 
 
 def test_bad_stored_geometry_and_mismatched_id_is_503(api):

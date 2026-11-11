@@ -9,6 +9,7 @@ from app.core.exceptions import ServiceError
 from app.modules.ai.interpretation import Interpretation
 from app.repositories.recommendation_conditions import RecommendationConditionsRepository
 from app.repositories.recommendation_context import RecommendationContextRepository
+from tests.fixtures.state_inspection import trip_state
 from tests.integration.test_recommendation_chat_api_storage import (
     C01,
     R01,
@@ -56,7 +57,7 @@ def test_trip_keeps_history_and_exclusions_across_recommendation_chat_and_retry(
             assert cleared["condition_update"]["conditions"]["headcount"] is None
             assert cleared["condition_update"]["version"] == 2
             assert successful.isdisjoint(ids(cleared))
-            entry = env.app.state.recommendation_progress.trip(UUID(request["trip_id"]))
+            entry = await trip_state(env.app, UUID(request["trip_id"]))
             assert entry.excluded == successful
 
             env.interpretation = Interpretation(intent="recommendation_reason")
@@ -91,6 +92,7 @@ def test_trip_keeps_history_and_exclusions_across_recommendation_chat_and_retry(
             calls = list(env.source.mock_calls), list(env.model.mock_calls)
             assert (await post(env, R02, retry)).json()["data"] == recovered
             assert (env.source.mock_calls, env.model.mock_calls) == calls
+            entry = await trip_state(env.app, UUID(request["trip_id"]))
             assert entry.excluded == successful | set(ids(recovered))
             assert await counts(env) == (1, 3, 5)
 

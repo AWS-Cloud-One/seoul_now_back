@@ -10,14 +10,14 @@ from dataclasses import replace
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.core.exceptions import ServiceError
-from app.modules.recommendation.progress import DEFAULT_PROGRESS_STORE, MemoryProgressStore
+from app.modules.recommendation.progress import DEFAULT_PROGRESS_STORE
 from app.services.recommendation_persistence import CommitUncertain, RecommendationPersistence
 
 
 class RecommendationExecution:
     def __init__(
         self,
-        store: MemoryProgressStore = DEFAULT_PROGRESS_STORE,
+        store=DEFAULT_PROGRESS_STORE,  # MemoryProgressStore or PostgresProgressStore
         persistence: RecommendationPersistence | None = None,
     ):
         # Standalone adapters/tests may omit persistence; API dependencies always supply it.
@@ -40,8 +40,15 @@ class RecommendationExecution:
         require_current=True,
         guard=None,
         publish=None,
+        publish_transactional=False,
         replay_guard=None,
     ):
+        """`publish(outcome, session=None)` applies pre-reserved state changes.
+
+        A non-transactional publisher (in-process memory) runs only after the commit
+        succeeded and must not fail. A transactional publisher (shared database) runs
+        inside the condition commit, so both happen or neither does.
+        """
         request = request.model_copy(deep=True)
 
         async def perform(work):
@@ -49,16 +56,34 @@ class RecommendationExecution:
                 if require_current:
                     await self.check_current(request, work)
                 outcome = await callback(work)
-                if outcome.response.condition_update.applied:
+                applied = outcome.response.condition_update.applied
+                if applied:
                     self.store.check_current(request, work)
-                if self.persistence is not None and outcome.response.condition_update.applied:
+                published = False
+                if self.persistence is not None and applied:
+                    hooks = []
+                    if work.commit_hook is not None:
+                        # Shared trip state: lease check + state save in this transaction.
+                        hooks.append(work.commit_hook)
+                    if publish is not None and publish_transactional:
+                        hooks.append(lambda session, final: publish(final, session))
+                        published = True
+
+                    async def before_commit(session, finalized):
+                        final = replace(outcome, response=finalized)
+                        for hook in hooks:
+                            await hook(session, final)
+
                     finalized = await self.persistence.commit(
-                        request, outcome.response, work, source_result_id=source_result_id
+                        request,
+                        outcome.response,
+                        work,
+                        source_result_id=source_result_id,
+                        before_commit=before_commit if hooks else None,
                     )
                     outcome = replace(outcome, response=finalized)
-                if publish is not None:
-                    # Synchronous, pre-reserved state changes only. No I/O after commit.
-                    publish(outcome)
+                if publish is not None and not published:
+                    await publish(outcome)
                 return outcome
             except CommitUncertain as exc:
                 work.invalidated = True

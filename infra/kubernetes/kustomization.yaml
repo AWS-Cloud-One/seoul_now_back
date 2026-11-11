@@ -1,0 +1,39 @@
+# App workloads deployed by the pipeline (`kubectl apply -k infra/kubernetes`).
+# Namespaces, Ingress and the log agent are cluster/operator scoped and stay manual.
+# The pipeline replaces the digest below with the image of the commit it deploys;
+# API and Collector always run the same image.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - seoul-lab.workloads.yaml
+images:
+  - name: 963701985499.dkr.ecr.ap-northeast-2.amazonaws.com/seoul-now/lab/backend
+    digest: sha256:03bc054f0a3b31e06656e290f99d780db54801ee592be7cbd7c0fd6997afffea
+
+# Runtime settings are versioned with the app: each content change gets a new
+# hashed name (seoul-now-runtime-<hash>) and kustomize rewrites the envFrom
+# references, so a config change rolls the Deployments and `rollout undo` returns
+# to the previous image AND the previous config. Old objects are kept while a
+# ReplicaSet still references them (deploy.sh prunes the rest by this label).
+generatorOptions:
+  immutable: true
+  labels:
+    app.kubernetes.io/name: seoul-now
+    seoul-now/config: generated
+configMapGenerator:
+  - name: seoul-now-runtime
+    namespace: seoul-now
+    literals:
+      - AWS_REGION=ap-northeast-2
+      - AWS_DEFAULT_REGION=ap-northeast-2
+      - APP_RUNTIME_ENV=aws
+      - APP_DB_SSLMODE=verify-full
+      - APP_DB_SSLROOTCERT=/app/certs/rds/ap-northeast-2-bundle.pem
+  - name: seoul-now-api-settings
+    namespace: seoul-now
+    literals:
+      - APP_AI_PROVIDER=bedrock
+      - APP_BEDROCK_REGION=ap-northeast-2
+      - APP_BEDROCK_MODEL_ID=global.anthropic.claude-haiku-4-5-20251001-v1:0
+      - APP_DOCS_ENABLED=false
+      - 'APP_CORS_ORIGINS=["http://localhost:5173","http://127.0.0.1:5173"]'

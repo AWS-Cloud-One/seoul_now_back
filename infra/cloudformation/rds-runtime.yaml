@@ -1,0 +1,212 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Seoul Now private PostgreSQL 17 RDS. Single AZ lab capacity, TLS required, AWS-managed master
+  secret and retained encrypted data. PostGIS and app users are W4 tasks.
+Metadata:
+  AWSToolsMetrics:
+    AWSAgentToolkit: aws-cloudformation@3
+Parameters:
+  ProjectName:
+    Type: String
+    AllowedPattern: '[a-z][a-z0-9-]*[a-z0-9]'
+    MinLength: 3
+    MaxLength: 16
+    Default: seoul-now
+  Environment:
+    Type: String
+    AllowedValues:
+    - lab
+    - demo
+    Default: lab
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+  DbSubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+  DbClientSecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+  DbInstanceClass:
+    Type: String
+    AllowedValues:
+    - db.t4g.medium
+    - db.t4g.large
+    Default: db.t4g.medium
+  EngineVersion:
+    Type: String
+    AllowedPattern: 17\.[0-9]+
+    Default: '17.11'
+  AvailabilityZone:
+    Type: AWS::EC2::AvailabilityZone::Name
+  AllocatedStorage:
+    Type: Number
+    MinValue: 20
+    MaxValue: 100
+    Default: 20
+  MaxAllocatedStorage:
+    Type: Number
+    MinValue: 100
+    MaxValue: 200
+    Default: 100
+Resources:
+  DbSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: RDS requires subnets in at least two AZs even for a Single-AZ instance.
+        must: Use foundation DB subnets, without an internet default route.
+    Properties:
+      DBSubnetGroupDescription: Isolated database subnets in two AZs
+      SubnetIds:
+        Ref: DbSubnetIds
+      Tags:
+      - Key: Project
+        Value:
+          Ref: ProjectName
+      - Key: Environment
+        Value:
+          Ref: Environment
+  DbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Keep database access on the private application path.
+        must: Never expose port 5432 to a public CIDR.
+    Properties:
+      VpcId:
+        Ref: VpcId
+      GroupDescription: PostgreSQL only from project EKS DB clients
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: 5432
+        ToPort: 5432
+        SourceSecurityGroupId:
+          Ref: DbClientSecurityGroupId
+      SecurityGroupEgress:
+      - IpProtocol: tcp
+        FromPort: 9
+        ToPort: 9
+        CidrIp: 127.0.0.1/32
+        Description: Suppress default all-egress; response traffic is stateful
+      Tags:
+      - Key: Project
+        Value:
+          Ref: ProjectName
+      - Key: Environment
+        Value:
+          Ref: Environment
+  DbParameters:
+    Type: AWS::RDS::DBParameterGroup
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Enforce transport encryption independently of application settings.
+        must: Clients must additionally verify the RDS hostname and official CA.
+    Properties:
+      Description: Require SSL for all PostgreSQL client connections
+      Family: postgres17
+      Parameters:
+        rds.force_ssl: '1'
+      Tags:
+      - Key: Project
+        Value:
+          Ref: ProjectName
+      - Key: Environment
+        Value:
+          Ref: Environment
+  PostgresLogs:
+    Type: AWS::Logs::LogGroup
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Retain database diagnostics with a bounded retention.
+        must: Do not enable statement logging of secret-bearing bootstrap SQL.
+    Properties:
+      LogGroupName:
+        Fn::Sub: /aws/rds/instance/${ProjectName}-${Environment}-postgres/postgresql
+      RetentionInDays: 7
+      Tags:
+      - Key: Project
+        Value:
+          Ref: ProjectName
+      - Key: Environment
+        Value:
+          Ref: Environment
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+  Database:
+    Type: AWS::RDS::DBInstance
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: One private ARM database for the always-on MVP; capacity can be revised after observing actual
+          load.
+        must: Retain on delete/replace; no automatic data reset. Single-AZ is not HA. App roles never
+          read the master secret.
+    Properties:
+      DBInstanceIdentifier:
+        Fn::Sub: ${ProjectName}-${Environment}-postgres
+      DBName: seoul_now
+      Engine: postgres
+      EngineVersion:
+        Ref: EngineVersion
+      EngineLifecycleSupport: open-source-rds-extended-support-disabled
+      DBInstanceClass:
+        Ref: DbInstanceClass
+      AllocatedStorage:
+        Ref: AllocatedStorage
+      MaxAllocatedStorage:
+        Ref: MaxAllocatedStorage
+      StorageType: gp3
+      StorageEncrypted: true
+      MultiAZ: false
+      AvailabilityZone:
+        Ref: AvailabilityZone
+      PubliclyAccessible: false
+      Port: '5432'
+      VPCSecurityGroups:
+      - Ref: DbSecurityGroup
+      DBSubnetGroupName:
+        Ref: DbSubnetGroup
+      DBParameterGroupName:
+        Ref: DbParameters
+      MasterUsername: seoul_admin
+      ManageMasterUserPassword: true
+      CACertificateIdentifier: rds-ca-rsa2048-g1
+      BackupRetentionPeriod: 7
+      PreferredBackupWindow: 18:00-18:30
+      PreferredMaintenanceWindow: sun:19:00-sun:20:00
+      AutoMinorVersionUpgrade: true
+      AllowMajorVersionUpgrade: false
+      DeletionProtection: true
+      CopyTagsToSnapshot: true
+      EnableCloudwatchLogsExports:
+      - postgresql
+      MonitoringInterval: 0
+      EnablePerformanceInsights: false
+      Tags:
+      - Key: Project
+        Value:
+          Ref: ProjectName
+      - Key: Environment
+        Value:
+          Ref: Environment
+    DependsOn: PostgresLogs
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+Outputs:
+  DbIdentifier:
+    Value:
+      Ref: Database
+  DbEndpoint:
+    Value:
+      Fn::GetAtt:
+      - Database
+      - Endpoint.Address
+  DbPort:
+    Value:
+      Fn::GetAtt:
+      - Database
+      - Endpoint.Port
+  MasterSecretArn:
+    Value:
+      Fn::GetAtt:
+      - Database
+      - MasterUserSecret.SecretArn
+  DbSecurityGroupId:
+    Value:
+      Ref: DbSecurityGroup

@@ -17,11 +17,14 @@ COPY --chown=app:app app ./app
 COPY --chown=app:app jobs ./jobs
 COPY --chown=app:app migrations ./migrations
 COPY --chown=app:app alembic.ini pyproject.toml ./
+COPY --chown=app:app infra/certificates/ ./certs/rds/
+RUN cd /app/certs/rds && sha256sum -c SHA256SUMS
 
 USER app
 EXPOSE 8000
 HEALTHCHECK --interval=10s --timeout=5s --start-period=10s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health/live', timeout=3)"
+ENTRYPOINT ["python", "-m", "app.bootstrap"]
 CMD ["uvicorn", "app.main:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
 
 FROM runtime AS development

@@ -9,6 +9,7 @@ from sqlalchemy import update
 
 from app.models import ChatSession
 from app.modules.ai.interpretation import Interpretation
+from tests.fixtures.state_inspection import trip_state
 from tests.integration.test_recommendation_chat_api_storage import (
     C01,
     R01,
@@ -42,9 +43,7 @@ def test_commit_failure_keeps_draft_and_successful_replay_does_not_apply_twice(n
             original = body()
             await pending(env, original)
             assert await counts(env) == (0, 0, 0)
-            before = deepcopy(
-                env.app.state.recommendation_progress.trip(original["trip_id"]).condition_draft
-            )
+            before = deepcopy((await trip_state(env.app, original["trip_id"])).condition_draft)
             writers = env.app.state.write_session_factory
 
             async def break_commit(session):
@@ -56,19 +55,13 @@ def test_commit_failure_keeps_draft_and_successful_replay_does_not_apply_twice(n
             failed = (await post(env, C01, value, 503)).json()["data"]
             assert not failed["condition_update"]["applied"]
             assert await counts(env) == (0, 0, 0)
-            assert (
-                env.app.state.recommendation_progress.trip(original["trip_id"]).condition_draft
-                == before
-            )
+            assert (await trip_state(env.app, original["trip_id"])).condition_draft == before
             env.app.state.write_session_factory = writers
             value["request_id"] = str(uuid4())
             accepted = (await post(env, C01, value)).json()["data"]
             assert accepted["condition_update"]["conditions"]["max_travel_seconds"] == 1200
             assert accepted["condition_update"]["conditions"]["headcount"] == 8
-            assert (
-                env.app.state.recommendation_progress.trip(original["trip_id"]).condition_draft
-                is None
-            )
+            assert (await trip_state(env.app, original["trip_id"])).condition_draft is None
             count = await counts(env)
             calls = interpretation_count(env), env.source.search.await_count
             assert (await post(env, C01, value)).json()["data"] == accepted
@@ -88,10 +81,7 @@ def test_direct_recommendation_invalidates_old_draft_and_old_echo_cannot_restore
             result = (
                 await post(env, R01, original | {"conditions_patch": {"headcount": 3}})
             ).json()["data"]
-            assert (
-                env.app.state.recommendation_progress.trip(original["trip_id"]).condition_draft
-                is None
-            )
+            assert (await trip_state(env.app, original["trip_id"])).condition_draft is None
             env.interpretation = Interpretation(intent="recommendation")
             value = chat(following(original, result)) | {"pending_clarification": question}
             accepted = (await post(env, C01, value)).json()["data"]
@@ -115,7 +105,7 @@ def test_targeted_reason_can_interrupt_question_and_later_resume_same_draft(norm
             answer = (await post(env, C01, info)).json()["data"]
             assert answer["kind"] == "answer" and answer["pending_update"] == "clear"
             assert not answer["condition_update"]["applied"]
-            draft = env.app.state.recommendation_progress.trip(original["trip_id"]).condition_draft
+            draft = (await trip_state(env.app, original["trip_id"])).condition_draft
             assert draft.paused and draft.headcount_hint.minimum == 6
             env.interpretation = Interpretation(intent="recommendation", headcount=8)
             accepted = (await post(env, C01, chat(current, message="아까 인원은 8명"))).json()[

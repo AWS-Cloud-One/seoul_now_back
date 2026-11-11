@@ -19,6 +19,7 @@ from app.api.dependencies import (
 from app.modules.ai.interpretation import Interpretation
 from app.repositories.recommendation_conditions import RecommendationConditionsRepository
 from app.repositories.recommendation_context import RecommendationContextRepository
+from tests.fixtures.state_inspection import trip_state
 from tests.integration.test_current_place_answers import seed_population
 from tests.integration.test_place_details_api_storage import travel_request
 from tests.integration.test_recommendation_chat_api_storage import (
@@ -149,8 +150,8 @@ def provider_calls(env, suffix):
     return [r for r in env.provider.calls if r.url.path.endswith(suffix)]
 
 
-def progress_state(env, request):
-    entry = env.app.state.recommendation_progress.trip(UUID(request["trip_id"]))
+async def progress_state(env, request):
+    entry = await trip_state(env.app, UUID(request["trip_id"]))
     return deepcopy((entry.search, entry.excluded, entry.conditions, entry.version))
 
 
@@ -177,7 +178,7 @@ def test_full_trip_preserves_history_through_details_current_facts_changes_and_r
             assert card["reason"]["evidence"][0]["information"]["value"] == {"grade": "서행"}
             assert card["parking"]["status"] == "available"
             saved_first = await stored_rows(env, first)
-            before = progress_state(env, original)
+            before = await progress_state(env, original)
             calls = len(env.provider.calls)
             assert (await post(env, R01, original)).json()["data"] == first
             assert len(env.provider.calls) == calls
@@ -208,7 +209,7 @@ def test_full_trip_preserves_history_through_details_current_facts_changes_and_r
                 assert (await post(env, C01, question)).json()["data"] == answer
                 assert interpretation_count(env) == interpreted
                 assert len(env.provider.calls) == calls
-            assert progress_state(env, original) == before
+            assert (await progress_state(env, original)) == before
             assert await counts(env) == (1, 1, 1)
 
             # Leftovers reuse the same ETA but re-evaluate current road evidence.
@@ -246,7 +247,7 @@ def test_full_trip_preserves_history_through_details_current_facts_changes_and_r
                 c["rank"] is None and c["route"]["value"] is None
                 for c in general["result"]["cards"]
             )
-            assert progress_state(env, original)[1] == successful
+            assert (await progress_state(env, original))[1] == successful
             saved_general = await stored_rows(env, general)
             calls = len(env.provider.calls)
 
@@ -287,7 +288,7 @@ def test_full_trip_preserves_history_through_details_current_facts_changes_and_r
             calls = len(env.provider.calls)
             assert (await post(env, R02, retry)).json()["data"] == recovered
             assert len(env.provider.calls) == calls
-            assert progress_state(env, original)[1] == successful | set(ids(recovered))
+            assert (await progress_state(env, original))[1] == successful | set(ids(recovered))
             assert await stored_rows(env, first) == saved_first
             assert await stored_rows(env, general) == saved_general
             assert await counts(env) == (1, 3, 5)
@@ -317,7 +318,7 @@ def test_quota_and_expired_context_do_not_block_other_facts_or_change_saved_stat
             original = body()
             general = (await post(env, R01, original)).json()["data"]
             assert general["kind"] == "general_candidates"
-            baseline, saved = progress_state(env, original), await stored_rows(env, general)
+            baseline, saved = (await progress_state(env, original)), await stored_rows(env, general)
             env.provider.mode = "quota"
             env.interpretation = Interpretation(intent="travel_time")
             question = chat(following(original, general), target=target(general))
@@ -342,7 +343,7 @@ def test_quota_and_expired_context_do_not_block_other_facts_or_change_saved_stat
                 assert answer["kind"] == "answer" and answer["answer"]["topic"] == topic
             assert (await detail(env, target(general)))["data"]["parking"]["status"] == "available"
             assert len(env.provider.calls) == calls
-            assert progress_state(env, original) == baseline
+            assert (await progress_state(env, original)) == baseline
             assert await stored_rows(env, general) == saved
             assert await counts(env) == (1, 1, 1)
 

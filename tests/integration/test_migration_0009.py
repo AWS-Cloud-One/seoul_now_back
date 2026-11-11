@@ -19,6 +19,7 @@ from alembic.operations import Operations
 from sqlalchemy.engine import make_url
 
 from app.models import Base
+from tests.fixtures.migrations import current_head, remove_versions_after
 
 pytestmark = pytest.mark.integration
 ROOT = Path(__file__).resolve().parents[2]
@@ -81,12 +82,8 @@ def prepare_history(engine, history, tmp_path):
         # really runs the old branch's chain rather than stamping the new schema.
         scripts = tmp_path / "legacy_migrations"
         shutil.copytree(ROOT / "migrations", scripts, ignore=shutil.ignore_patterns("__pycache__"))
-        (scripts / "versions/0008_collection_history.py").unlink()
-        (scripts / "versions/0009_relational_storage.py").unlink()
-        (scripts / "versions/0010_pipeline_storage.py").unlink()
-        (scripts / "versions/0011_topis_cycle_retention.py").unlink()
-        (scripts / "versions/0012_direct_collection_storage.py").unlink()
-        (scripts / "versions/0013_recommendation_context.py").unlink()
+        # Keep the history up to 0007; every later revision is replaced below.
+        remove_versions_after(scripts / "versions", "0007")
         shutil.copyfile(LEGACY_MAP, scripts / "versions/0008_map_contract.py")
         command.upgrade(config(scripts), "0008")
     else:
@@ -230,7 +227,10 @@ def test_upgrade_converges_and_preserves_existing_rows(migration_database, tmp_p
     command.upgrade(config(), "head")
     command.check(config())
     with engine.connect() as c:
-        assert c.exec_driver_sql("SELECT version_num FROM alembic_version").scalar_one() == "0013"
+        assert (
+            c.exec_driver_sql("SELECT version_num FROM alembic_version").scalar_one()
+            == current_head()
+        )
         assert set(sa.inspect(c).get_table_names()) - {"alembic_version", "spatial_ref_sys"} == set(
             Base.metadata.tables
         )

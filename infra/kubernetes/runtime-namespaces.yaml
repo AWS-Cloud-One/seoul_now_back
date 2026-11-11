@@ -1,0 +1,74 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: seoul-now
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: v1.36
+    # A new API Pod counts as Ready only after its ALB target is healthy, so a
+    # rolling update never removes the old Pod before the new one serves traffic.
+    elbv2.k8s.aws/pod-readiness-gate-inject: enabled
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: seoul-now-bootstrap
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: v1.36
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: amazon-cloudwatch
+  labels:
+    # The log agent requires read-only hostPath access to container logs.
+    pod-security.kubernetes.io/enforce: privileged
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: seoul-now-api
+  namespace: seoul-now
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: seoul-now-collector
+  namespace: seoul-now
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: seoul-now-migration
+  namespace: seoul-now
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: seoul-now-import
+  namespace: seoul-now
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: seoul-now-bootstrap
+  namespace: seoul-now-bootstrap
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: aws-load-balancer-controller
+  namespace: kube-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: aws-for-fluent-bit
+  namespace: amazon-cloudwatch
+automountServiceAccountToken: false

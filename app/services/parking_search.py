@@ -45,7 +45,7 @@ class ParkingSearchService:
 
     async def search(self, query):
         scope = ("parking-search", query.model_dump(exclude={"cursor"}))
-        cursor = self.cursors.read(query.cursor, scope) if query.cursor else None
+        cursor = await self.cursors.read(query.cursor, scope) if query.cursor else None
         version = await self.repository.get_version()
         if version is None or not version.is_ready:
             raise ServiceError("DATA_UNAVAILABLE", "주차 기준 자료가 준비되지 않았습니다.")
@@ -111,14 +111,17 @@ class ParkingSearchService:
             )
         offset = cursor["offset"] if cursor else 0
         end = offset + query.limit
+        next_cursor = (
+            await self.cursors.issue(
+                scope, {"version": version.geometry_version, "digest": digest, "offset": end}
+            )
+            if end < len(items)
+            else None
+        )
         return ParkingSearchData(
             checked_at=datetime.now(UTC),
             radius_meters=query.radius_meters,
             total_count=len(items),
             items=items[offset:end],
-            next_cursor=self.cursors.issue(
-                scope, {"version": version.geometry_version, "digest": digest, "offset": end}
-            )
-            if end < len(items)
-            else None,
+            next_cursor=next_cursor,
         )

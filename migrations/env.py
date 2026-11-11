@@ -9,6 +9,7 @@ from sqlalchemy import Connection, pool, text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.core.config import Settings
+from app.db.connection import connection_args
 from app.models import Base
 
 # app.models imports all registered models into Base.metadata.
@@ -78,7 +79,7 @@ async def run_migrations_online() -> None:
         settings.database_url.get_secret_value(),
         poolclass=pool.NullPool,
         connect_args={
-            "connect_timeout": settings.db_connect_timeout_seconds,
+            **connection_args(settings),
             # PostGIS adds tiger/topology to search_path. Reflect only app tables
             # in public so autogenerate cannot propose dropping extension tables.
             "options": "-csearch_path=public",

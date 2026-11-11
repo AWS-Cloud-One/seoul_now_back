@@ -308,12 +308,25 @@ Resources:
     Type: AWS::ECR::Repository
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Pipeline images are tagged git-<sha>; keep enough of them for rollback.
+        must:
+          - Expire only git- tagged images. Never add an untagged rule; untagged entries
+            include the platform and attestation manifests of index images still in use.
+          - Manually tagged release images (w3, w5b, state) are not expired.
     Properties:
       RepositoryName: !Sub '${ProjectName}/${Environment}/backend'
       ImageTagMutability: IMMUTABLE
       EmptyOnDelete: false
       EncryptionConfiguration:
         EncryptionType: AES256
+      LifecyclePolicy:
+        LifecyclePolicyText: >-
+          {"rules":[{"rulePriority":1,"description":"Keep the 30 newest pipeline images",
+          "selection":{"tagStatus":"tagged","tagPrefixList":["git-"],
+          "countType":"imageCountMoreThan","countNumber":30},
+          "action":{"type":"expire"}}]}
       Tags:
         - Key: Project
           Value: !Ref ProjectName

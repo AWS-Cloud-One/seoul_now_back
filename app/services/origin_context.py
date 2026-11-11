@@ -118,6 +118,11 @@ class OriginTransition:
 
 
 class OriginContextStore:
+    """Single-process drafts. `PostgresOriginContextStore` shares the same async contract."""
+
+    # Publication runs after the DB commit here; a shared store publishes inside it.
+    transactional = False
+
     def __init__(self, *, ttl_seconds=300, capacity=1000, clock=lambda: datetime.now(UTC)):
         if ttl_seconds <= 0 or capacity <= 0:
             raise ValueError("출발지 확인 보관 한도는 양수여야 합니다.")
@@ -132,7 +137,7 @@ class OriginContextStore:
         pending = request.pending_clarification
         return pending.origin_context.context_token if pending and pending.origin_context else None
 
-    def resolve(self, token, request):
+    async def resolve(self, token, request):
         value = self.entries.get(token)
         if value is None or self.clock() >= value.expires_at:
             raise expired()
@@ -144,8 +149,8 @@ class OriginContextStore:
             raise stale()
         return deepcopy(value)
 
-    def check_current(self, value, request):
-        self.resolve(value.token, request)
+    async def check_current(self, value, request):
+        await self.resolve(value.token, request)
         if value.used_by is not None or self.latest.get(value.trip_id) != value.token:
             raise stale()
         if (
@@ -154,7 +159,7 @@ class OriginContextStore:
         ):
             raise stale()
 
-    def reserve(
+    async def reserve(
         self,
         request,
         result,
@@ -187,7 +192,7 @@ class OriginContextStore:
         self.reserved[value.token] = value
         return value
 
-    def publish(self, transition, request, outcome):
+    async def publish(self, transition, request, outcome, session=None):
         """No failure-prone work here: slots and response data were prepared before commit."""
         before, after = transition.before, transition.after
         applied = outcome.response.condition_update.applied
@@ -206,7 +211,7 @@ class OriginContextStore:
         elif before is not None and self.latest.get(request.trip_id) == before.token:
             self.latest.pop(request.trip_id, None)
 
-    def discard(self, transition):
+    async def discard(self, transition):
         if transition.after is not None:
             self.reserved.pop(transition.after.token, None)
 

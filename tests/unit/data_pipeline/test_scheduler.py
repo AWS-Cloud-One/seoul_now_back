@@ -1,5 +1,6 @@
 import asyncio
 import json
+import signal
 import sys
 from unittest.mock import AsyncMock
 
@@ -7,7 +8,7 @@ import pytest
 
 from app.core.config import Settings
 from app.modules.data_pipeline.pipelines.topis_rules import cycle_status
-from jobs import scheduler
+from jobs import scheduler, shutdown
 from jobs.runtime import finish
 
 
@@ -282,6 +283,7 @@ def test_unselected_prerequisite_task_is_not_automatically_collected(monkeypatch
 
 def test_timeout_kills_child_and_waits_for_exit(monkeypatch):
     class Process:
+        pid = 123456789
         returncode = None
         killed = False
 
@@ -295,6 +297,16 @@ def test_timeout_kills_child_and_waits_for_exit(monkeypatch):
             self.killed = True
 
     process = Process()
+    sent = []
+
+    def signal_child(pid, signum):
+        assert pid == process.pid
+        sent.append(signum)
+        if signum == signal.SIGKILL:
+            process.kill()
+
+    monkeypatch.setattr(shutdown, "signal_group", signal_child)
+    monkeypatch.setattr(shutdown, "CHILD_TERM_SECONDS", 0.01)
 
     async def spawn(*args, **kwargs):
         return process
@@ -310,3 +322,4 @@ def test_timeout_kills_child_and_waits_for_exit(monkeypatch):
     asyncio.run(run())
     assert process.killed
     assert process.returncode == -1
+    assert sent[:2] == [signal.SIGTERM, signal.SIGKILL]

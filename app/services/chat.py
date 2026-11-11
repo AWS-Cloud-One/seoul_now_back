@@ -85,7 +85,7 @@ class RecommendationChatProcessor(ChatTasksMixin):
             token = OriginContextStore.request_token(request)
             if token is not None:
                 self.require_origin_services()
-                origin_draft = self.origin_contexts.resolve(token, request)
+                origin_draft = await self.origin_contexts.resolve(token, request)
             if request.target is not None:
                 if self.contexts is None:
                     raise ServiceError(
@@ -122,14 +122,14 @@ class RecommendationChatProcessor(ChatTasksMixin):
             # Recheck after provider work, including accepted-condition failures.
             self.verify_target(request, stored)
             if origin_draft is not None:
-                self.origin_contexts.resolve(origin_draft.token, request)
+                await self.origin_contexts.resolve(origin_draft.token, request)
             # Validate before persistence, not only after process() returns to HTTP.
             PendingService.validate_context(outcome.response, request, retry=False)
             return outcome
 
-        def publish(outcome):
+        async def publish(outcome, session=None):
             if self.origin_contexts is not None:
-                self.origin_contexts.publish(transition, request, outcome)
+                await self.origin_contexts.publish(transition, request, outcome, session)
 
         async def replay_guard(outcome, work):
             for target in outcome.targets:
@@ -143,14 +143,16 @@ class RecommendationChatProcessor(ChatTasksMixin):
             question = outcome.response.clarification
             if question is not None and question.origin_context is not None:
                 self.require_origin_services()
-                draft = self.origin_contexts.resolve(question.origin_context.context_token, request)
+                draft = await self.origin_contexts.resolve(
+                    question.origin_context.context_token, request
+                )
                 await self.check_origin_current(draft, request, work)
                 if draft.clarification() != question:
                     raise invalid()
             # Completed selections replay their accepted update without comparing
             # it to today's conditions. Their input token must still be valid.
             if origin_draft is not None:
-                self.origin_contexts.resolve(origin_draft.token, request)
+                await self.origin_contexts.resolve(origin_draft.token, request)
             self.verify_target(request, stored)
 
         try:
@@ -162,11 +164,12 @@ class RecommendationChatProcessor(ChatTasksMixin):
                 require_current=False,
                 guard=guard,
                 publish=publish,
+                publish_transactional=getattr(self.origin_contexts, "transactional", False),
                 replay_guard=replay_guard,
             )
         finally:
             if self.origin_contexts is not None:
-                self.origin_contexts.discard(transition)
+                await self.origin_contexts.discard(transition)
         if outcome.failure is not None:
             exc = outcome.failure
             raise PendingFailure(
@@ -179,10 +182,10 @@ class RecommendationChatProcessor(ChatTasksMixin):
         return outcome.response
 
     async def check_origin_current(self, draft, request, work):
-        self.origin_contexts.check_current(draft, request)
+        await self.origin_contexts.check_current(draft, request)
         await self.execution.check_current(request, work)
         # A DB read can outlive the origin question, too.
-        self.origin_contexts.check_current(draft, request)
+        await self.origin_contexts.check_current(draft, request)
 
     def verify_target(self, request, stored):
         if request.target is not None:
@@ -467,7 +470,7 @@ class RecommendationChatProcessor(ChatTasksMixin):
     async def recommend(self, request, patch, work, origin_draft=None):
         await self.execution.check_current(request, work)
         if origin_draft is not None:
-            self.origin_contexts.check_current(origin_draft, request)
+            await self.origin_contexts.check_current(origin_draft, request)
         structured = RecommendationRequest(
             **request.model_dump(
                 include={
@@ -524,7 +527,7 @@ class RecommendationChatProcessor(ChatTasksMixin):
         self.require_origin_services()
         await self.execution.check_current(request, work)
         if draft is not None:
-            self.origin_contexts.check_current(draft, request)
+            await self.origin_contexts.check_current(draft, request)
             patch = draft.patch.model_dump(exclude_unset=True)
             pending_fields = draft.waiting_fields
         else:
@@ -550,8 +553,8 @@ class RecommendationChatProcessor(ChatTasksMixin):
             # Search may wait on providers; do not publish a draft for obsolete conditions.
             await self.execution.check_current(request, work)
             if draft is not None:
-                self.origin_contexts.check_current(draft, request)
-            transition.after = self.origin_contexts.reserve(
+                await self.origin_contexts.check_current(draft, request)
+            transition.after = await self.origin_contexts.reserve(
                 request,
                 result,
                 ConditionsPatch.model_validate(patch),
@@ -579,7 +582,7 @@ class RecommendationChatProcessor(ChatTasksMixin):
             else:
                 result = replace(result, candidates=(), mode="refine", reason_code=None)
                 question = "다른 출발지의 장소명이나 주소를 입력해 주세요."
-            transition.after = self.origin_contexts.reserve(
+            transition.after = await self.origin_contexts.reserve(
                 request,
                 result,
                 ConditionsPatch.model_validate(patch),
@@ -602,7 +605,7 @@ class RecommendationChatProcessor(ChatTasksMixin):
             selected = candidate.candidate_id
             patch["origin"] = candidate.location.model_copy(deep=True)
         if selected is None:
-            transition.after = self.origin_contexts.reserve(
+            transition.after = await self.origin_contexts.reserve(
                 request,
                 result,
                 ConditionsPatch.model_validate(patch),
@@ -622,7 +625,7 @@ class RecommendationChatProcessor(ChatTasksMixin):
                 if required
                 else "추가 조건을 확인해 주세요."
             )
-            transition.after = self.origin_contexts.reserve(
+            transition.after = await self.origin_contexts.reserve(
                 request,
                 result,
                 patch,

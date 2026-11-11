@@ -17,6 +17,10 @@ from app.modules.data_pipeline.pipelines.topis_storage import maintain_cycles
 from app.repositories.reference import ReferenceRepository
 from jobs.runtime import report as report_result
 from jobs.runtime import run_cli
+from jobs.shutdown import STATE, check_stopping, complete_cleanup, stop_child
+
+LEASE_CHECK_SECONDS = 2
+LEASE_TIMEOUT_SECONDS = 3
 
 
 @dataclass(frozen=True)
@@ -107,21 +111,43 @@ def report(task, status, **extra):
 
 
 async def run_command(task):
-    process = await asyncio.create_subprocess_exec(
-        sys.executable,
-        "-u",
-        "-m",
-        task.module,
-        *task.args,
-        # Collectors emit safe JSON on stdout. Do not expose arbitrary HTTP tracebacks.
-        stderr=asyncio.subprocess.DEVNULL,
+    check_stopping()
+    # Shield creation so cancellation cannot lose a child between fork and registration.
+    spawn = asyncio.create_task(
+        asyncio.create_subprocess_exec(
+            sys.executable,
+            "-u",
+            "-m",
+            task.module,
+            *task.args,
+            start_new_session=True,
+            # Collectors emit safe JSON on stdout. Do not expose arbitrary HTTP tracebacks.
+            stderr=asyncio.subprocess.DEVNULL,
+        )
     )
+    process = None
+    state = STATE.get()
     try:
+        process = await asyncio.shield(spawn)
+        if state is not None:
+            with state.lock:
+                state.children.add(process.pid)
         return await asyncio.wait_for(process.wait(), timeout=task.timeout)
     finally:
-        if process.returncode is None:
-            process.kill()
-            await process.wait()
+
+        async def cleanup():
+            child = process if process is not None else await spawn
+            if state is not None:
+                with state.lock:
+                    state.children.add(child.pid)
+            try:
+                await stop_child(child)
+            finally:
+                if state is not None:
+                    with state.lock:
+                        state.children.discard(child.pid)
+
+        await complete_cleanup(cleanup())
 
 
 async def recover_publication(engine, name):
@@ -131,6 +157,7 @@ async def recover_publication(engine, name):
         return
     geometry, observations = layers
     for attempt in range(2):
+        check_stopping()
         try:
             async with asyncio.timeout(120):
                 if name == "topis":
@@ -151,7 +178,78 @@ async def recover_publication(engine, name):
     return publication
 
 
+class LeaseLostError(Exception):
+    pass
+
+
+async def monitor_lease(connection, lease, pid):
+    while True:
+        await asyncio.sleep(LEASE_CHECK_SECONDS)
+        try:
+            async with asyncio.timeout(LEASE_TIMEOUT_SECONDS):
+                owned = await connection.scalar(
+                    text("""
+                    SELECT pg_backend_pid() = :pid AND EXISTS (
+                        SELECT 1 FROM pg_locks
+                        WHERE locktype = 'advisory' AND pid = pg_backend_pid() AND granted
+                          AND database = (
+                              SELECT oid FROM pg_database WHERE datname = current_database()
+                          )
+                          AND classid = ((hashtext(:name)::bigint >> 32) & 4294967295)::oid
+                          AND objid = (hashtext(:name)::bigint & 4294967295)::oid
+                          AND objsubid = 1
+                    )
+                """),
+                    {"name": lease, "pid": pid},
+                )
+                await connection.commit()
+                if not owned:
+                    raise LeaseLostError
+        except Exception:
+            raise LeaseLostError("scheduler_lease_lost") from None
+
+
+async def run_cycle(engine, name, task):
+    try:
+        # Also runs after a scheduler restart: a killed parent cannot execute cleanup.
+        await recover_publication(engine, name)
+        check_stopping()
+        report(name, "running")
+        try:
+            code = await run_command(task)
+        except Exception:
+            await recover_publication(engine, name)
+            raise
+        if code not in {0, 3}:
+            await recover_publication(engine, name)
+        status = {0: "success", 2: "partial", 3: "skipped", 4: "paused_provider_limit"}.get(
+            code, "failed"
+        )
+        report(name, status, exit_code=code)
+        return TaskResult(status, code)
+    except asyncio.CancelledError:
+        report(name, "publication_deferred", error_code="cycle_interrupted")
+        raise
+
+
+async def run_with_lease(connection, engine, name, task, lease, pid):
+    work = asyncio.create_task(run_cycle(engine, name, task))
+    monitor = asyncio.create_task(monitor_lease(connection, lease, pid))
+    try:
+        done, _ = await asyncio.wait({work, monitor}, return_when=asyncio.FIRST_COMPLETED)
+        if monitor in done:
+            # The child is stopped/reaped in finally before the lease connection is released.
+            await monitor
+        return await work
+    finally:
+        for operation in (work, monitor):
+            if not operation.done():
+                operation.cancel()
+        await complete_cleanup(asyncio.gather(work, monitor, return_exceptions=True))
+
+
 async def cycle(engine, name, task):
+    check_stopping()
     async with engine.connect() as connection:
         for source in task.prerequisites:
             async with AsyncSession(bind=connection) as session:
@@ -160,35 +258,40 @@ async def cycle(engine, name, task):
                 report(name, "waiting", error_code="missing_prerequisite", source=source)
                 return TaskResult("waiting", 1, "missing_prerequisite")
         lease = "scheduler:" + name
-        locked = await connection.scalar(
-            text("SELECT pg_try_advisory_lock(hashtext(:name))"), {"name": lease}
-        )
-        await connection.commit()
+        try:
+            locked = await connection.scalar(
+                text("SELECT pg_try_advisory_lock(hashtext(:name))"), {"name": lease}
+            )
+            await connection.commit()
+        except BaseException:
+            # Cancellation can arrive after the server acquired a session lock but
+            # before Python received the result. Never return that session to the pool.
+            await complete_cleanup(connection.invalidate())
+            raise
         if not locked:
             report(name, "skipped", error_code="already_running")
             return TaskResult("skipped", 3, "already_running")
         try:
-            # Also runs after a scheduler restart: a killed parent cannot execute cleanup.
-            await recover_publication(engine, name)
-            report(name, "running")
-            code = None
-            try:
-                code = await run_command(task)
-            finally:
-                # run_command has reaped the child before we read its committed successes.
-                # Keep the scheduler lease until recovery finishes.
-                if code not in {0, 3}:
-                    await recover_publication(engine, name)
-            status = {0: "success", 2: "partial", 3: "skipped", 4: "paused_provider_limit"}.get(
-                code, "failed"
-            )
-            report(name, status, exit_code=code)
-            return TaskResult(status, code)
-        finally:
-            await connection.execute(
-                text("SELECT pg_advisory_unlock(hashtext(:name))"), {"name": lease}
-            )
+            pid = await connection.scalar(text("SELECT pg_backend_pid()"))
             await connection.commit()
+            return await run_with_lease(connection, engine, name, task, lease, pid)
+        finally:
+
+            async def release():
+                try:
+                    async with asyncio.timeout(LEASE_TIMEOUT_SECONDS):
+                        await connection.rollback()
+                        if not connection.invalidated:
+                            await connection.execute(
+                                text("SELECT pg_advisory_unlock(hashtext(:name))"), {"name": lease}
+                            )
+                            await connection.commit()
+                            report(name, "lease_released")
+                except Exception:
+                    await connection.invalidate()
+                    report(name, "lease_disconnected")
+
+            await complete_cleanup(release())
 
 
 async def worker(
@@ -196,12 +299,16 @@ async def worker(
 ):
     now = clock or asyncio.get_running_loop().time
     while True:
+        check_stopping()
         started = now()
         try:
             result = await cycle(engine, name, task)
         except TimeoutError:
             report(name, "failed", error_code="collection_timeout")
             result = TaskResult("failed", 1, "collection_timeout")
+        except LeaseLostError:
+            report(name, "failed", error_code="scheduler_lease_lost")
+            result = TaskResult("failed", 1, "scheduler_lease_lost")
         except Exception:
             # One provider/DB failure never terminates the other workers or future cycles.
             report(name, "failed", error_code="collection_or_database_error")
@@ -274,11 +381,18 @@ async def execute(names, once=False) -> int:
                     await first_cycles[dependency].wait()
             return await worker(engine, name, task, once, first_cycle_done=first_cycles[name])
 
-        completed = await asyncio.gather(*(selected_worker(name, task) for name, task in enabled))
+        workers = [asyncio.create_task(selected_worker(name, task)) for name, task in enabled]
+        try:
+            completed = await asyncio.gather(*workers)
+        finally:
+            for running in workers:
+                if not running.done() and not running.cancelling():
+                    running.cancel()
+            await complete_cleanup(asyncio.gather(*workers, return_exceptions=True))
         results.update({name: result for (name, _), result in zip(enabled, completed, strict=True)})
         return report_once(results) if once else 0
     finally:
-        await engine.dispose()
+        await complete_cleanup(engine.dispose())
 
 
 def main() -> None:

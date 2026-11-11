@@ -1,0 +1,21 @@
+# CodeBuild project seoul-now-lab-deploy (infra/cloudformation/cicd.yaml).
+# Source: the bundle built by infra/cicd/make-bundle.sh (uploaded by deploy.yml).
+# IMAGE_DIGEST, GIT_SHA, DEPLOY_ACTION and DEPLOY_MODE arrive as start-build overrides.
+version: 0.2
+
+env:
+  shell: bash
+  variables:
+    KUBECTL_VERSION: v1.36.6
+    # Official checksum of dl.k8s.io/release/v1.36.6/bin/linux/arm64/kubectl
+    KUBECTL_SHA256: 35507ef408c3d38849e5d3203e18f8e861db822aa664101a9ced0869edd06046
+
+phases:
+  install:
+    commands:
+      - curl -fsSL -o /usr/local/bin/kubectl "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/arm64/kubectl"
+      - echo "${KUBECTL_SHA256}  /usr/local/bin/kubectl" | sha256sum -c -
+      - chmod +x /usr/local/bin/kubectl
+  build:
+    commands:
+      - bash infra/cicd/deploy.sh

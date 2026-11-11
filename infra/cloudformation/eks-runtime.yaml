@@ -1,0 +1,360 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Seoul Now EKS 1.36 with one private ARM64 managed worker, explicit administrator access and
+  managed networking addons. Existing cluster/node/CNI IAM roles are reused.
+Metadata:
+  AWSToolsMetrics:
+    AWSAgentToolkit: aws-cloudformation@3
+Parameters:
+  ProjectName:
+    Type: String
+    AllowedPattern: '[a-z][a-z0-9-]*[a-z0-9]'
+    MinLength: 3
+    MaxLength: 16
+    Default: seoul-now
+  Environment:
+    Type: String
+    AllowedValues:
+    - lab
+    - demo
+    Default: lab
+  AppSubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+  WorkerSubnetId:
+    Type: AWS::EC2::Subnet::Id
+  DbClientSecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+  ClusterRoleArn:
+    Type: String
+    AllowedPattern: arn:aws:iam::[0-9]{12}:role/.+
+  NodeRoleArn:
+    Type: String
+    AllowedPattern: arn:aws:iam::[0-9]{12}:role/.+
+  CniRoleArn:
+    Type: String
+    AllowedPattern: arn:aws:iam::[0-9]{12}:role/.+
+  AdminPrincipalArn:
+    Type: String
+    AllowedPattern: arn:aws:iam::[0-9]{12}:(user|role)/.+
+  AdminPublicCidr:
+    Type: String
+    AllowedPattern: ([0-9]{1,3}\.){3}[0-9]{1,3}/32
+    Description: Current developer public IPv4 /32; update if the ISP address changes.
+  KubernetesVersion:
+    Type: String
+    AllowedValues:
+    - '1.36'
+    Default: '1.36'
+  NodeInstanceType:
+    Type: String
+    AllowedValues:
+    - t4g.large
+    - m7g.large
+    Default: t4g.large
+  NodeReleaseVersion:
+    Type: String
+    Default: 1.36.5-20261107
+  VpcCniVersion:
+    Type: String
+    Default: v1.23.2-eksbuild.12
+  CoreDnsVersion:
+    Type: String
+    Default: v1.14.7-eksbuild.35
+  KubeProxyVersion:
+    Type: String
+    Default: v1.36.0-eksbuild.65
+  PodIdentityAgentVersion:
+    Type: String
+    Default: v1.4.1-eksbuild.3
+Resources:
+  Cluster:
+    Type: AWS::EKS::Cluster
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Managed Kubernetes control plane with private worker access and explicit developer access.
+        must: No public wildcard CIDR; no Auto Mode. STANDARD support avoids extended-support fees but
+          requires upgrades at end of support.
+    Properties:
+      Name:
+        Fn::Sub: ${ProjectName}-${Environment}-eks
+      Version:
+        Ref: KubernetesVersion
+      RoleArn:
+        Ref: ClusterRoleArn
+      AccessConfig:
+        AuthenticationMode: API
+        BootstrapClusterCreatorAdminPermissions: false
+      BootstrapSelfManagedAddons: false
+      DeletionProtection: true
+      UpgradePolicy:
+        SupportType: STANDARD
+      ResourcesVpcConfig:
+        SubnetIds:
+          Ref: AppSubnetIds
+        EndpointPrivateAccess: true
+        EndpointPublicAccess: true
+        PublicAccessCidrs:
+        - Ref: AdminPublicCidr
+      KubernetesNetworkConfig:
+        IpFamily: ipv4
+      Logging:
+        ClusterLogging:
+          EnabledTypes:
+          - Type: api
+          - Type: audit
+          - Type: authenticator
+      Tags:
+      - Key: Project
+        Value:
+          Ref: ProjectName
+      - Key: Environment
+        Value:
+          Ref: Environment
+  AdminAccess:
+    Type: AWS::EKS::AccessEntry
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Give the designated operator kubectl access without relying on cluster creator side effects.
+        must: Changing the IAM principal requires a reviewed access-entry replacement.
+    Properties:
+      ClusterName:
+        Ref: Cluster
+      PrincipalArn:
+        Ref: AdminPrincipalArn
+      Type: STANDARD
+      AccessPolicies:
+      - PolicyArn:
+          Fn::Sub: arn:${AWS::Partition}:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy
+        AccessScope:
+          Type: cluster
+      Tags:
+      - Key: Project
+        Value:
+          Ref: ProjectName
+      - Key: Environment
+        Value:
+          Ref: Environment
+  CniIdentity:
+    Type: AWS::EKS::PodIdentityAssociation
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Existing CNI role supplies ENI permissions; workers have no CNI policy.
+        must: Keep this separate association as the owner; do not also set addon PodIdentityAssociations.
+    Properties:
+      ClusterName:
+        Ref: Cluster
+      Namespace: kube-system
+      ServiceAccount: aws-node
+      RoleArn:
+        Ref: CniRoleArn
+      Tags:
+      - Key: Project
+        Value:
+          Ref: ProjectName
+      - Key: Environment
+        Value:
+          Ref: Environment
+  PodIdentityAgent:
+    Type: AWS::EKS::Addon
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Pinned EKS-managed eks-pod-identity-agent compatible with ARM64 and Kubernetes 1.36.
+        must: Validate the actual addon status after workers become Ready; do not also manage this addon
+          with Helm.
+    Properties:
+      ClusterName:
+        Ref: Cluster
+      AddonName: eks-pod-identity-agent
+      AddonVersion:
+        Ref: PodIdentityAgentVersion
+      ResolveConflicts: OVERWRITE
+      Tags:
+      - Key: Project
+        Value:
+          Ref: ProjectName
+      - Key: Environment
+        Value:
+          Ref: Environment
+  VpcCni:
+    Type: AWS::EKS::Addon
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Pinned EKS-managed vpc-cni compatible with ARM64 and Kubernetes 1.36.
+        must: Validate the actual addon status after workers become Ready; do not also manage this addon
+          with Helm.
+    Properties:
+      ClusterName:
+        Ref: Cluster
+      AddonName: vpc-cni
+      AddonVersion:
+        Ref: VpcCniVersion
+      ResolveConflicts: OVERWRITE
+      Tags:
+      - Key: Project
+        Value:
+          Ref: ProjectName
+      - Key: Environment
+        Value:
+          Ref: Environment
+    DependsOn:
+    - CniIdentity
+  KubeProxy:
+    Type: AWS::EKS::Addon
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Pinned EKS-managed kube-proxy compatible with ARM64 and Kubernetes 1.36.
+        must: Validate the actual addon status after workers become Ready; do not also manage this addon
+          with Helm.
+    Properties:
+      ClusterName:
+        Ref: Cluster
+      AddonName: kube-proxy
+      AddonVersion:
+        Ref: KubeProxyVersion
+      ResolveConflicts: OVERWRITE
+      Tags:
+      - Key: Project
+        Value:
+          Ref: ProjectName
+      - Key: Environment
+        Value:
+          Ref: Environment
+    DependsOn:
+    - Workers
+  CoreDns:
+    Type: AWS::EKS::Addon
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Pinned EKS-managed coredns compatible with ARM64 and Kubernetes 1.36.
+        must: Validate the actual addon status after workers become Ready; do not also manage this addon
+          with Helm.
+    Properties:
+      ClusterName:
+        Ref: Cluster
+      AddonName: coredns
+      AddonVersion:
+        Ref: CoreDnsVersion
+      ResolveConflicts: OVERWRITE
+      Tags:
+      - Key: Project
+        Value:
+          Ref: ProjectName
+      - Key: Environment
+        Value:
+          Ref: Environment
+      ConfigurationValues: '{"replicaCount":1}'
+    DependsOn:
+    - Workers
+  WorkerLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Encrypted disposable worker disk, IMDSv2 and explicit DB-client SG attachment.
+        must: No public IP, SSH key, custom AMI or instance profile here. Include the EKS cluster SG when
+          supplying custom SGs.
+    Properties:
+      LaunchTemplateData:
+        MetadataOptions:
+          HttpEndpoint: enabled
+          HttpTokens: required
+          HttpPutResponseHopLimit: 1
+        SecurityGroupIds:
+        - Fn::GetAtt:
+          - Cluster
+          - ClusterSecurityGroupId
+        - Ref: DbClientSecurityGroupId
+        BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: 30
+            VolumeType: gp3
+            Encrypted: true
+            DeleteOnTermination: true
+        TagSpecifications:
+        - ResourceType: instance
+          Tags:
+          - Key: Project
+            Value:
+              Ref: ProjectName
+          - Key: Environment
+            Value:
+              Ref: Environment
+        - ResourceType: volume
+          Tags:
+          - Key: Project
+            Value:
+              Ref: ProjectName
+          - Key: Environment
+            Value:
+              Ref: Environment
+  Workers:
+    Type: AWS::EKS::Nodegroup
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: One 8 GiB ARM worker for the API, concurrent collector processes and required system pods.
+        must: AZ A co-locates the worker with the single NAT and RDS. MaxSize 2 permits a controlled update,
+          not an autoscaler. Single worker is not HA.
+    Properties:
+      ClusterName:
+        Ref: Cluster
+      NodegroupName: arm-runtime
+      NodeRole:
+        Ref: NodeRoleArn
+      Subnets:
+      - Ref: WorkerSubnetId
+      AmiType: AL2023_ARM_64_STANDARD
+      Version:
+        Ref: KubernetesVersion
+      ReleaseVersion:
+        Ref: NodeReleaseVersion
+      InstanceTypes:
+      - Ref: NodeInstanceType
+      CapacityType: ON_DEMAND
+      ScalingConfig:
+        MinSize: 1
+        DesiredSize: 1
+        MaxSize: 2
+      UpdateConfig:
+        MaxUnavailable: 1
+      LaunchTemplate:
+        Id:
+          Ref: WorkerLaunchTemplate
+        Version:
+          Fn::GetAtt:
+          - WorkerLaunchTemplate
+          - LatestVersionNumber
+      Labels:
+        workload: seoul-now
+      Tags:
+        Project:
+          Ref: ProjectName
+        Environment:
+          Ref: Environment
+    DependsOn:
+    - VpcCni
+    - PodIdentityAgent
+    - CniIdentity
+    - AdminAccess
+Outputs:
+  ClusterName:
+    Value:
+      Ref: Cluster
+  ClusterArn:
+    Value:
+      Fn::GetAtt:
+      - Cluster
+      - Arn
+  ClusterEndpoint:
+    Value:
+      Fn::GetAtt:
+      - Cluster
+      - Endpoint
+  ClusterSecurityGroupId:
+    Value:
+      Fn::GetAtt:
+      - Cluster
+      - ClusterSecurityGroupId
+  NodegroupName:
+    Value:
+      Fn::GetAtt:
+      - Workers
+      - NodegroupName

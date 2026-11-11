@@ -30,23 +30,26 @@ def point():
 
 
 def test_cursor_condition_binding_expiry_capacity_and_replay():
-    clock = [0]
-    store = QueryCursorStore(ttl_seconds=5, capacity=1, clock=lambda: clock[0])
-    token = store.issue(("query", 10), {"page": 2})
-    assert store.read(token, ("query", 10)) == {"page": 2}
-    changed = store.read(token, ("query", 10))
-    changed["page"] = 3
-    assert store.read(token, ("query", 10))["page"] == 2
-    with pytest.raises(ServiceError) as error:
-        store.read(token, ("query", 11))
-    assert error.value.code == "INVALID_CURSOR"
-    with pytest.raises(ServiceError):
-        store.issue("another", {})
-    clock[0] = 5
-    with pytest.raises(ServiceError) as error:
-        store.read(token, ("query", 10))
-    assert error.value.code == "CURSOR_EXPIRED"
-    assert store.issue("another", {})
+    async def run():
+        clock = [0]
+        store = QueryCursorStore(ttl_seconds=5, capacity=1, clock=lambda: clock[0])
+        token = await store.issue(("query", 10), {"page": 2})
+        assert await store.read(token, ("query", 10)) == {"page": 2}
+        changed = await store.read(token, ("query", 10))
+        changed["page"] = 3
+        assert (await store.read(token, ("query", 10)))["page"] == 2
+        with pytest.raises(ServiceError) as error:
+            await store.read(token, ("query", 11))
+        assert error.value.code == "INVALID_CURSOR"
+        with pytest.raises(ServiceError):
+            await store.issue("another", {})
+        clock[0] = 5
+        with pytest.raises(ServiceError) as error:
+            await store.read(token, ("query", 10))
+        assert error.value.code == "CURSOR_EXPIRED"
+        assert await store.issue("another", {})
+
+    asyncio.run(run())
 
 
 def test_address_next_page_and_changed_query_rejected():

@@ -1,0 +1,6 @@
+[
+  {"ParameterKey": "ProjectName", "ParameterValue": "seoul-now"},
+  {"ParameterKey": "Environment", "ParameterValue": "lab"},
+  {"ParameterKey": "VpcOriginId", "ParameterValue": "vo_E4ULZxcQNX0CY9K6Zt3nYO"},
+  {"ParameterKey": "OriginDomainName", "ParameterValue": "internal-seoul-now-lab-api-2045918967.ap-northeast-2.elb.amazonaws.com"}
+]

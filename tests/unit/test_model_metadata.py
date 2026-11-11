@@ -5,12 +5,25 @@ from sqlalchemy.schema import CreateIndex, CreateTable
 
 from app.models import Base
 
+# Disposable, expiring API state shared between processes. It holds no business data,
+# so JSONB is allowed here only; every business table must stay relational.
+TEMPORARY_STATE_TABLES = {
+    "query_cursors",
+    "read_replays",
+    "trip_progress",
+    "trip_requests",
+    "origin_contexts",
+}
+
 
 def test_runtime_models_use_relational_postgresql_schema():
     # 0013 adds result/card/evidence and compact search-area snapshots.
-    assert len(Base.metadata.tables) == 38
+    # 0015/0016 add disposable shared API state (cursors, replays, trip progress, origins).
+    assert len(Base.metadata.tables) == 43
     assert "provider_snapshots" not in Base.metadata.tables
     for table in Base.metadata.sorted_tables:
+        if table.name in TEMPORARY_STATE_TABLES:
+            continue
         assert all(not isinstance(c.type, postgresql.JSON) for c in table.columns)
         assert str(CreateTable(table).compile(dialect=postgresql.dialect()))
         for index in table.indexes:

@@ -34,6 +34,9 @@ class RecommendationWork:
     condition_draft: object = None
     conversation_draft: object = None
     answered_targets: list = field(default_factory=list)
+    # Set by a shared store: `await commit_hook(session, outcome)` runs inside the
+    # condition commit, so trip state and conditions are saved together or not at all.
+    commit_hook: object = None
 
 
 @dataclass
@@ -84,6 +87,58 @@ def clone(outcome):
     return cloned
 
 
+def merge_outcome(entry, operation, request, work, outcome):
+    """Fold one executed request into the published trip state (shared by every store)."""
+    update = outcome.response.condition_update
+    if update.applied:
+        entry.condition_draft = None
+        entry.conversation_draft = (
+            deepcopy(work.conversation_draft) if operation == "chat" else None
+        )
+        entry.conditions = update.conditions.model_copy(deep=True)
+        entry.version = update.version
+        entry.excluded.update(request.excluded_place_ids)
+        if outcome.failure is None:
+            entry.search = work.search
+        if outcome.response.kind == "recommendation":
+            entry.excluded.update(
+                c["place"]["value"]["place_id"] for c in outcome.response.result["cards"]
+            )
+    elif operation == "chat" and outcome.failure is None:
+        entry.condition_draft = deepcopy(work.condition_draft)
+        entry.conversation_draft = deepcopy(work.conversation_draft)
+
+
+def check_current(request, work):
+    """The trip's in-memory/stored state must match the request's conditions and version."""
+    if work.expired or (work.version is None and request.condition_version != 0):
+        raise ServiceError(
+            "CONTEXT_EXPIRED",
+            "추천 탐색 상태가 없습니다. 새 여행을 시작해 주세요.",
+            retryable=False,
+        )
+    if work.version is not None and (
+        work.version != request.condition_version or work.conditions != request.current_conditions
+    ):
+        raise ServiceError(
+            "CONTEXT_CONDITIONS_MISMATCH",
+            "현재 여행의 조건과 버전을 다시 확인해 주세요.",
+            retryable=False,
+        )
+
+
+def working_copy(entry):
+    return RecommendationWork(
+        version=entry.version,
+        conditions=deepcopy(entry.conditions),
+        excluded=set(entry.excluded),
+        search=deepcopy(entry.search),
+        expired=entry.expired,
+        condition_draft=deepcopy(entry.condition_draft),
+        conversation_draft=deepcopy(entry.conversation_draft),
+    )
+
+
 class MemoryProgressStore:
     def __init__(self, ttl_seconds=1800, max_trips=1000, max_requests=200, clock=time.monotonic):
         self.ttl_seconds, self.max_trips, self.max_requests = ttl_seconds, max_trips, max_requests
@@ -92,35 +147,8 @@ class MemoryProgressStore:
     def trip(self, trip_id):
         return self.trips[str(trip_id)]
 
-    @staticmethod
-    def check_current(request, work):
-        if work.expired or (work.version is None and request.condition_version != 0):
-            raise ServiceError(
-                "CONTEXT_EXPIRED",
-                "추천 탐색 상태가 없습니다. 새 여행을 시작해 주세요.",
-                retryable=False,
-            )
-        if work.version is not None and (
-            work.version != request.condition_version
-            or work.conditions != request.current_conditions
-        ):
-            raise ServiceError(
-                "CONTEXT_CONDITIONS_MISMATCH",
-                "현재 여행의 조건과 버전을 다시 확인해 주세요.",
-                retryable=False,
-            )
-
-    @staticmethod
-    def working_copy(entry):
-        return RecommendationWork(
-            version=entry.version,
-            conditions=deepcopy(entry.conditions),
-            excluded=set(entry.excluded),
-            search=deepcopy(entry.search),
-            expired=entry.expired,
-            condition_draft=deepcopy(entry.condition_draft),
-            conversation_draft=deepcopy(entry.conversation_draft),
-        )
+    check_current = staticmethod(check_current)
+    working_copy = staticmethod(working_copy)
 
     async def run(
         self,
@@ -205,24 +233,7 @@ class MemoryProgressStore:
                 entry.expire()
                 return clone(outcome)
             cached_outcome = clone(outcome)
-            update = outcome.response.condition_update
-            if update.applied:
-                entry.condition_draft = None
-                entry.conversation_draft = (
-                    deepcopy(work.conversation_draft) if operation == "chat" else None
-                )
-                entry.conditions = update.conditions.model_copy(deep=True)
-                entry.version = update.version
-                entry.excluded.update(request.excluded_place_ids)
-                if outcome.failure is None:
-                    entry.search = work.search
-                if outcome.response.kind == "recommendation":
-                    entry.excluded.update(
-                        c["place"]["value"]["place_id"] for c in outcome.response.result["cards"]
-                    )
-            elif operation == "chat" and outcome.failure is None:
-                entry.condition_draft = deepcopy(work.condition_draft)
-                entry.conversation_draft = deepcopy(work.conversation_draft)
+            merge_outcome(entry, operation, request, work, outcome)
             entry.requests[request_id] = signature, cached_outcome
             entry.expires_at = self.clock() + self.ttl_seconds
             return clone(outcome)

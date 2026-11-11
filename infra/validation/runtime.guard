@@ -1,0 +1,75 @@
+# Project-specific checks; these do not replace AWS policy or runtime validation.
+let databases = Resources.*[ Type == 'AWS::RDS::DBInstance' ]
+rule private_encrypted_retained_database when %databases !empty {
+    %databases {
+        DeletionPolicy == 'Retain'
+        UpdateReplacePolicy == 'Retain'
+        Properties {
+            PubliclyAccessible == false
+            StorageEncrypted == true
+            DeletionProtection == true
+            ManageMasterUserPassword == true
+            BackupRetentionPeriod >= 7
+        }
+    }
+}
+let db_params = Resources.*[ Type == 'AWS::RDS::DBParameterGroup' ]
+rule require_database_tls when %db_params !empty {
+    %db_params.Properties.Parameters.'rds.force_ssl' == '1'
+}
+let secrets = Resources.*[ Type == 'AWS::SecretsManager::Secret' ]
+rule empty_retained_secrets when %secrets !empty {
+    %secrets {
+        DeletionPolicy == 'Retain'
+        UpdateReplacePolicy == 'Retain'
+        Properties.SecretString !exists
+        Properties.GenerateSecretString !exists
+    }
+}
+let clusters = Resources.*[ Type == 'AWS::EKS::Cluster' ]
+rule private_eks_with_explicit_access when %clusters !empty {
+    %clusters.Properties {
+        ResourcesVpcConfig.EndpointPrivateAccess == true
+        # Parameter syntax and live /32 validation are checked by CFN and prepare_runtime_parameters.
+        ResourcesVpcConfig.PublicAccessCidrs.*.Ref == 'AdminPublicCidr'
+        AccessConfig.AuthenticationMode == 'API'
+        AccessConfig.BootstrapClusterCreatorAdminPermissions == false
+        UpgradePolicy.SupportType == 'STANDARD'
+        DeletionProtection == true
+    }
+}
+let launch_templates = Resources.*[ Type == 'AWS::EC2::LaunchTemplate' ]
+rule encrypted_worker_disk_and_imdsv2 when %launch_templates !empty {
+    %launch_templates.Properties.LaunchTemplateData {
+        MetadataOptions.HttpTokens == 'required'
+        MetadataOptions.HttpPutResponseHopLimit == 1
+        BlockDeviceMappings.*.Ebs.Encrypted == true
+    }
+}
+let logs = Resources.*[ Type == 'AWS::Logs::LogGroup' ]
+rule bounded_retained_logs when %logs !empty {
+    %logs {
+        DeletionPolicy == 'Retain'
+        UpdateReplacePolicy == 'Retain'
+        Properties.RetentionInDays == 7
+    }
+}
+let roles = Resources.*[ Type == 'AWS::IAM::Role' ]
+rule scoped_pod_identity_trust when %roles !empty {
+    %roles.Properties.AssumeRolePolicyDocument.Statement.* {
+        Principal.Service == 'pods.eks.amazonaws.com'
+        Condition.StringEquals.'aws:SourceAccount' exists
+        Condition.StringEquals.'aws:RequestTag/kubernetes-namespace' exists
+        Condition.StringEquals.'aws:RequestTag/kubernetes-service-account' exists
+        Condition.ArnEquals.'aws:SourceArn' exists
+    }
+}
+let identities = Resources.*[ Type == 'AWS::EKS::PodIdentityAssociation' ]
+rule explicit_pod_identity_binding when %identities !empty {
+    %identities.Properties {
+        RoleArn.Ref exists
+        Namespace IN ['kube-system', 'seoul-now', 'seoul-now-bootstrap', 'amazon-cloudwatch']
+        ServiceAccount exists
+        DisableSessionTags !exists
+    }
+}

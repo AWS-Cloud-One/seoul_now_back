@@ -1,0 +1,221 @@
+# W5-A: private in-cluster API and continuous collection on the existing ARM node.
+# Secret values stay in Secrets Manager; app.bootstrap reads each role's secret.
+# ConfigMaps seoul-now-runtime / seoul-now-api-settings are generated with a content
+# hash by kustomization.yaml (render with `kubectl kustomize infra/kubernetes`);
+# do not apply this file alone.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: seoul-now-api
+  namespace: seoul-now
+  labels:
+    app.kubernetes.io/name: seoul-now
+    app.kubernetes.io/component: api
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  minReadySeconds: 10
+  progressDeadlineSeconds: 300
+  # In-flight trip, origin, cursor and P03 replay state is shared through PostgreSQL
+  # (migration 0016, APP_STATE_BACKEND=database), so old and new Pods can serve the
+  # same trip. Start the new Pod first; remove the old one only after it is Ready.
+  # The external route-call limits stay per Pod; during a rollout they briefly double.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: seoul-now
+      app.kubernetes.io/component: api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: seoul-now
+        app.kubernetes.io/component: api
+    spec:
+      serviceAccountName: seoul-now-api
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 120
+      nodeSelector:
+        kubernetes.io/os: linux
+        kubernetes.io/arch: arm64
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: api
+          # Shared trip state (migration 0016). Previous image for rollback:
+          # sha256:365e74f0503aa8004b87dee13234980beb8081c2d9744e084c0bb3a4c4354f85
+          image: 963701985499.dkr.ecr.ap-northeast-2.amazonaws.com/seoul-now/lab/backend@sha256:03bc054f0a3b31e06656e290f99d780db54801ee592be7cbd7c0fd6997afffea
+          imagePullPolicy: IfNotPresent
+          lifecycle:
+            preStop:
+              # Keep serving while the ALB deregisters this target, then let
+              # Uvicorn drain in-flight requests (45 s) within the 120 s grace.
+              exec:
+                command: [sleep, "15"]
+          # Keep the image ENTRYPOINT so Secret bootstrap runs before Uvicorn.
+          args:
+            - uvicorn
+            - app.main:create_app
+            - --factory
+            - --host
+            - 0.0.0.0
+            - --port
+            - "8000"
+            - --workers
+            - "1"
+            - --timeout-graceful-shutdown
+            - "45"
+            - --no-server-header
+          envFrom:
+            - configMapRef:
+                name: seoul-now-runtime
+            - configMapRef:
+                name: seoul-now-api-settings
+          env:
+            - name: APP_RUNTIME_ROLE
+              value: api
+            - name: APP_SETTINGS_SECRET_ID
+              value: arn:aws:secretsmanager:ap-northeast-2:963701985499:secret:seoul-now/lab/api-5C2yzm
+          ports:
+            - name: http
+              containerPort: 8000
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          startupProbe:
+            httpGet:
+              path: /api/v1/health/live
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 24
+          livenessProbe:
+            httpGet:
+              path: /api/v1/health/live
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /api/v1/health/ready
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 6
+            failureThreshold: 3
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: seoul-now-api
+  namespace: seoul-now
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: seoul-now
+    app.kubernetes.io/component: api
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: seoul-now-collector
+  namespace: seoul-now
+  labels:
+    app.kubernetes.io/name: seoul-now
+    app.kubernetes.io/component: collector
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  minReadySeconds: 10
+  progressDeadlineSeconds: 300
+  # Finish old children and release DB leases before starting the next scheduler.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: seoul-now
+      app.kubernetes.io/component: collector
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: seoul-now
+        app.kubernetes.io/component: collector
+    spec:
+      serviceAccountName: seoul-now-collector
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 60
+      nodeSelector:
+        kubernetes.io/os: linux
+        kubernetes.io/arch: arm64
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: collector
+          image: 963701985499.dkr.ecr.ap-northeast-2.amazonaws.com/seoul-now/lab/backend@sha256:64ccbd89a2c42bc0ad3a01580c92235f061febac34ab66979c7f601a790a33d1
+          imagePullPolicy: IfNotPresent
+          args: [python, -u, -m, jobs.scheduler]
+          envFrom:
+            - configMapRef:
+                name: seoul-now-runtime
+          env:
+            - name: APP_RUNTIME_ROLE
+              value: collector
+            - name: APP_SETTINGS_SECRET_ID
+              value: arn:aws:secretsmanager:ap-northeast-2:963701985499:secret:seoul-now/lab/collector-s1va7y
+          resources:
+            requests:
+              cpu: 500m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 2Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          # No HTTP probe: collection freshness is checked in DB/logs, separately
+          # from Kubernetes' process exit detection and restart behavior.
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi

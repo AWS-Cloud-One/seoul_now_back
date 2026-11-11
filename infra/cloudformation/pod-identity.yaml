@@ -1,0 +1,184 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Seoul Now workload Pod Identity bindings. Apply after administrator IAM, EKS and Pod Identity
+  Agent are ready. Kubernetes service accounts are declared separately.
+Metadata:
+  AWSToolsMetrics:
+    AWSAgentToolkit: aws-cloudformation@3
+Parameters:
+  ProjectName:
+    Type: String
+    AllowedPattern: '[a-z][a-z0-9-]*[a-z0-9]'
+    MinLength: 3
+    MaxLength: 16
+    Default: seoul-now
+  Environment:
+    Type: String
+    AllowedValues:
+    - lab
+    - demo
+    Default: lab
+  ClusterName:
+    Type: String
+  ApiRoleArn:
+    Type: String
+    AllowedPattern: arn:aws:iam::[0-9]{12}:role/.+
+  CollectorRoleArn:
+    Type: String
+    AllowedPattern: arn:aws:iam::[0-9]{12}:role/.+
+  MigrationRoleArn:
+    Type: String
+    AllowedPattern: arn:aws:iam::[0-9]{12}:role/.+
+  ImportRoleArn:
+    Type: String
+    AllowedPattern: arn:aws:iam::[0-9]{12}:role/.+
+  BootstrapRoleArn:
+    Type: String
+    AllowedPattern: arn:aws:iam::[0-9]{12}:role/.+
+  LoadBalancerRoleArn:
+    Type: String
+    AllowedPattern: arn:aws:iam::[0-9]{12}:role/.+
+  LogsRoleArn:
+    Type: String
+    AllowedPattern: arn:aws:iam::[0-9]{12}:role/.+
+Resources:
+  ApiIdentity:
+    Type: AWS::EKS::PodIdentityAssociation
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Bind the dedicated workload service account to its AWS role.
+        must: Do not add static AWS credentials or an IRSA annotation to this service account.
+    Properties:
+      ClusterName:
+        Ref: ClusterName
+      RoleArn:
+        Ref: ApiRoleArn
+      Namespace: seoul-now
+      ServiceAccount: seoul-now-api
+      Tags:
+      - Key: Project
+        Value:
+          Ref: ProjectName
+      - Key: Environment
+        Value:
+          Ref: Environment
+  CollectorIdentity:
+    Type: AWS::EKS::PodIdentityAssociation
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Bind the dedicated workload service account to its AWS role.
+        must: Do not add static AWS credentials or an IRSA annotation to this service account.
+    Properties:
+      ClusterName:
+        Ref: ClusterName
+      RoleArn:
+        Ref: CollectorRoleArn
+      Namespace: seoul-now
+      ServiceAccount: seoul-now-collector
+      Tags:
+      - Key: Project
+        Value:
+          Ref: ProjectName
+      - Key: Environment
+        Value:
+          Ref: Environment
+  MigrationIdentity:
+    Type: AWS::EKS::PodIdentityAssociation
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Bind the dedicated workload service account to its AWS role.
+        must: Do not add static AWS credentials or an IRSA annotation to this service account.
+    Properties:
+      ClusterName:
+        Ref: ClusterName
+      RoleArn:
+        Ref: MigrationRoleArn
+      Namespace: seoul-now
+      ServiceAccount: seoul-now-migration
+      Tags:
+      - Key: Project
+        Value:
+          Ref: ProjectName
+      - Key: Environment
+        Value:
+          Ref: Environment
+  ImportIdentity:
+    Type: AWS::EKS::PodIdentityAssociation
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Bind the dedicated workload service account to its AWS role.
+        must: Do not add static AWS credentials or an IRSA annotation to this service account.
+    Properties:
+      ClusterName:
+        Ref: ClusterName
+      RoleArn:
+        Ref: ImportRoleArn
+      Namespace: seoul-now
+      ServiceAccount: seoul-now-import
+      Tags:
+      - Key: Project
+        Value:
+          Ref: ProjectName
+      - Key: Environment
+        Value:
+          Ref: Environment
+  BootstrapIdentity:
+    Type: AWS::EKS::PodIdentityAssociation
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Bind the dedicated workload service account to its AWS role.
+        must: Do not add static AWS credentials or an IRSA annotation to this service account.
+    Properties:
+      ClusterName:
+        Ref: ClusterName
+      RoleArn:
+        Ref: BootstrapRoleArn
+      Namespace: seoul-now-bootstrap
+      ServiceAccount: seoul-now-bootstrap
+      Tags:
+      - Key: Project
+        Value:
+          Ref: ProjectName
+      - Key: Environment
+        Value:
+          Ref: Environment
+  LoadBalancerIdentity:
+    Type: AWS::EKS::PodIdentityAssociation
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Bind the dedicated workload service account to its AWS role.
+        must: Do not add static AWS credentials or an IRSA annotation to this service account.
+    Properties:
+      ClusterName:
+        Ref: ClusterName
+      RoleArn:
+        Ref: LoadBalancerRoleArn
+      Namespace: kube-system
+      ServiceAccount: aws-load-balancer-controller
+      Tags:
+      - Key: Project
+        Value:
+          Ref: ProjectName
+      - Key: Environment
+        Value:
+          Ref: Environment
+  LogsIdentity:
+    Type: AWS::EKS::PodIdentityAssociation
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Bind the dedicated workload service account to its AWS role.
+        must: Do not add static AWS credentials or an IRSA annotation to this service account.
+    Properties:
+      ClusterName:
+        Ref: ClusterName
+      RoleArn:
+        Ref: LogsRoleArn
+      Namespace: amazon-cloudwatch
+      ServiceAccount: aws-for-fluent-bit
+      Tags:
+      - Key: Project
+        Value:
+          Ref: ProjectName
+      - Key: Environment
+        Value:
+          Ref: Environment
+Outputs: {}

@@ -1,0 +1,50 @@
+# Project-specific policy for the agreed public HTTPS / private HTTP lab API.
+rule private_origin_https_viewer {
+    Resources.ApiDistribution.Properties.DistributionConfig {
+        Enabled == true
+        ViewerCertificate.CloudFrontDefaultCertificate == true
+        Origins.* {
+            VpcOriginConfig.VpcOriginId.Ref == 'VpcOriginId'
+            DomainName.Ref == 'OriginDomainName'
+            CustomOriginConfig !exists
+            S3OriginConfig !exists
+        }
+        DefaultCacheBehavior {
+            ViewerProtocolPolicy == 'redirect-to-https'
+            CachePolicyId.Ref == 'DisabledCachePolicy'
+            OriginRequestPolicyId.Ref == 'DynamicOriginRequestPolicy'
+        }
+        CacheBehaviors.* {
+            PathPattern IN ['/api/v1/map/layers/roads/geometry', '/api/v1/map/layers/parking/geometry', '/api/v1/map/layers/population/geometry']
+            ViewerProtocolPolicy == 'redirect-to-https'
+            AllowedMethods == ['GET', 'HEAD', 'OPTIONS']
+            CachedMethods == ['GET', 'HEAD']
+            CachePolicyId.Ref == 'GeometryCachePolicy'
+        }
+        CustomErrorResponses.*.ErrorCachingMinTTL == 0
+    }
+}
+rule bounded_public_cache {
+    Resources.GeometryCachePolicy.Properties.CachePolicyConfig {
+        MinTTL == 0
+        DefaultTTL == 0
+        MaxTTL == 300
+        ParametersInCacheKeyAndForwardedToOrigin {
+            CookiesConfig.CookieBehavior == 'none'
+            HeadersConfig.Headers == ['Origin']
+            QueryStringsConfig.QueryStrings == ['bbox', 'level', 'cache_refresh']
+        }
+    }
+    Resources.DisabledCachePolicy.Properties.CachePolicyConfig {
+        MinTTL == 0
+        DefaultTTL == 0
+        MaxTTL == 0
+    }
+}
+rule single_cors_authority {
+    Resources.ApiResponseHeadersPolicy.Properties.ResponseHeadersPolicyConfig {
+        CorsConfig !exists
+        SecurityHeadersConfig.ContentTypeOptions.Override == true
+        SecurityHeadersConfig.StrictTransportSecurity.AccessControlMaxAgeSec >= 31536000
+    }
+}

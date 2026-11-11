@@ -20,6 +20,8 @@ def app() -> FastAPI:
             cors_origins=["http://localhost:5173"],
             docs_enabled=True,
             health_timeout_seconds=0.05,
+            # These API tests have no database; keep in-flight state in this process.
+            state_backend="memory",
         )
     )
 

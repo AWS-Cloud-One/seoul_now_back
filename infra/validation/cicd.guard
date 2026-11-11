@@ -1,0 +1,99 @@
+# Project rules for the CI/CD stack: no long-lived keys, exact GitHub trust,
+# no IAM self-escalation, private artifacts, VPC-only deploy, namespace-scoped EKS.
+
+let roles = Resources.*[ Type == 'AWS::IAM::Role' ]
+
+rule github_trust_is_exact {
+    Resources.GitHubDeployRole.Properties.AssumeRolePolicyDocument.Statement[*] {
+        Action == 'sts:AssumeRoleWithWebIdentity'
+        Principal.Federated.Ref == 'GitHubOidcProvider'
+        Condition.StringEquals['token.actions.githubusercontent.com:aud'] == 'sts.amazonaws.com'
+        Condition.StringEquals['token.actions.githubusercontent.com:sub'] exists
+        # Wildcards would let other branches or pull requests deploy.
+        Condition.StringLike !exists
+    }
+}
+
+rule codebuild_trust_has_confused_deputy_guard {
+    Resources.DeployRole.Properties.AssumeRolePolicyDocument.Statement[*] {
+        Principal.Service == 'codebuild.amazonaws.com'
+        Condition.StringEquals['aws:SourceAccount'] exists
+        Condition.ArnLike['aws:SourceArn'] exists
+    }
+}
+
+rule no_iam_or_wildcard_actions when %roles !empty {
+    %roles.Properties.Policies[*].PolicyDocument.Statement[*] {
+        Effect == 'Allow'
+        when Action is_string {
+            Action != '*'
+            Action != /^(iam|sts|secretsmanager|kms|rds):/
+        }
+        when Action is_list {
+            Action[*] != '*'
+            Action[*] != /^(iam|sts|secretsmanager|kms|rds):/
+        }
+    }
+}
+
+rule private_encrypted_artifacts {
+    Resources.ArtifactBucket {
+        DeletionPolicy == 'Retain'
+        Properties.BucketEncryption.ServerSideEncryptionConfiguration[*].ServerSideEncryptionByDefault.SSEAlgorithm exists
+        Properties.PublicAccessBlockConfiguration {
+            BlockPublicAcls == true
+            BlockPublicPolicy == true
+            IgnorePublicAcls == true
+            RestrictPublicBuckets == true
+        }
+        Properties.LifecycleConfiguration.Rules[*].ExpirationInDays exists
+    }
+    Resources.ArtifactBucketPolicy.Properties.PolicyDocument.Statement[*] {
+        Effect == 'Deny'
+        Condition.Bool['aws:SecureTransport'] == 'false'
+    }
+}
+
+rule vpc_only_single_unprivileged_deploy {
+    Resources.DeployProject.Properties {
+        VpcConfig.Subnets exists
+        VpcConfig.SecurityGroupIds exists
+        Environment.PrivilegedMode == false
+        ConcurrentBuildLimit == 1
+        Visibility == 'PRIVATE'
+        LogsConfig.CloudWatchLogs.Status == 'ENABLED'
+    }
+}
+
+rule deploy_network_is_narrow {
+    Resources.DeploySecurityGroup.Properties {
+        SecurityGroupIngress !exists
+        SecurityGroupEgress[*] {
+            IpProtocol == 'tcp'
+            FromPort == 443
+            ToPort == 443
+        }
+    }
+    Resources.ClusterApiFromDeploy.Properties {
+        IpProtocol == 'tcp'
+        FromPort == 443
+        ToPort == 443
+        CidrIp !exists
+        SourceSecurityGroupId.'Fn::GetAtt' == 'DeploySecurityGroup.GroupId'
+    }
+}
+
+rule namespace_scoped_cluster_access {
+    Resources.DeployAccessEntry.Properties {
+        Type == 'STANDARD'
+        KubernetesGroups !exists
+        AccessPolicies[*] {
+            PolicyArn == 'arn:aws:eks::aws:cluster-access-policy/AmazonEKSEditPolicy'
+            AccessScope.Type == 'namespace'
+        }
+    }
+}
+
+rule bounded_logs {
+    Resources.DeployLogGroup.Properties.RetentionInDays <= 30
+}

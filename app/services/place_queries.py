@@ -78,11 +78,15 @@ class PlaceQueryService:
             raise ServiceError("VALIDATION_ERROR", "검색어를 입력해 주세요.")
         scope = ("places", query, limit, center.model_dump() if center else None, radius, category)
         state = (
-            self.cursors.read(cursor, scope)
+            await self.cursors.read(cursor, scope)
             if cursor
             else {"page": 1, "buffer": [], "ended": False}
         )
-        items = state["buffer"]
+        # A shared store returns plain JSON, so buffered places come back as dicts.
+        items = [
+            FoundPlace.model_validate(row) if isinstance(row, dict) else row
+            for row in state["buffer"]
+        ]
         try:
             # A bounded amount of I/O; an underfilled page may still have a cursor.
             for _ in range(3):
@@ -134,7 +138,7 @@ class PlaceQueryService:
             return PlaceSearchData(
                 items=items[:limit],
                 has_more=more,
-                next_cursor=self.cursors.issue(scope, state) if more else None,
+                next_cursor=await self.cursors.issue(scope, state) if more else None,
             )
         except KakaoError as exc:
             raise provider_failure(exc) from None
