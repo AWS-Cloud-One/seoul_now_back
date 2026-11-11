@@ -105,8 +105,12 @@ def run(args):
                 if conn.execute("SELECT 1").fetchone() != (1,):
                     raise RuntimeError("database_query_failed")
                 emit(
-                    "database_login_query", status="pass", database=actual_database,
-                    expected_user_matched=True, transaction_read_only=True, select_one=1,
+                    "database_login_query",
+                    status="pass",
+                    database=actual_database,
+                    expected_user_matched=True,
+                    transaction_read_only=True,
+                    select_one=1,
                 )
                 row = conn.execute(
                     "SELECT ssl, version, cipher FROM pg_stat_ssl WHERE pid = pg_backend_pid()"
@@ -141,15 +145,27 @@ def run(args):
         message = response.get("output", {}).get("message", {})
         text = "".join(block.get("text", "") for block in message.get("content", []))
         metadata = response.get("ResponseMetadata", {})
-        if metadata.get("HTTPStatusCode") != 200 or message.get("role") != "assistant" or not text.strip():
+        if (
+            metadata.get("HTTPStatusCode") != 200
+            or message.get("role") != "assistant"
+            or not text.strip()
+        ):
             raise RuntimeError("bedrock_empty_response")
         emit(
-            "bedrock", status="pass", model_id=args.bedrock_model,
-            http_status=metadata["HTTPStatusCode"], stop_reason=response.get("stopReason"),
-            reply_matches_ok=text.strip() == "OK", max_output_tokens=16,
-            usage={key: response.get("usage", {}).get(key) for key in ("inputTokens", "outputTokens", "totalTokens")},
+            "bedrock",
+            status="pass",
+            model_id=args.bedrock_model,
+            http_status=metadata["HTTPStatusCode"],
+            stop_reason=response.get("stopReason"),
+            reply_matches_ok=text.strip() == "OK",
+            max_output_tokens=16,
+            usage={
+                key: response.get("usage", {}).get(key)
+                for key in ("inputTokens", "outputTokens", "totalTokens")
+            },
             latency_ms=response.get("metrics", {}).get("latencyMs"),
-            sdk_retry_attempts=metadata.get("RetryAttempts"), request_id=metadata.get("RequestId"),
+            sdk_retry_attempts=metadata.get("RetryAttempts"),
+            request_id=metadata.get("RequestId"),
         )
     emit("probe_complete", status="pass")
 

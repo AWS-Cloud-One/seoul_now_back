@@ -170,6 +170,9 @@ services:
       TEST_DATABASE_URL: postgresql+psycopg://validation:validation_local@test-db:5432/validation
     volumes:
       - ./data:/app/data:ro
+      # Infra tests import infra/scripts and read infra/certificates. Tracked files
+      # only; Secret upload files (*.request.json) are Git-ignored and never needed.
+      - ./infra:/app/infra:ro
     healthcheck:
       disable: true
     depends_on:

@@ -8,6 +8,7 @@ import sqlalchemy as sa
 from alembic import command
 
 from app.models import Base
+from tests.fixtures.migrations import current_head
 from tests.integration.test_migration_0009 import config
 from tests.integration.test_migration_0009 import migration_database as migration_database
 from tests.integration.test_migration_0010 import fail_upgrade_at
@@ -94,7 +95,7 @@ def test_0013_upgrade_preserves_data_and_rolls_back_failed_ddl(migration_databas
     with engine.connect() as connection:
         assert (
             connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar_one()
-            == "0013"
+            == current_head()
         )
         assert set(sa.inspect(connection).get_table_names()) - {
             "alembic_version",
@@ -163,7 +164,7 @@ def test_0013_downgrade_refuses_to_discard_saved_context(migration_database):
     with engine.connect() as connection:
         assert (
             connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar_one()
-            == "0013"
+            == current_head()
         )
         for name in NEW_TABLES:
             expected = 0 if name == "recommendation_search_areas" else 1

@@ -8,6 +8,7 @@ import sqlalchemy as sa
 from alembic import command
 
 from app.models import Base
+from tests.fixtures.migrations import current_head
 from tests.integration.test_migration_0009 import config
 
 pytestmark = pytest.mark.integration
@@ -263,7 +264,10 @@ def test_conditions_history_places_and_messages_keep_their_relationships(normali
     with pytest.raises(RuntimeError, match="cannot be reconstructed"):
         command.downgrade(config(), "0008")
     with engine.connect() as c:
-        assert c.exec_driver_sql("SELECT version_num FROM alembic_version").scalar_one() == "0013"
+        assert (
+            c.exec_driver_sql("SELECT version_num FROM alembic_version").scalar_one()
+            == current_head()
+        )
         assert c.scalar(sa.select(sa.func.count()).select_from(table("chat_messages"))) == 2
     engine.dispose()
 

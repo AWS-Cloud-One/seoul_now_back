@@ -1,0 +1,73 @@
+# Lint, tests and a production image build for every pull request and main push.
+# No AWS credentials here: pull requests (including forks) never reach AWS.
+# Deployment is a separate workflow that runs only for main.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  checks:
+    name: Lint and tests
+    # Same CPU architecture as the EKS nodes (arm64); free for public repositories.
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build test image
+        run: docker compose --profile test build tests
+
+      - name: Ruff
+        run: |
+          docker compose run --rm --no-deps tests ruff check .
+          docker compose run --rm --no-deps tests ruff format --check .
+
+      - name: Unit and API tests
+        run: docker compose run --rm --no-deps tests pytest -q -m "not integration"
+
+      - name: Integration tests (isolated PostGIS)
+        run: docker compose --profile test run --rm tests pytest -q -m integration
+
+      - name: Remove test database
+        if: always()
+        run: docker compose --profile test down --volumes --remove-orphans
+
+  image:
+    name: Production image (arm64)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build production stage
+        run: docker build --target production --provenance=false -t seoul-now-backend:ci .
+
+      - name: Check image contents
+        # The image ships one migration head, imports cleanly and carries no local files.
+        run: |
+          docker run --rm --entrypoint python seoul-now-backend:ci -c "
+          import os
+          from alembic.config import Config
+          from alembic.script import ScriptDirectory
+          import app.main
+          heads = ScriptDirectory.from_config(Config('alembic.ini')).get_heads()
+          assert len(heads) == 1, heads
+          leaked = {'.env', 'agent', 'tests', 'infra', '.git'} & set(os.listdir('/app'))
+          assert not leaked, leaked
+          print('migration head', heads[0])
+          "
