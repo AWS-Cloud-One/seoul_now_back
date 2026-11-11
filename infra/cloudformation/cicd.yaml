@@ -1,0 +1,436 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Administrator-applied Seoul Now backend CI/CD. GitHub Actions on main assumes a
+  role through OIDC (no stored AWS keys) to push images and start a VPC CodeBuild
+  deploy. CodeBuild reaches the private EKS endpoint with namespace-scoped edit
+  access; pull requests never receive AWS credentials.
+Metadata:
+  AWSToolsMetrics:
+    AWSAgentToolkit: aws-cloudformation@3
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Project
+        Parameters: [ProjectName, Environment]
+      - Label:
+          default: GitHub
+        Parameters: [GitHubRepository, DeployBranch]
+      - Label:
+          default: Existing runtime
+        Parameters:
+          - VpcId
+          - AppSubnetIds
+          - ClusterName
+          - ClusterSecurityGroupId
+          - KubernetesNamespace
+          - BackendRepositoryArn
+Parameters:
+  ProjectName:
+    Type: String
+    Default: seoul-now
+    AllowedPattern: '[a-z][a-z0-9-]*[a-z0-9]'
+    MinLength: 3
+    MaxLength: 16
+  Environment:
+    Type: String
+    Default: lab
+    AllowedValues: [lab, demo]
+  GitHubRepository:
+    Type: String
+    Default: AWS-Cloud-One/seoul_now_back
+    AllowedPattern: '[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+'
+    Description: owner/repository whose workflows may deploy.
+  DeployBranch:
+    Type: String
+    Default: main
+    AllowedPattern: '[A-Za-z0-9_./-]+'
+    Description: Only workflows running on this branch can assume the deploy role.
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+  AppSubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Private app subnets with NAT egress (CodeBuild needs outbound HTTPS).
+  ClusterName:
+    Type: String
+    Default: seoul-now-lab-eks
+    AllowedPattern: '[A-Za-z0-9][A-Za-z0-9_-]*'
+  ClusterSecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: EKS cluster security group (control plane and nodes).
+  KubernetesNamespace:
+    Type: String
+    Default: seoul-now
+    AllowedPattern: '[a-z0-9]([-a-z0-9]*[a-z0-9])?'
+  BackendRepositoryArn:
+    Type: String
+    AllowedPattern: 'arn:aws:ecr:[a-z0-9-]+:[0-9]{12}:repository/.+'
+Resources:
+  GitHubOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Short-lived GitHub Actions credentials instead of long-lived AWS keys.
+        must:
+          - One provider per URL per account; reuse it if another stack adds GitHub OIDC later.
+          - Audience stays sts.amazonaws.com; roles restrict repository and branch.
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList: [sts.amazonaws.com]
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+
+  ArtifactBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: >-
+          Hands the deploy bundle (manifests, scripts, buildspec of one commit) from
+          GitHub to CodeBuild without storing GitHub credentials in AWS.
+        must:
+          - Private, encrypted, TLS-only. Holds no secrets; objects expire.
+          - Name is referenced by the deploy workflow.
+    Properties:
+      BucketName: !Sub '${ProjectName}-${Environment}-${AWS::AccountId}-${AWS::Region}-cicd'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: expire-deploy-bundles
+            Status: Enabled
+            Prefix: deploy/
+            ExpirationInDays: 14
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 1
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 1
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+
+  ArtifactBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ArtifactBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !GetAtt ArtifactBucket.Arn
+              - !Sub '${ArtifactBucket.Arn}/*'
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+
+  DeployLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      LogGroupName: !Sub '/aws/codebuild/${ProjectName}-${Environment}-deploy'
+      RetentionInDays: 7
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+
+  GitHubDeployRole:
+    Type: AWS::IAM::Role
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Assumed by GitHub Actions on the deploy branch to push images and start the deploy.
+        must:
+          - Trust only this repository and branch (exact sub). Pull requests cannot assume it.
+          - No IAM, EKS or Secrets Manager permissions; Kubernetes access stays in CodeBuild.
+    Properties:
+      RoleName: !Sub '${ProjectName}-${Environment}-github-deploy'
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Ref GitHubOidcProvider
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                token.actions.githubusercontent.com:sub: !Sub 'repo:${GitHubRepository}:ref:refs/heads/${DeployBranch}'
+      Policies:
+        - PolicyName: push-image-and-start-deploy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: EcrLogin
+                Effect: Allow
+                Action: ecr:GetAuthorizationToken
+                Resource: '*'
+              - Sid: PushBackendImage
+                Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:BatchGetImage
+                  - ecr:CompleteLayerUpload
+                  - ecr:DescribeImages
+                  - ecr:InitiateLayerUpload
+                  - ecr:PutImage
+                  - ecr:UploadLayerPart
+                Resource: !Ref BackendRepositoryArn
+              - Sid: UploadDeployBundle
+                Effect: Allow
+                Action: s3:PutObject
+                Resource: !Sub '${ArtifactBucket.Arn}/deploy/*'
+              - Sid: RunDeploy
+                Effect: Allow
+                Action:
+                  - codebuild:BatchGetBuilds
+                  - codebuild:StartBuild
+                Resource: !Sub 'arn:aws:codebuild:${AWS::Region}:${AWS::AccountId}:project/${ProjectName}-${Environment}-deploy'
+              - Sid: ReadDeployLogs
+                Effect: Allow
+                Action: logs:GetLogEvents
+                Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:${DeployLogGroup}:log-stream:*'
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+
+  DeployRole:
+    Type: AWS::IAM::Role
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: CodeBuild service role for migrations and rollouts inside the VPC.
+        must:
+          - Trust only this CodeBuild project in this account.
+          - Kubernetes rights come from the namespace-scoped access entry, not IAM.
+          - No Secrets Manager or RDS access; Jobs read Secrets through Pod Identity.
+    Properties:
+      RoleName: !Sub '${ProjectName}-${Environment}-cicd-deploy'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+              ArnLike:
+                aws:SourceArn: !Sub 'arn:aws:codebuild:${AWS::Region}:${AWS::AccountId}:project/${ProjectName}-${Environment}-deploy'
+      Policies:
+        - PolicyName: deploy-in-vpc
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: WriteBuildLogs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:${DeployLogGroup}:*'
+              - Sid: ReadDeployBundle
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                Resource: !Sub '${ArtifactBucket.Arn}/deploy/*'
+              - Sid: ReadBundleBucketMetadata
+                Effect: Allow
+                Action:
+                  - s3:GetBucketAcl
+                  - s3:GetBucketLocation
+                  - s3:GetBucketVersioning
+                Resource: !GetAtt ArtifactBucket.Arn
+              - Sid: KubeconfigForCluster
+                Effect: Allow
+                Action: eks:DescribeCluster
+                Resource: !Sub 'arn:aws:eks:${AWS::Region}:${AWS::AccountId}:cluster/${ClusterName}'
+              - Sid: VpcNetworkInterfaces
+                Effect: Allow
+                Action:
+                  - ec2:CreateNetworkInterface
+                  - ec2:DeleteNetworkInterface
+                  - ec2:DescribeDhcpOptions
+                  - ec2:DescribeNetworkInterfaces
+                  - ec2:DescribeSecurityGroups
+                  - ec2:DescribeSubnets
+                  - ec2:DescribeVpcs
+                Resource: '*'
+              - Sid: VpcNetworkInterfacePermission
+                Effect: Allow
+                Action: ec2:CreateNetworkInterfacePermission
+                Resource: !Sub 'arn:aws:ec2:${AWS::Region}:${AWS::AccountId}:network-interface/*'
+                Condition:
+                  StringEquals:
+                    ec2:AuthorizedService: codebuild.amazonaws.com
+                  ArnEquals:
+                    ec2:Subnet:
+                      - !Sub
+                        - 'arn:aws:ec2:${AWS::Region}:${AWS::AccountId}:subnet/${Subnet}'
+                        - Subnet: !Select [0, !Ref AppSubnetIds]
+                      - !Sub
+                        - 'arn:aws:ec2:${AWS::Region}:${AWS::AccountId}:subnet/${Subnet}'
+                        - Subnet: !Select [1, !Ref AppSubnetIds]
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+
+  DeploySecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Network identity of the deploy CodeBuild; outbound HTTPS only.
+        must:
+          - No ingress. Egress HTTPS for the EKS private endpoint, S3, logs and tool downloads.
+    Properties:
+      GroupDescription: Seoul Now deploy CodeBuild (outbound HTTPS only)
+      VpcId: !Ref VpcId
+      SecurityGroupEgress:
+        - Description: HTTPS to the EKS endpoint, AWS APIs and pinned tool downloads
+          IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-cicd-deploy'
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+
+  ClusterApiFromDeploy:
+    Type: AWS::EC2::SecurityGroupIngress
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Lets CodeBuild reach the private EKS API endpoint.
+        must:
+          - Source is only the deploy security group, port 443 only.
+          - The cluster SG is also on nodes; nothing on nodes or pods listens on 443.
+    Properties:
+      Description: Deploy CodeBuild to the EKS private API
+      GroupId: !Ref ClusterSecurityGroupId
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+      SourceSecurityGroupId: !GetAtt DeploySecurityGroup.GroupId
+
+  DeployProject:
+    Type: AWS::CodeBuild::Project
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: >-
+          Runs migrations, grants and the rollout from inside the VPC because the
+          public EKS endpoint allows only the operator IP.
+        must:
+          - Source is overridden per build with the bundle of one commit; buildspec comes from it.
+          - One build at a time (ConcurrentBuildLimit 1) so deploys never overlap.
+          - Not privileged; it never builds images.
+    Properties:
+      Name: !Sub '${ProjectName}-${Environment}-deploy'
+      Description: Seoul Now backend deploy (migrate, grants, rollout, rollback)
+      ServiceRole: !GetAtt DeployRole.Arn
+      Source:
+        Type: S3
+        Location: !Sub '${ArtifactBucket}/deploy/latest.zip'
+        BuildSpec: infra/cicd/deploy.buildspec.yml
+      Artifacts:
+        Type: NO_ARTIFACTS
+      Environment:
+        Type: ARM_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/amazonlinux-aarch64-standard:3.0
+        ImagePullCredentialsType: CODEBUILD
+        PrivilegedMode: false
+        EnvironmentVariables:
+          - Name: CLUSTER_NAME
+            Value: !Ref ClusterName
+          - Name: KUBE_NAMESPACE
+            Value: !Ref KubernetesNamespace
+      VpcConfig:
+        VpcId: !Ref VpcId
+        Subnets: !Ref AppSubnetIds
+        SecurityGroupIds:
+          - !GetAtt DeploySecurityGroup.GroupId
+      LogsConfig:
+        CloudWatchLogs:
+          Status: ENABLED
+          GroupName: !Ref DeployLogGroup
+        S3Logs:
+          Status: DISABLED
+      TimeoutInMinutes: 30
+      QueuedTimeoutInMinutes: 60
+      ConcurrentBuildLimit: 1
+      Visibility: PRIVATE
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+
+  DeployAccessEntry:
+    Type: AWS::EKS::AccessEntry
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Kubernetes permissions for the deploy role, limited to the app namespace.
+        must:
+          - Edit policy scoped to KubernetesNamespace only; never cluster-wide admin.
+          - Cluster-scoped objects (namespaces, controllers) stay manual operator changes.
+    Properties:
+      ClusterName: !Ref ClusterName
+      PrincipalArn: !GetAtt DeployRole.Arn
+      Type: STANDARD
+      AccessPolicies:
+        - PolicyArn: arn:aws:eks::aws:cluster-access-policy/AmazonEKSEditPolicy
+          AccessScope:
+            Type: namespace
+            Namespaces:
+              - !Ref KubernetesNamespace
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+Outputs:
+  GitHubDeployRoleArn:
+    Description: role-to-assume for the GitHub deploy workflow.
+    Value: !GetAtt GitHubDeployRole.Arn
+  ArtifactBucketName:
+    Description: Bucket for per-commit deploy bundles.
+    Value: !Ref ArtifactBucket
+  DeployProjectName:
+    Description: CodeBuild project the deploy workflow starts.
+    Value: !Ref DeployProject
+  DeployLogGroupName:
+    Description: CloudWatch log group of deploy builds.
+    Value: !Ref DeployLogGroup
+  DeployRoleArn:
+    Description: CodeBuild service role with namespace-scoped EKS edit access.
+    Value: !GetAtt DeployRole.Arn

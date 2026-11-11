@@ -1,0 +1,12 @@
+[
+  {"ParameterKey": "ProjectName", "ParameterValue": "seoul-now"},
+  {"ParameterKey": "Environment", "ParameterValue": "lab"},
+  {"ParameterKey": "GitHubRepository", "ParameterValue": "AWS-Cloud-One/seoul_now_back"},
+  {"ParameterKey": "DeployBranch", "ParameterValue": "main"},
+  {"ParameterKey": "VpcId", "ParameterValue": "vpc-0340b5925eb30e41d"},
+  {"ParameterKey": "AppSubnetIds", "ParameterValue": "subnet-0d8010197c33c9570,subnet-0c6ef58a04245f298"},
+  {"ParameterKey": "ClusterName", "ParameterValue": "seoul-now-lab-eks"},
+  {"ParameterKey": "ClusterSecurityGroupId", "ParameterValue": "sg-08bf6178d02ab1c2f"},
+  {"ParameterKey": "KubernetesNamespace", "ParameterValue": "seoul-now"},
+  {"ParameterKey": "BackendRepositoryArn", "ParameterValue": "arn:aws:ecr:ap-northeast-2:963701985499:repository/seoul-now/lab/backend"}
+]
