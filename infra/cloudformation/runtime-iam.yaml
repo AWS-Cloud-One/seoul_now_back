@@ -1,0 +1,665 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Administrator-applied Seoul Now runtime IAM roles and constrained PassRole grant. Existing
+  cluster/node/CNI roles are not managed here. Exact secret ARNs come from settings and RDS outputs.
+Metadata:
+  AWSToolsMetrics:
+    AWSAgentToolkit: aws-cloudformation@3
+Parameters:
+  ProjectName:
+    Type: String
+    AllowedPattern: '[a-z][a-z0-9-]*[a-z0-9]'
+    MinLength: 3
+    MaxLength: 16
+    Default: seoul-now
+  Environment:
+    Type: String
+    AllowedValues:
+    - lab
+    - demo
+    Default: lab
+  ApiSecretArn:
+    Type: String
+    AllowedPattern: arn:aws:secretsmanager:[a-z0-9-]+:[0-9]{12}:secret:.+
+  CollectorSecretArn:
+    Type: String
+    AllowedPattern: arn:aws:secretsmanager:[a-z0-9-]+:[0-9]{12}:secret:.+
+  MigrationSecretArn:
+    Type: String
+    AllowedPattern: arn:aws:secretsmanager:[a-z0-9-]+:[0-9]{12}:secret:.+
+  ImportSecretArn:
+    Type: String
+    AllowedPattern: arn:aws:secretsmanager:[a-z0-9-]+:[0-9]{12}:secret:.+
+  MasterSecretArn:
+    Type: String
+    AllowedPattern: arn:aws:secretsmanager:[a-z0-9-]+:[0-9]{12}:secret:.+
+  DataBucketName:
+    Type: String
+  OperatorGroupName:
+    Type: String
+    Default: seoul-now-infra
+  BedrockProfileId:
+    Type: String
+    Default: global.anthropic.claude-haiku-4-5-20251001-v1:0
+  BedrockModelId:
+    Type: String
+    Default: anthropic.claude-haiku-4-5-20251001-v1:0
+Resources:
+  ApiRole:
+    Type: AWS::IAM::Role
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Pod Identity permissions for seoul-now/seoul-now-api.
+        must: No static AWS keys. Trust only this cluster, namespace and service account.
+    Properties:
+      RoleName:
+        Fn::Sub: ${ProjectName}-${Environment}-api-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: pods.eks.amazonaws.com
+          Action:
+          - sts:AssumeRole
+          - sts:TagSession
+          Condition:
+            StringEquals:
+              aws:SourceAccount:
+                Ref: AWS::AccountId
+              aws:RequestTag/kubernetes-namespace: seoul-now
+              aws:RequestTag/kubernetes-service-account: seoul-now-api
+            ArnEquals:
+              aws:SourceArn:
+                Fn::Sub: arn:${AWS::Partition}:eks:${AWS::Region}:${AWS::AccountId}:cluster/${ProjectName}-${Environment}-eks
+      Policies:
+      - PolicyName: api-runtime
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - secretsmanager:GetSecretValue
+            Resource:
+              Ref: ApiSecretArn
+          - Effect: Allow
+            Action:
+            - bedrock:InvokeModel
+            Resource:
+              Fn::Sub: arn:${AWS::Partition}:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/${BedrockProfileId}
+          - Effect: Allow
+            Action:
+            - bedrock:InvokeModel
+            Resource:
+              Fn::Sub: arn:${AWS::Partition}:bedrock:*::foundation-model/${BedrockModelId}
+            Condition:
+              ArnEquals:
+                bedrock:InferenceProfileArn:
+                  Fn::Sub: arn:${AWS::Partition}:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/${BedrockProfileId}
+      Tags:
+      - Key: Project
+        Value:
+          Ref: ProjectName
+      - Key: Environment
+        Value:
+          Ref: Environment
+  CollectorRole:
+    Type: AWS::IAM::Role
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Pod Identity permissions for seoul-now/seoul-now-collector.
+        must: No static AWS keys. Trust only this cluster, namespace and service account.
+    Properties:
+      RoleName:
+        Fn::Sub: ${ProjectName}-${Environment}-collector-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: pods.eks.amazonaws.com
+          Action:
+          - sts:AssumeRole
+          - sts:TagSession
+          Condition:
+            StringEquals:
+              aws:SourceAccount:
+                Ref: AWS::AccountId
+              aws:RequestTag/kubernetes-namespace: seoul-now
+              aws:RequestTag/kubernetes-service-account: seoul-now-collector
+            ArnEquals:
+              aws:SourceArn:
+                Fn::Sub: arn:${AWS::Partition}:eks:${AWS::Region}:${AWS::AccountId}:cluster/${ProjectName}-${Environment}-eks
+      Policies:
+      - PolicyName: collector-runtime
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - secretsmanager:GetSecretValue
+            Resource:
+              Ref: CollectorSecretArn
+      Tags:
+      - Key: Project
+        Value:
+          Ref: ProjectName
+      - Key: Environment
+        Value:
+          Ref: Environment
+  MigrationRole:
+    Type: AWS::IAM::Role
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Pod Identity permissions for seoul-now/seoul-now-migration.
+        must: No static AWS keys. Trust only this cluster, namespace and service account.
+    Properties:
+      RoleName:
+        Fn::Sub: ${ProjectName}-${Environment}-migration-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: pods.eks.amazonaws.com
+          Action:
+          - sts:AssumeRole
+          - sts:TagSession
+          Condition:
+            StringEquals:
+              aws:SourceAccount:
+                Ref: AWS::AccountId
+              aws:RequestTag/kubernetes-namespace: seoul-now
+              aws:RequestTag/kubernetes-service-account: seoul-now-migration
+            ArnEquals:
+              aws:SourceArn:
+                Fn::Sub: arn:${AWS::Partition}:eks:${AWS::Region}:${AWS::AccountId}:cluster/${ProjectName}-${Environment}-eks
+      Policies:
+      - PolicyName: migration-runtime
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - secretsmanager:GetSecretValue
+            Resource:
+              Ref: MigrationSecretArn
+      Tags:
+      - Key: Project
+        Value:
+          Ref: ProjectName
+      - Key: Environment
+        Value:
+          Ref: Environment
+  ImportRole:
+    Type: AWS::IAM::Role
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Pod Identity permissions for seoul-now/seoul-now-import.
+        must: No static AWS keys. Trust only this cluster, namespace and service account.
+    Properties:
+      RoleName:
+        Fn::Sub: ${ProjectName}-${Environment}-import-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: pods.eks.amazonaws.com
+          Action:
+          - sts:AssumeRole
+          - sts:TagSession
+          Condition:
+            StringEquals:
+              aws:SourceAccount:
+                Ref: AWS::AccountId
+              aws:RequestTag/kubernetes-namespace: seoul-now
+              aws:RequestTag/kubernetes-service-account: seoul-now-import
+            ArnEquals:
+              aws:SourceArn:
+                Fn::Sub: arn:${AWS::Partition}:eks:${AWS::Region}:${AWS::AccountId}:cluster/${ProjectName}-${Environment}-eks
+      Policies:
+      - PolicyName: import-runtime
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - secretsmanager:GetSecretValue
+            Resource:
+              Ref: ImportSecretArn
+          - Effect: Allow
+            Action:
+            - s3:GetObject
+            Resource:
+              Fn::Sub: arn:${AWS::Partition}:s3:::${DataBucketName}/reference/*
+          - Effect: Allow
+            Action:
+            - s3:ListBucket
+            Resource:
+              Fn::Sub: arn:${AWS::Partition}:s3:::${DataBucketName}
+            Condition:
+              StringLike:
+                s3:prefix:
+                - reference/
+                - reference/*
+      Tags:
+      - Key: Project
+        Value:
+          Ref: ProjectName
+      - Key: Environment
+        Value:
+          Ref: Environment
+  BootstrapRole:
+    Type: AWS::IAM::Role
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Pod Identity permissions for seoul-now-bootstrap/seoul-now-bootstrap.
+        must: No static AWS keys. Trust only this cluster, namespace and service account.
+    Properties:
+      RoleName:
+        Fn::Sub: ${ProjectName}-${Environment}-bootstrap-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: pods.eks.amazonaws.com
+          Action:
+          - sts:AssumeRole
+          - sts:TagSession
+          Condition:
+            StringEquals:
+              aws:SourceAccount:
+                Ref: AWS::AccountId
+              aws:RequestTag/kubernetes-namespace: seoul-now-bootstrap
+              aws:RequestTag/kubernetes-service-account: seoul-now-bootstrap
+            ArnEquals:
+              aws:SourceArn:
+                Fn::Sub: arn:${AWS::Partition}:eks:${AWS::Region}:${AWS::AccountId}:cluster/${ProjectName}-${Environment}-eks
+      Policies:
+      - PolicyName: bootstrap-runtime
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - secretsmanager:GetSecretValue
+            Resource:
+              Ref: MasterSecretArn
+          - Effect: Allow
+            Action:
+            - secretsmanager:GetSecretValue
+            - secretsmanager:PutSecretValue
+            Resource:
+            - Ref: ApiSecretArn
+            - Ref: CollectorSecretArn
+            - Ref: MigrationSecretArn
+            - Ref: ImportSecretArn
+      Tags:
+      - Key: Project
+        Value:
+          Ref: ProjectName
+      - Key: Environment
+        Value:
+          Ref: Environment
+  LoadBalancerRole:
+    Type: AWS::IAM::Role
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Pod Identity permissions for kube-system/aws-load-balancer-controller.
+        must: No static AWS keys. Trust only this cluster, namespace and service account.
+    Properties:
+      RoleName:
+        Fn::Sub: ${ProjectName}-${Environment}-alb-controller-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: pods.eks.amazonaws.com
+          Action:
+          - sts:AssumeRole
+          - sts:TagSession
+          Condition:
+            StringEquals:
+              aws:SourceAccount:
+                Ref: AWS::AccountId
+              aws:RequestTag/kubernetes-namespace: kube-system
+              aws:RequestTag/kubernetes-service-account: aws-load-balancer-controller
+            ArnEquals:
+              aws:SourceArn:
+                Fn::Sub: arn:${AWS::Partition}:eks:${AWS::Region}:${AWS::AccountId}:cluster/${ProjectName}-${Environment}-eks
+      Policies:
+      - PolicyName: alb-controller-runtime
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - iam:CreateServiceLinkedRole
+            Resource: '*'
+            Condition:
+              StringEquals:
+                iam:AWSServiceName: elasticloadbalancing.amazonaws.com
+          - Effect: Allow
+            Action:
+            - ec2:DescribeAccountAttributes
+            - ec2:DescribeAddresses
+            - ec2:DescribeAvailabilityZones
+            - ec2:DescribeInternetGateways
+            - ec2:DescribeVpcs
+            - ec2:DescribeVpcPeeringConnections
+            - ec2:DescribeSubnets
+            - ec2:DescribeSecurityGroups
+            - ec2:DescribeInstances
+            - ec2:DescribeNetworkInterfaces
+            - ec2:DescribeTags
+            - ec2:GetCoipPoolUsage
+            - ec2:DescribeCoipPools
+            - ec2:GetSecurityGroupsForVpc
+            - ec2:DescribeIpamPools
+            - ec2:DescribeRouteTables
+            - elasticloadbalancing:DescribeLoadBalancers
+            - elasticloadbalancing:DescribeLoadBalancerAttributes
+            - elasticloadbalancing:DescribeListeners
+            - elasticloadbalancing:DescribeListenerCertificates
+            - elasticloadbalancing:DescribeSSLPolicies
+            - elasticloadbalancing:DescribeRules
+            - elasticloadbalancing:DescribeTargetGroups
+            - elasticloadbalancing:DescribeTargetGroupAttributes
+            - elasticloadbalancing:DescribeTargetHealth
+            - elasticloadbalancing:DescribeTags
+            - elasticloadbalancing:DescribeTrustStores
+            - elasticloadbalancing:DescribeListenerAttributes
+            - elasticloadbalancing:DescribeCapacityReservation
+            Resource: '*'
+          - Effect: Allow
+            Action:
+            - cognito-idp:DescribeUserPoolClient
+            - acm:ListCertificates
+            - acm:DescribeCertificate
+            - iam:ListServerCertificates
+            - iam:GetServerCertificate
+            - waf-regional:GetWebACL
+            - waf-regional:GetWebACLForResource
+            - waf-regional:AssociateWebACL
+            - waf-regional:DisassociateWebACL
+            - wafv2:GetWebACL
+            - wafv2:GetWebACLForResource
+            - wafv2:AssociateWebACL
+            - wafv2:DisassociateWebACL
+            - shield:GetSubscriptionState
+            - shield:DescribeProtection
+            - shield:CreateProtection
+            - shield:DeleteProtection
+            Resource: '*'
+          - Effect: Allow
+            Action:
+            - ec2:AuthorizeSecurityGroupIngress
+            - ec2:RevokeSecurityGroupIngress
+            Resource: '*'
+          - Effect: Allow
+            Action:
+            - ec2:CreateSecurityGroup
+            Resource: '*'
+          - Effect: Allow
+            Action:
+            - ec2:CreateTags
+            Resource: arn:aws:ec2:*:*:security-group/*
+            Condition:
+              StringEquals:
+                ec2:CreateAction: CreateSecurityGroup
+                aws:RequestTag/elbv2.k8s.aws/cluster:
+                  Fn::Sub: ${ProjectName}-${Environment}-eks
+              'Null':
+                aws:RequestTag/elbv2.k8s.aws/cluster: 'false'
+          - Effect: Allow
+            Action:
+            - ec2:CreateTags
+            - ec2:DeleteTags
+            Resource: arn:aws:ec2:*:*:security-group/*
+            Condition:
+              'Null':
+                aws:RequestTag/elbv2.k8s.aws/cluster: 'true'
+                aws:ResourceTag/elbv2.k8s.aws/cluster: 'false'
+              StringEquals:
+                aws:ResourceTag/elbv2.k8s.aws/cluster:
+                  Fn::Sub: ${ProjectName}-${Environment}-eks
+          - Effect: Allow
+            Action:
+            - ec2:AuthorizeSecurityGroupIngress
+            - ec2:RevokeSecurityGroupIngress
+            - ec2:DeleteSecurityGroup
+            Resource: '*'
+            Condition:
+              'Null':
+                aws:ResourceTag/elbv2.k8s.aws/cluster: 'false'
+              StringEquals:
+                aws:ResourceTag/elbv2.k8s.aws/cluster:
+                  Fn::Sub: ${ProjectName}-${Environment}-eks
+          - Effect: Allow
+            Action:
+            - elasticloadbalancing:CreateLoadBalancer
+            - elasticloadbalancing:CreateTargetGroup
+            Resource: '*'
+            Condition:
+              'Null':
+                aws:RequestTag/elbv2.k8s.aws/cluster: 'false'
+              StringEquals:
+                aws:RequestTag/elbv2.k8s.aws/cluster:
+                  Fn::Sub: ${ProjectName}-${Environment}-eks
+          - Effect: Allow
+            Action:
+            - elasticloadbalancing:CreateListener
+            - elasticloadbalancing:DeleteListener
+            - elasticloadbalancing:CreateRule
+            - elasticloadbalancing:DeleteRule
+            Resource: '*'
+          - Effect: Allow
+            Action:
+            - elasticloadbalancing:AddTags
+            - elasticloadbalancing:RemoveTags
+            Resource:
+            - arn:aws:elasticloadbalancing:*:*:targetgroup/*/*
+            - arn:aws:elasticloadbalancing:*:*:loadbalancer/net/*/*
+            - arn:aws:elasticloadbalancing:*:*:loadbalancer/app/*/*
+            Condition:
+              'Null':
+                aws:RequestTag/elbv2.k8s.aws/cluster: 'true'
+                aws:ResourceTag/elbv2.k8s.aws/cluster: 'false'
+              StringEquals:
+                aws:ResourceTag/elbv2.k8s.aws/cluster:
+                  Fn::Sub: ${ProjectName}-${Environment}-eks
+          - Effect: Allow
+            Action:
+            - elasticloadbalancing:AddTags
+            - elasticloadbalancing:RemoveTags
+            Resource:
+            - arn:aws:elasticloadbalancing:*:*:listener/net/*/*/*
+            - arn:aws:elasticloadbalancing:*:*:listener/app/*/*/*
+            - arn:aws:elasticloadbalancing:*:*:listener-rule/net/*/*/*
+            - arn:aws:elasticloadbalancing:*:*:listener-rule/app/*/*/*
+          - Effect: Allow
+            Action:
+            - elasticloadbalancing:ModifyLoadBalancerAttributes
+            - elasticloadbalancing:SetIpAddressType
+            - elasticloadbalancing:SetSecurityGroups
+            - elasticloadbalancing:SetSubnets
+            - elasticloadbalancing:DeleteLoadBalancer
+            - elasticloadbalancing:ModifyTargetGroup
+            - elasticloadbalancing:ModifyTargetGroupAttributes
+            - elasticloadbalancing:DeleteTargetGroup
+            - elasticloadbalancing:ModifyListenerAttributes
+            - elasticloadbalancing:ModifyCapacityReservation
+            - elasticloadbalancing:ModifyIpPools
+            Resource: '*'
+            Condition:
+              'Null':
+                aws:ResourceTag/elbv2.k8s.aws/cluster: 'false'
+              StringEquals:
+                aws:ResourceTag/elbv2.k8s.aws/cluster:
+                  Fn::Sub: ${ProjectName}-${Environment}-eks
+          - Effect: Allow
+            Action:
+            - elasticloadbalancing:AddTags
+            Resource:
+            - arn:aws:elasticloadbalancing:*:*:targetgroup/*/*
+            - arn:aws:elasticloadbalancing:*:*:loadbalancer/net/*/*
+            - arn:aws:elasticloadbalancing:*:*:loadbalancer/app/*/*
+            Condition:
+              StringEquals:
+                elasticloadbalancing:CreateAction:
+                - CreateTargetGroup
+                - CreateLoadBalancer
+                aws:RequestTag/elbv2.k8s.aws/cluster:
+                  Fn::Sub: ${ProjectName}-${Environment}-eks
+              'Null':
+                aws:RequestTag/elbv2.k8s.aws/cluster: 'false'
+          - Effect: Allow
+            Action:
+            - elasticloadbalancing:RegisterTargets
+            - elasticloadbalancing:DeregisterTargets
+            Resource: arn:aws:elasticloadbalancing:*:*:targetgroup/*/*
+          - Effect: Allow
+            Action:
+            - elasticloadbalancing:SetWebAcl
+            - elasticloadbalancing:ModifyListener
+            - elasticloadbalancing:AddListenerCertificates
+            - elasticloadbalancing:RemoveListenerCertificates
+            - elasticloadbalancing:ModifyRule
+            - elasticloadbalancing:SetRulePriorities
+            Resource: '*'
+      Tags:
+      - Key: Project
+        Value:
+          Ref: ProjectName
+      - Key: Environment
+        Value:
+          Ref: Environment
+  LogsRole:
+    Type: AWS::IAM::Role
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Pod Identity permissions for amazon-cloudwatch/aws-for-fluent-bit.
+        must: No static AWS keys. Trust only this cluster, namespace and service account.
+    Properties:
+      RoleName:
+        Fn::Sub: ${ProjectName}-${Environment}-logs-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: pods.eks.amazonaws.com
+          Action:
+          - sts:AssumeRole
+          - sts:TagSession
+          Condition:
+            StringEquals:
+              aws:SourceAccount:
+                Ref: AWS::AccountId
+              aws:RequestTag/kubernetes-namespace: amazon-cloudwatch
+              aws:RequestTag/kubernetes-service-account: aws-for-fluent-bit
+            ArnEquals:
+              aws:SourceArn:
+                Fn::Sub: arn:${AWS::Partition}:eks:${AWS::Region}:${AWS::AccountId}:cluster/${ProjectName}-${Environment}-eks
+      Policies:
+      - PolicyName: logs-runtime
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - logs:CreateLogStream
+            - logs:PutLogEvents
+            Resource:
+              Fn::Sub: arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/seoul-now/${ProjectName}/${Environment}/application:log-stream:*
+          - Effect: Allow
+            Action:
+            - logs:DescribeLogStreams
+            Resource:
+              Fn::Sub: arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/seoul-now/${ProjectName}/${Environment}/application:*
+      Tags:
+      - Key: Project
+        Value:
+          Ref: ProjectName
+      - Key: Environment
+        Value:
+          Ref: Environment
+  OperatorPassRole:
+    Type: AWS::IAM::Policy
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Allow the existing operator to associate only the new workload roles through EKS Pod Identity.
+        must: Do not grant CreateRole, PutRolePolicy or a broad CloudFormation execution role to the operator.
+    Properties:
+      PolicyName:
+        Fn::Sub: ${ProjectName}-${Environment}-runtime-passrole
+      Groups:
+      - Ref: OperatorGroupName
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Action: iam:PassRole
+          Resource:
+          - Fn::GetAtt:
+            - ApiRole
+            - Arn
+          - Fn::GetAtt:
+            - CollectorRole
+            - Arn
+          - Fn::GetAtt:
+            - MigrationRole
+            - Arn
+          - Fn::GetAtt:
+            - ImportRole
+            - Arn
+          - Fn::GetAtt:
+            - BootstrapRole
+            - Arn
+          - Fn::GetAtt:
+            - LoadBalancerRole
+            - Arn
+          - Fn::GetAtt:
+            - LogsRole
+            - Arn
+          Condition:
+            StringEquals:
+              iam:PassedToService: pods.eks.amazonaws.com
+Outputs:
+  ApiRoleArn:
+    Value:
+      Fn::GetAtt:
+      - ApiRole
+      - Arn
+  CollectorRoleArn:
+    Value:
+      Fn::GetAtt:
+      - CollectorRole
+      - Arn
+  MigrationRoleArn:
+    Value:
+      Fn::GetAtt:
+      - MigrationRole
+      - Arn
+  ImportRoleArn:
+    Value:
+      Fn::GetAtt:
+      - ImportRole
+      - Arn
+  BootstrapRoleArn:
+    Value:
+      Fn::GetAtt:
+      - BootstrapRole
+      - Arn
+  LoadBalancerRoleArn:
+    Value:
+      Fn::GetAtt:
+      - LoadBalancerRole
+      - Arn
+  LogsRoleArn:
+    Value:
+      Fn::GetAtt:
+      - LogsRole
+      - Arn

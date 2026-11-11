@@ -1,0 +1,119 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Seoul Now private ALB access rules for CloudFront VPC origins. Bootstrap with
+  the CloudFront prefix list, then restrict HTTP to the VPC origin security group.
+Metadata:
+  AWSToolsMetrics:
+    AWSAgentToolkit: aws-cloudformation@3
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Project
+        Parameters: [ProjectName, Environment]
+      - Label:
+          default: Existing VPC
+        Parameters: [VpcId, VpcCidr]
+      - Label:
+          default: CloudFront access
+        Parameters: [CloudFrontPrefixListId, CloudFrontVpcOriginSecurityGroupId]
+Parameters:
+  ProjectName:
+    Type: String
+    Default: seoul-now
+    AllowedPattern: '[a-z][a-z0-9-]*[a-z0-9]'
+    MinLength: 3
+    MaxLength: 16
+  Environment:
+    Type: String
+    Default: lab
+    AllowedValues: [lab, demo]
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: Existing foundation VPC; must match the API and private ALB.
+  VpcCidr:
+    Type: String
+    Default: 10.42.0.0/16
+    AllowedPattern: '(\d{1,3}\.){3}\d{1,3}/\d{1,2}'
+    Description: Existing VPC IPv4 CIDR for traffic to API targets on port 8000.
+  CloudFrontPrefixListId:
+    Type: String
+    AllowedPattern: 'pl-[0-9a-f]+'
+    Description: Regional ID of com.amazonaws.global.cloudfront.origin-facing.
+  CloudFrontVpcOriginSecurityGroupId:
+    Type: String
+    Default: ''
+    AllowedPattern: '^$|^sg-[0-9a-f]+$'
+    Description: Leave empty initially. Set the AWS-created VPC origin SG after it exists.
+Conditions:
+  UseCloudFrontPrefixList: !Equals [!Ref CloudFrontVpcOriginSecurityGroupId, '']
+  UseCloudFrontVpcOriginGroup: !Not [!Condition UseCloudFrontPrefixList]
+Resources:
+  AlbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: >-
+          CloudFormation owns frontend access rules; the EKS controller owns the
+          ALB and backend target rules. Separate ownership avoids rule reconciliation drift.
+        must:
+          - Attach only to the internal API ALB; never expose the origin to the internet.
+          - Keep the Name tag aligned with the Ingress security-groups annotation.
+          - Delete the Ingress and VPC origin attachments before deleting this stack.
+    Properties:
+      GroupDescription: CloudFront-only HTTP entry to the private Seoul Now API ALB
+      VpcId: !Ref VpcId
+      SecurityGroupEgress:
+        - Description: API traffic and readiness checks inside the VPC
+          IpProtocol: tcp
+          FromPort: 8000
+          ToPort: 8000
+          CidrIp: !Ref VpcCidr
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-api-alb'
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+  BootstrapCloudFrontIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Condition: UseCloudFrontPrefixList
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Allow CloudFront setup before its service-managed VPC origin SG exists.
+        must:
+          - Allow only the AWS-managed CloudFront origin-facing prefix list on HTTP.
+          - Replace this bootstrap rule by setting CloudFrontVpcOriginSecurityGroupId.
+    Properties:
+      Description: Bootstrap CloudFront origin-facing HTTP
+      GroupId: !GetAtt AlbSecurityGroup.GroupId
+      IpProtocol: tcp
+      FromPort: 80
+      ToPort: 80
+      SourcePrefixListId: !Ref CloudFrontPrefixListId
+  VpcOriginCloudFrontIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Condition: UseCloudFrontVpcOriginGroup
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Limit the completed origin connection to CloudFront's service-managed SG.
+        must:
+          - Use the AWS-created SG in this VPC; never create a substitute with its reserved name.
+          - The condition switch removes the prefix-list rule; verify connectivity after update.
+    Properties:
+      Description: CloudFront VPC origin HTTP
+      GroupId: !GetAtt AlbSecurityGroup.GroupId
+      IpProtocol: tcp
+      FromPort: 80
+      ToPort: 80
+      SourceSecurityGroupId: !Ref CloudFrontVpcOriginSecurityGroupId
+Outputs:
+  AlbSecurityGroupId:
+    Description: Frontend SG for the internal API ALB.
+    Value: !GetAtt AlbSecurityGroup.GroupId
+  AlbSecurityGroupNameTag:
+    Description: Name tag used by the EKS Ingress to resolve this security group.
+    Value: !Sub '${ProjectName}-${Environment}-api-alb'
+  AccessMode:
+    Description: Bootstrap prefix list or final CloudFront VPC origin SG restriction.
+    Value: !If [UseCloudFrontPrefixList, cloudfront-prefix-list, cloudfront-vpc-origin-sg]

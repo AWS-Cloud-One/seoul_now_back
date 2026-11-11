@@ -1,0 +1,27 @@
+# Chart 3.6.2 / controller v3.6.2. IAM source is vendored under infra/iam/.
+# Override vpcId from foundation output during install; IMDS discovery is disabled.
+clusterName: seoul-now-lab-eks
+region: ap-northeast-2
+replicaCount: 1
+serviceAccount:
+  create: false
+  name: aws-load-balancer-controller
+enableShield: false
+enableWaf: false
+enableWafv2: false
+enableServiceMutatorWebhook: false
+# This MVP uses Ingress. v3.6 enables Gateway API controllers by default;
+# disable them explicitly because Gateway API CRDs are not part of this setup.
+controllerConfig:
+  featureGates:
+    ALBGatewayAPI: false
+    NLBGatewayAPI: false
+    GatewayListenerSet: false
+    GlobalAcceleratorController: false
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi

@@ -1,0 +1,190 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Seoul Now shared runtime settings: empty role secrets, DB client security group and retained
+  log groups. Populate secrets during W4; no credentials are template parameters.'
+Metadata:
+  AWSToolsMetrics:
+    AWSAgentToolkit: aws-cloudformation@3
+Parameters:
+  ProjectName:
+    Type: String
+    AllowedPattern: '[a-z][a-z0-9-]*[a-z0-9]'
+    MinLength: 3
+    MaxLength: 16
+    Default: seoul-now
+  Environment:
+    Type: String
+    AllowedValues:
+    - lab
+    - demo
+    Default: lab
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+  VpcCidr:
+    Type: String
+    Default: 10.42.0.0/16
+Resources:
+  ApiSecret:
+    Type: AWS::SecretsManager::Secret
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: One startup secret per application role.
+        must: Retain values; never store secret contents in CloudFormation. An empty secret is not a usable
+          settings version.
+    Properties:
+      Name:
+        Fn::Sub: ${ProjectName}/${Environment}/api
+      Description: Api bootstrap settings. Intentionally empty until W4 initializes DB users.
+      Tags:
+      - Key: Project
+        Value:
+          Ref: ProjectName
+      - Key: Environment
+        Value:
+          Ref: Environment
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+  CollectorSecret:
+    Type: AWS::SecretsManager::Secret
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: One startup secret per application role.
+        must: Retain values; never store secret contents in CloudFormation. An empty secret is not a usable
+          settings version.
+    Properties:
+      Name:
+        Fn::Sub: ${ProjectName}/${Environment}/collector
+      Description: Collector bootstrap settings. Intentionally empty until W4 initializes DB users.
+      Tags:
+      - Key: Project
+        Value:
+          Ref: ProjectName
+      - Key: Environment
+        Value:
+          Ref: Environment
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+  MigrationSecret:
+    Type: AWS::SecretsManager::Secret
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: One startup secret per application role.
+        must: Retain values; never store secret contents in CloudFormation. An empty secret is not a usable
+          settings version.
+    Properties:
+      Name:
+        Fn::Sub: ${ProjectName}/${Environment}/migration
+      Description: Migration bootstrap settings. Intentionally empty until W4 initializes DB users.
+      Tags:
+      - Key: Project
+        Value:
+          Ref: ProjectName
+      - Key: Environment
+        Value:
+          Ref: Environment
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+  ImportSecret:
+    Type: AWS::SecretsManager::Secret
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: One startup secret per application role.
+        must: Retain values; never store secret contents in CloudFormation. An empty secret is not a usable
+          settings version.
+    Properties:
+      Name:
+        Fn::Sub: ${ProjectName}/${Environment}/import
+      Description: Import bootstrap settings. Intentionally empty until W4 initializes DB users.
+      Tags:
+      - Key: Project
+        Value:
+          Ref: ProjectName
+      - Key: Environment
+        Value:
+          Ref: Environment
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+  DbClientSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: A stable DB client SG reference avoids an EKS/RDS cross-stack dependency cycle.
+        must: No ingress. Attach only to project workers; RDS permits this SG on 5432. Other attached
+          SG egress rules are additive.
+    Properties:
+      VpcId:
+        Ref: VpcId
+      GroupDescription: Attach only to the EKS workers that run DB clients
+      SecurityGroupEgress:
+      - IpProtocol: tcp
+        FromPort: 5432
+        ToPort: 5432
+        CidrIp:
+          Ref: VpcCidr
+        Description: PostgreSQL within the project VPC
+      Tags:
+      - Key: Project
+        Value:
+          Ref: ProjectName
+      - Key: Environment
+        Value:
+          Ref: Environment
+  ApplicationLogs:
+    Type: AWS::Logs::LogGroup
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Bounded retention for initial deployment diagnostics.
+        must: Retain logs across stack deletion; no secret payloads in application logs.
+    Properties:
+      LogGroupName:
+        Fn::Sub: /seoul-now/${ProjectName}/${Environment}/application
+      RetentionInDays: 7
+      Tags:
+      - Key: Project
+        Value:
+          Ref: ProjectName
+      - Key: Environment
+        Value:
+          Ref: Environment
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+  ControlPlaneLogs:
+    Type: AWS::Logs::LogGroup
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Bounded retention for initial deployment diagnostics.
+        must: Retain logs across stack deletion; no secret payloads in application logs.
+    Properties:
+      LogGroupName:
+        Fn::Sub: /aws/eks/${ProjectName}-${Environment}-eks/cluster
+      RetentionInDays: 7
+      Tags:
+      - Key: Project
+        Value:
+          Ref: ProjectName
+      - Key: Environment
+        Value:
+          Ref: Environment
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+Outputs:
+  ApiSecretArn:
+    Value:
+      Ref: ApiSecret
+  CollectorSecretArn:
+    Value:
+      Ref: CollectorSecret
+  MigrationSecretArn:
+    Value:
+      Ref: MigrationSecret
+  ImportSecretArn:
+    Value:
+      Ref: ImportSecret
+  DbClientSecurityGroupId:
+    Value:
+      Ref: DbClientSecurityGroup
+  ApplicationLogsName:
+    Value:
+      Ref: ApplicationLogs
+  ControlPlaneLogsName:
+    Value:
+      Ref: ControlPlaneLogs

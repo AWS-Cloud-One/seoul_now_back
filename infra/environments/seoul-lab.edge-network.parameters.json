@@ -1,0 +1,8 @@
+[
+  {"ParameterKey": "ProjectName", "ParameterValue": "seoul-now"},
+  {"ParameterKey": "Environment", "ParameterValue": "lab"},
+  {"ParameterKey": "VpcId", "ParameterValue": "vpc-0340b5925eb30e41d"},
+  {"ParameterKey": "VpcCidr", "ParameterValue": "10.42.0.0/16"},
+  {"ParameterKey": "CloudFrontPrefixListId", "ParameterValue": "pl-22a6434b"},
+  {"ParameterKey": "CloudFrontVpcOriginSecurityGroupId", "ParameterValue": ""}
+]

@@ -24,3 +24,6 @@ AGENTS.md
 /data/*
 !/data/*.xlsx
 !/data/*.zip
+
+# prepare_app_secrets.py writes plaintext PutSecretValue requests for manual upload.
+*.request.json

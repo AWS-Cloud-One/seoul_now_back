@@ -1,0 +1,231 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Seoul Now public HTTPS API through an existing private VPC origin. Cache only
+  public map geometry for up to five minutes; forward dynamic requests uncached.
+Metadata:
+  AWSToolsMetrics:
+    AWSAgentToolkit: aws-cloudformation@3
+Parameters:
+  ProjectName:
+    Type: String
+    Default: seoul-now
+    AllowedPattern: '[a-z][a-z0-9-]*[a-z0-9]'
+    MinLength: 3
+    MaxLength: 16
+  Environment:
+    Type: String
+    Default: lab
+    AllowedValues: [lab, demo]
+  VpcOriginId:
+    Type: String
+    AllowedPattern: 'vo_[A-Za-z0-9]+'
+    Description: Existing deployed CloudFront VPC origin pointing to the internal API ALB.
+  OriginDomainName:
+    Type: String
+    AllowedPattern: 'internal-[a-zA-Z0-9.-]+[.]elb[.]amazonaws[.]com'
+    Description: Existing internal ALB DNS name, without a scheme or path.
+Resources:
+  DisabledCachePolicy:
+    Type: AWS::CloudFront::CachePolicy
+    Properties:
+      CachePolicyConfig:
+        Name: !Sub '${ProjectName}-${Environment}-api-no-cache'
+        Comment: All dynamic, personal, health and status requests bypass the cache.
+        MinTTL: 0
+        DefaultTTL: 0
+        MaxTTL: 0
+        ParametersInCacheKeyAndForwardedToOrigin:
+          EnableAcceptEncodingGzip: false
+          EnableAcceptEncodingBrotli: false
+          CookiesConfig:
+            CookieBehavior: none
+          HeadersConfig:
+            HeaderBehavior: none
+          QueryStringsConfig:
+            QueryStringBehavior: none
+  GeometryCachePolicy:
+    Type: AWS::CloudFront::CachePolicy
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Geometry is public and slow-changing; status and personalized responses are separate.
+        must:
+          - Cache only the three exact geometry paths and only GET or HEAD.
+          - Keep Origin, bbox, level and cache_refresh separate to avoid wrong CORS or map data.
+          - MinTTL and DefaultTTL must be zero so errors and forced refresh stay uncached.
+    Properties:
+      CachePolicyConfig:
+        Name: !Sub '${ProjectName}-${Environment}-geometry-300s'
+        Comment: Respect origin s-maxage; isolate viewport, zoom, refresh token and CORS origin.
+        MinTTL: 0
+        DefaultTTL: 0
+        MaxTTL: 300
+        ParametersInCacheKeyAndForwardedToOrigin:
+          EnableAcceptEncodingGzip: true
+          EnableAcceptEncodingBrotli: true
+          CookiesConfig:
+            CookieBehavior: none
+          HeadersConfig:
+            HeaderBehavior: whitelist
+            Headers: [Origin]
+          QueryStringsConfig:
+            QueryStringBehavior: whitelist
+            QueryStrings: [bbox, level, cache_refresh]
+  DynamicOriginRequestPolicy:
+    Type: AWS::CloudFront::OriginRequestPolicy
+    Properties:
+      OriginRequestPolicyConfig:
+        Name: !Sub '${ProjectName}-${Environment}-api-dynamic'
+        Comment: Forward API parameters, result context and browser CORS preflight headers.
+        CookiesConfig:
+          CookieBehavior: none
+        HeadersConfig:
+          HeaderBehavior: whitelist
+          Headers:
+            - Origin
+            - Access-Control-Request-Method
+            - Access-Control-Request-Headers
+            - Content-Type
+            - Result-Context
+            - Accept
+        QueryStringsConfig:
+          QueryStringBehavior: all
+  GeometryOriginRequestPolicy:
+    Type: AWS::CloudFront::OriginRequestPolicy
+    Properties:
+      OriginRequestPolicyConfig:
+        Name: !Sub '${ProjectName}-${Environment}-geometry-cors'
+        Comment: Cache key fields are forwarded automatically; add uncached preflight headers.
+        CookiesConfig:
+          CookieBehavior: none
+        HeadersConfig:
+          HeaderBehavior: whitelist
+          Headers: [Access-Control-Request-Method, Access-Control-Request-Headers]
+        QueryStringsConfig:
+          QueryStringBehavior: none
+  ApiResponseHeadersPolicy:
+    Type: AWS::CloudFront::ResponseHeadersPolicy
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Add viewer security headers without maintaining a second CORS allowlist.
+        must:
+          - Let the backend own CORS and expose Age and Retry-After.
+          - Do not override Cache-Control, which selects cacheable geometry versus no-store errors.
+    Properties:
+      ResponseHeadersPolicyConfig:
+        Name: !Sub '${ProjectName}-${Environment}-api-security'
+        Comment: HTTPS API security headers; CORS remains application-owned.
+        SecurityHeadersConfig:
+          ContentTypeOptions:
+            Override: true
+          FrameOptions:
+            FrameOption: DENY
+            Override: true
+          ReferrerPolicy:
+            ReferrerPolicy: no-referrer
+            Override: true
+          StrictTransportSecurity:
+            AccessControlMaxAgeSec: 31536000
+            IncludeSubdomains: false
+            Preload: false
+            Override: true
+  ApiDistribution:
+    Type: AWS::CloudFront::Distribution
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Provide a stable AWS HTTPS hostname without a purchased domain or public ALB.
+        must:
+          - Reuse the user-created VPC origin and internal ALB; do not create a public origin.
+          - Viewer HTTPS terminates at CloudFront; the private origin hop intentionally uses HTTP.
+          - Keep this distribution during API redeploys to preserve its default hostname.
+          - No authentication is provided by CORS. This is an intentionally public lab API.
+          - API logs remain in CloudWatch; edge access log delivery is not enabled in this MVP.
+    Properties:
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+      DistributionConfig:
+        Comment: !Sub '${ProjectName}-${Environment} public API via private ALB'
+        Enabled: true
+        HttpVersion: http2and3
+        IPV6Enabled: true
+        PriceClass: PriceClass_200
+        ViewerCertificate:
+          CloudFrontDefaultCertificate: true
+        Origins:
+          - Id: private-api
+            DomainName: !Ref OriginDomainName
+            ConnectionAttempts: 1
+            ConnectionTimeout: 10
+            VpcOriginConfig:
+              VpcOriginId: !Ref VpcOriginId
+              OriginKeepaliveTimeout: 5
+              OriginReadTimeout: 120
+        DefaultCacheBehavior:
+          TargetOriginId: private-api
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [GET, HEAD, OPTIONS, PUT, PATCH, POST, DELETE]
+          CachedMethods: [GET, HEAD]
+          CachePolicyId: !Ref DisabledCachePolicy
+          OriginRequestPolicyId: !Ref DynamicOriginRequestPolicy
+          ResponseHeadersPolicyId: !Ref ApiResponseHeadersPolicy
+          Compress: true
+        CacheBehaviors:
+          - PathPattern: /api/v1/map/layers/roads/geometry
+            TargetOriginId: private-api
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD]
+            CachePolicyId: !Ref GeometryCachePolicy
+            OriginRequestPolicyId: !Ref GeometryOriginRequestPolicy
+            ResponseHeadersPolicyId: !Ref ApiResponseHeadersPolicy
+            Compress: true
+          - PathPattern: /api/v1/map/layers/parking/geometry
+            TargetOriginId: private-api
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD]
+            CachePolicyId: !Ref GeometryCachePolicy
+            OriginRequestPolicyId: !Ref GeometryOriginRequestPolicy
+            ResponseHeadersPolicyId: !Ref ApiResponseHeadersPolicy
+            Compress: true
+          - PathPattern: /api/v1/map/layers/population/geometry
+            TargetOriginId: private-api
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD]
+            CachePolicyId: !Ref GeometryCachePolicy
+            OriginRequestPolicyId: !Ref GeometryOriginRequestPolicy
+            ResponseHeadersPolicyId: !Ref ApiResponseHeadersPolicy
+            Compress: true
+        CustomErrorResponses:
+          - ErrorCode: 400
+            ErrorCachingMinTTL: 0
+          - ErrorCode: 403
+            ErrorCachingMinTTL: 0
+          - ErrorCode: 404
+            ErrorCachingMinTTL: 0
+          - ErrorCode: 405
+            ErrorCachingMinTTL: 0
+          - ErrorCode: 414
+            ErrorCachingMinTTL: 0
+          - ErrorCode: 416
+            ErrorCachingMinTTL: 0
+          - ErrorCode: 500
+            ErrorCachingMinTTL: 0
+          - ErrorCode: 501
+            ErrorCachingMinTTL: 0
+          - ErrorCode: 502
+            ErrorCachingMinTTL: 0
+          - ErrorCode: 503
+            ErrorCachingMinTTL: 0
+          - ErrorCode: 504
+            ErrorCachingMinTTL: 0
+Outputs:
+  DistributionId:
+    Value: !Ref ApiDistribution
+  DistributionDomainName:
+    Value: !GetAtt ApiDistribution.DomainName
+  ApiBaseUrl:
+    Value: !Sub 'https://${ApiDistribution.DomainName}/api/v1'

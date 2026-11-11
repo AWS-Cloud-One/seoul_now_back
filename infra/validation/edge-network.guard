@@ -1,0 +1,36 @@
+# Project rules for the private HTTP origin; viewer HTTPS is configured in CloudFront.
+let ingress_rules = Resources.*[ Type == 'AWS::EC2::SecurityGroupIngress' ]
+rule private_http_ingress {
+    %ingress_rules !empty
+    %ingress_rules.Properties {
+        IpProtocol == 'tcp'
+        FromPort == 80
+        ToPort == 80
+        CidrIp !exists
+        CidrIpv6 !exists
+        GroupId.'Fn::GetAtt' == 'AlbSecurityGroup.GroupId'
+    }
+}
+rule exclusive_cloudfront_sources {
+    Resources.BootstrapCloudFrontIngress {
+        Condition == 'UseCloudFrontPrefixList'
+        Properties.SourcePrefixListId.Ref == 'CloudFrontPrefixListId'
+        Properties.SourceSecurityGroupId !exists
+    }
+    Resources.VpcOriginCloudFrontIngress {
+        Condition == 'UseCloudFrontVpcOriginGroup'
+        Properties.SourceSecurityGroupId.Ref == 'CloudFrontVpcOriginSecurityGroupId'
+        Properties.SourcePrefixListId !exists
+    }
+}
+rule scoped_api_egress {
+    Resources.AlbSecurityGroup.Properties {
+        SecurityGroupIngress !exists
+        SecurityGroupEgress.* {
+            IpProtocol == 'tcp'
+            FromPort == 8000
+            ToPort == 8000
+            CidrIp.Ref == 'VpcCidr'
+        }
+    }
+}
