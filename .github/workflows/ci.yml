@@ -19,8 +19,9 @@ concurrency:
 jobs:
   checks:
     name: Lint and tests
-    # Same CPU architecture as the EKS nodes (arm64); free for public repositories.
-    runs-on: ubuntu-24.04-arm
+    # The pinned PostGIS test image is amd64-only. Run it natively here;
+    # the image job below still validates the production build on EKS's arm64.
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -40,6 +41,12 @@ jobs:
 
       - name: Integration tests (isolated PostGIS)
         run: docker compose --profile test run --rm tests pytest -q -m integration
+
+      - name: Test database diagnostics
+        if: failure()
+        run: |
+          docker compose --profile test ps -a
+          docker compose --profile test logs --no-color --tail=200 test-db
 
       - name: Remove test database
         if: always()
