@@ -53,6 +53,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         allow_credentials=False,
         allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["Content-Type", "Result-Context"],
+        expose_headers=["Age", "Retry-After"],
     )
     app.include_router(router)
     return app

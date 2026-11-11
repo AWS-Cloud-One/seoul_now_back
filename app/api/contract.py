@@ -78,11 +78,7 @@ class ContractRoute(APIRoute):
                         request_id = UUID(str(body.get("request_id")))
                     except ValueError:
                         pass
-            headers = (
-                {"Cache-Control": "no-store"}
-                if request.method == "POST" or "result-context" in request.headers
-                else {}
-            )
+            headers = {"Cache-Control": "no-store"}
             if retry_after is not None:
                 headers["Retry-After"] = str(retry_after)
             response = ErrorResponse.model_validate(

@@ -75,3 +75,18 @@ def test_openapi_lists_health_routes(client: TestClient) -> None:
     assert response.status_code == 200
     assert "/api/v1/health/live" in response.json()["paths"]
     assert "/api/v1/health/ready" in response.json()["paths"]
+
+
+@pytest.mark.parametrize("path", ["/api/v1/health/live", "/api/v1/not-found"])
+def test_cors_exposes_cache_age_and_retry_guidance(client: TestClient, path: str) -> None:
+    response = client.get(path, headers={"Origin": "http://localhost:5173"})
+    assert response.headers["access-control-allow-origin"] == "http://localhost:5173"
+    exposed = {
+        name.strip().lower()
+        for name in response.headers["access-control-expose-headers"].split(",")
+    }
+    assert {"age", "retry-after"} <= exposed
+    assert "access-control-allow-credentials" not in response.headers
+
+    rejected = client.get(path, headers={"Origin": "https://untrusted.example"})
+    assert "access-control-allow-origin" not in rejected.headers

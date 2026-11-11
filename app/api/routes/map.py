@@ -1,8 +1,9 @@
 """M01/M02 HTTP boundary; spatial queries live in MapRepository."""
 
 from typing import Annotated
+from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Response
 from pydantic import ValidationError
 
 from app.api.contract import ContractRoute, envelope
@@ -39,9 +40,14 @@ def get_map_query(
 )
 async def geometry(
     layer: Layer,
+    response: Response,
     query: Annotated[MapQuery, Depends(get_map_query)],
     service: Annotated[MapService, Depends(get_map_service)],
+    cache_refresh: Annotated[UUID | None, Query()] = None,
 ):
+    response.headers["Cache-Control"] = (
+        "no-store" if cache_refresh is not None else "public, max-age=0, s-maxage=300"
+    )
     return envelope(await service.geometry(layer, query))
 
 
@@ -54,8 +60,10 @@ async def geometry(
 )
 async def status(
     layer: StatusLayer,
+    response: Response,
     query: Annotated[MapQuery, Depends(get_map_query)],
     geometry_version: Annotated[str, Query(min_length=1, max_length=100)],
     service: Annotated[MapService, Depends(get_map_service)],
 ):
+    response.headers["Cache-Control"] = "no-store"
     return envelope(await service.status(layer, query, geometry_version))
