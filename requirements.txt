@@ -8,3 +8,4 @@ psycopg[binary]==3.3.6
 alembic==1.19.2
 geoalchemy2==0.20.0
 httpx==0.28.1
+boto3[crt]==1.43.127

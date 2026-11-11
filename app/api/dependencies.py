@@ -11,7 +11,7 @@ from app.clients.kakao import KakaoLocalClient
 from app.clients.query_kakao import KakaoQueryClient
 from app.core.config import Settings
 from app.core.exceptions import ServiceError
-from app.modules.ai.providers.openai import OpenAIProvider
+from app.modules.ai.providers.base import AIProvider
 from app.modules.recommendation.engine import DestinationRecommendationEngine
 from app.repositories.area_queries import AreaQueryRepository
 from app.repositories.health import HealthRepository
@@ -191,11 +191,8 @@ def get_area_query_service(
     )
 
 
-def get_ai_provider(
-    http: Annotated[httpx.AsyncClient, Depends(get_http_client)],
-    settings: Annotated[Settings, Depends(get_settings)],
-) -> OpenAIProvider:
-    return OpenAIProvider(http, settings)
+def get_ai_provider(request: Request) -> AIProvider:
+    return request.app.state.ai_provider
 
 
 def get_current_place_answers(
@@ -238,7 +235,7 @@ def get_recommendation_geography(
 
 def get_recommendation_service(
     source: Annotated[RecommendationSource, Depends(get_recommendation_source)],
-    model: Annotated[OpenAIProvider, Depends(get_ai_provider)],
+    model: Annotated[AIProvider, Depends(get_ai_provider)],
     execution: Annotated[RecommendationExecution, Depends(get_recommendation_execution)],
     geography: Annotated[RecommendationGeographyService, Depends(get_recommendation_geography)],
 ) -> RecommendationService:
@@ -265,7 +262,7 @@ def get_origin_search_service(
 
 
 def get_pending_service(
-    model: Annotated[OpenAIProvider, Depends(get_ai_provider)],
+    model: Annotated[AIProvider, Depends(get_ai_provider)],
     provider: Annotated[KakaoLocalClient, Depends(get_kakao_local_client)],
     recommendations: Annotated[RecommendationService, Depends(get_recommendation_service)],
     contexts: Annotated[RecommendationContextService, Depends(get_context_reader)],

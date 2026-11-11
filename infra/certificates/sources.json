@@ -1,0 +1,8 @@
+{
+  "ap-northeast-2-bundle.pem": {
+    "url": "https://truststore.pki.rds.amazonaws.com/ap-northeast-2/ap-northeast-2-bundle.pem",
+    "retrieved_on": "2026-11-10",
+    "sha256": "913fb5b814f17af79d4c1622584a8d0ceddf5b0d76fe353d0c7d1186cdd6b229",
+    "ca_identifiers": ["rds-ca-rsa2048-g1", "rds-ca-rsa4096-g1", "rds-ca-ecc384-g1"]
+  }
+}

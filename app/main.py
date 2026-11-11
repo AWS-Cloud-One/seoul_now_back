@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.router import router
 from app.core.config import Settings
 from app.db.session import create_engine, read_session_factory, write_session_factory
+from app.modules.ai.providers.factory import open_ai_provider
 from app.modules.recommendation.progress import MemoryProgressStore
 from app.services.driving_requests import DrivingRequests
 from app.services.origin_context import OriginContextStore
@@ -30,7 +31,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         app.state.travel_replay = ReadReplay(ttl=config.result_context_ttl_seconds)
         try:
-            yield
+            async with open_ai_provider(config) as provider:
+                app.state.ai_provider = provider
+                yield
         finally:
             await engine.dispose()
 

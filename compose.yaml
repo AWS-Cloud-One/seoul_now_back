@@ -10,6 +10,8 @@ x-backend: &backend
     context: .
     target: development
   environment: &app-environment
+    # Compose is local development. EKS supplies aws mode and each role's Secret ARN.
+    APP_RUNTIME_ENV: local
     APP_DATABASE_URL: ${DOCKER_DATABASE_URL:-postgresql+psycopg://seoul:seoul_local@db:5432/seoul_now}
     APP_CORS_ORIGINS: '${APP_CORS_ORIGINS:-["http://localhost:5173","http://127.0.0.1:5173"]}'
     APP_DOCS_ENABLED: ${APP_DOCS_ENABLED:-true}
@@ -57,6 +59,9 @@ services:
 
   migrate:
     <<: *backend
+    environment:
+      <<: *app-environment
+      APP_RUNTIME_ROLE: migration
     command: ["alembic", "upgrade", "head"]
     restart: "no"
     healthcheck:
@@ -69,6 +74,12 @@ services:
     <<: *backend
     environment:
       <<: *app-environment
+      APP_RUNTIME_ROLE: api
+      APP_AI_PROVIDER: ${APP_AI_PROVIDER:-bedrock}
+      APP_BEDROCK_REGION: ${APP_BEDROCK_REGION:-ap-northeast-2}
+      APP_BEDROCK_MODEL_ID: ${APP_BEDROCK_MODEL_ID:-global.anthropic.claude-haiku-4-5-20251001-v1:0}
+      APP_BEDROCK_TIMEOUT_SECONDS: ${APP_BEDROCK_TIMEOUT_SECONDS:-20}
+      APP_BEDROCK_MAX_TOKENS: ${APP_BEDROCK_MAX_TOKENS:-2000}
       APP_OPENAI_API_KEY: ${APP_OPENAI_API_KEY:-}
       APP_OPENAI_MODEL: ${APP_OPENAI_MODEL:-gpt-4.1-mini}
       APP_OPENAI_TIMEOUT_SECONDS: ${APP_OPENAI_TIMEOUT_SECONDS:-20}
@@ -95,7 +106,11 @@ services:
 
   citydata-collector:
     <<: *backend
+    environment:
+      <<: *app-environment
+      APP_RUNTIME_ROLE: collector
     init: true
+    stop_grace_period: 60s
     command: ["python", "-u", "-m", "jobs.scheduler"]
     restart: unless-stopped
     healthcheck:
@@ -109,9 +124,13 @@ services:
   # Reference files are inputs to explicit imports, not runtime API/worker dependencies.
   reference-import:
     <<: *backend
+    environment:
+      <<: *app-environment
+      APP_RUNTIME_ROLE: import
     profiles: ["reference"]
     command: ["python", "-m", "jobs.import_place_boundaries", "--help"]
     restart: "no"
+    stop_grace_period: 60s
     healthcheck:
       disable: true
     volumes:

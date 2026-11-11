@@ -1,9 +1,13 @@
+import os
 from pathlib import Path
+from typing import Literal
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import ArgumentError
+
+from app.db.connection import connection_args
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -16,6 +20,18 @@ class Settings(BaseSettings):
         extra="forbid",
         hide_input_in_errors=True,
     )
+
+    runtime_env: Literal["local", "aws"] = "local"
+    runtime_role: Literal["api", "collector", "migration", "import"] | None = None
+    settings_secret_id: str = ""
+    # Bootstrap handoff guard, not an authentication or IAM boundary.
+    settings_loaded: bool = Field(default=False, repr=False, exclude=True)
+
+    def __init__(self, **values):
+        runtime_env = values.get("runtime_env", os.environ.get("APP_RUNTIME_ENV", "local"))
+        if runtime_env == "aws":
+            values["_env_file"] = None
+        super().__init__(**values)
 
     api_port: int = Field(default=8000, validation_alias="API_PORT", ge=1, le=65535)
     db_port: int = Field(default=5432, validation_alias="DB_PORT", ge=1, le=65535)
@@ -31,6 +47,14 @@ class Settings(BaseSettings):
     mobility_request_budget: int = Field(default=8000, ge=1, le=10000)
     mobility_max_concurrency: int = Field(default=3, ge=1, le=5)
     mobility_requests_per_second: int = Field(default=3, ge=1, le=5)
+    ai_provider: Literal["bedrock", "openai"] = "bedrock"
+    bedrock_region: str = Field(default="ap-northeast-2", min_length=1)
+    # Temporary integration candidate; final model selection belongs to chat evaluation.
+    bedrock_model_id: str = Field(
+        default="global.anthropic.claude-haiku-4-5-20251001-v1:0", min_length=1
+    )
+    bedrock_timeout_seconds: float = Field(default=20, gt=0, le=120)
+    bedrock_max_tokens: int = Field(default=2000, ge=1, le=8192)
     openai_api_key: SecretStr = SecretStr("")
     openai_model: str = "gpt-4.1-mini"
     openai_timeout_seconds: float = Field(default=20, gt=0, le=120)
@@ -49,8 +73,33 @@ class Settings(BaseSettings):
         "postgresql+psycopg://seoul:seoul_local@127.0.0.1:5432/seoul_now"
     )
     db_connect_timeout_seconds: int = Field(default=3, ge=1, le=30)
+    db_sslmode: (
+        Literal["disable", "allow", "prefer", "require", "verify-ca", "verify-full"] | None
+    ) = None
+    db_sslrootcert: Path | None = None
     health_timeout_seconds: float = Field(default=5, gt=0, le=30)
     result_context_ttl_seconds: int = Field(default=1800, ge=1, le=86400)
+
+    @model_validator(mode="after")
+    def require_aws_bootstrap(self):
+        if self.runtime_env == "aws" and (
+            not self.settings_loaded
+            or self.runtime_role is None
+            or not self.settings_secret_id
+            or "database_url" not in self.model_fields_set
+        ):
+            raise ValueError("AWS settings must be supplied by app.bootstrap")
+        return self
+
+    @model_validator(mode="after")
+    def validate_database_transport(self):
+        connection_args(self)
+        return self
+
+    @field_validator("bedrock_region", "bedrock_model_id", mode="before")
+    @classmethod
+    def strip_bedrock_identifiers(cls, value):
+        return value.strip() if isinstance(value, str) else value
 
     @field_validator("database_url")
     @classmethod

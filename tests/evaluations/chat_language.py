@@ -10,12 +10,10 @@ import json
 import time
 from uuid import uuid4
 
-import httpx
-
 from app.core.config import Settings
 from app.core.exceptions import ServiceError
 from app.modules.ai.interpretation import interpret
-from app.modules.ai.providers.openai import OpenAIProvider
+from app.modules.ai.providers.factory import open_ai_provider
 from app.schemas.origin import OriginInterpretationContext
 from app.schemas.pending import ChatRequest
 from tests.fixtures.chat_language import BASE, CASES, SELECTED
@@ -80,8 +78,7 @@ def check(case, parsed):
 async def evaluate(cases, repeat):
     results = []
     semaphore = asyncio.Semaphore(2)
-    async with httpx.AsyncClient() as client:
-        provider = OpenAIProvider(client, Settings())
+    async with open_ai_provider(Settings()) as provider:
 
         async def one(case, iteration):
             async with semaphore:
