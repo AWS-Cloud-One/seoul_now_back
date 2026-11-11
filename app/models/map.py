@@ -4,7 +4,7 @@ from datetime import datetime
 from decimal import Decimal
 from uuid import UUID
 
-from geoalchemy2 import Geography, Geometry
+from geoalchemy2 import Geometry
 from sqlalchemy import (
     Boolean,
     CheckConstraint,
@@ -16,6 +16,7 @@ from sqlalchemy import (
     Numeric,
     Text,
     func,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -91,11 +92,15 @@ class MapFeature(Base):
 
 # Meter-distance searches cast the published geometry to geography. The geometry
 # index cannot serve that expression; retain the exact published coordinates.
-Index(
-    "idx_map_features_parking_geography",
-    MapFeature.geometry.cast(Geography),
-    postgresql_using="gist",
-    postgresql_where=(MapFeature.layer == "parking") & MapFeature.is_active.is_(True),
+MapFeature.__table__.append_constraint(
+    Index(
+        "idx_map_features_parking_geography",
+        # Match 0014 and PostgreSQL reflection; CAST syntax loses the typmod in
+        # Alembic's expression normalization and reports a spurious index change.
+        text("(geometry::geography(Geometry,4326))"),
+        postgresql_using="gist",
+        postgresql_where=(MapFeature.layer == "parking") & MapFeature.is_active.is_(True),
+    )
 )
 
 
