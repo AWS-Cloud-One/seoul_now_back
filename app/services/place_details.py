@@ -172,6 +172,8 @@ class TravelTimeReader:
                 separators=(",", ":"),
             ).encode()
         ).hexdigest()
-        result = await self.replay.run((request.trip_id, request.request_id), signature, compute)
+        result = await self.replay.run(
+            (request.trip_id, request.request_id), signature, compute, model=TravelTimeData
+        )
         verify()  # Replays and waiters also verify expiry after any waiting.
         return result

@@ -18,6 +18,7 @@ from app.repositories.normalization import NormalizedWriter
 from app.repositories.reference_import import ReferenceImportWriter
 from app.schemas.location import Coordinates
 from app.services.area_queries import AreaQueryService
+from tests.fixtures.state_inspection import trip_state
 from tests.integration.test_place_details_api_storage import parking_rows, travel_request
 from tests.integration.test_recommendation_chat_api_storage import (
     C01,
@@ -172,7 +173,7 @@ def test_chat_current_facts_share_p03_cache_and_preserve_recommendation_state(no
             async with env.app.state.write_session_factory.begin() as session:
                 await seed_population(session)
             baseline = await counts(env)
-            progress = env.app.state.recommendation_progress.trips[original["trip_id"]]
+            progress = await trip_state(env.app, original["trip_id"])
             before = deepcopy(
                 (progress.search, progress.excluded, progress.conditions, progress.version)
             )
@@ -208,6 +209,7 @@ def test_chat_current_facts_share_p03_cache_and_preserve_recommendation_state(no
                     )
                 assert (await post(env, C01, question)).json()["data"] == result
                 assert await counts(env) == baseline
+                progress = await trip_state(env.app, original["trip_id"])
                 assert (
                     progress.search,
                     progress.excluded,

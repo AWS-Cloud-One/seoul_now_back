@@ -30,6 +30,7 @@ from app.repositories.recommendation_conditions import RecommendationConditionsR
 from app.repositories.recommendation_context import RecommendationContextRepository
 from app.services.recommendation_context import RecommendationContextService
 from tests.api.test_recommendation_integration import candidate
+from tests.fixtures.state_inspection import trip_request_count, trip_state
 from tests.integration.test_recommendation_execution_storage import WriteHook
 from tests.unit.recommendation.test_progress import request
 
@@ -238,8 +239,9 @@ def test_concurrent_chat_replay_interprets_searches_and_saves_once(normalized_da
             assert interpretation_count(env) == 1
             assert env.source.search.await_count == 1 and env.source.route.await_count == 15
             assert await counts(env) == (1, 2, 1)
-            entry = env.app.state.recommendation_progress.trip(UUID(value["trip_id"]))
-            assert len(entry.requests) == 1 and len(entry.excluded) == 3
+            entry = await trip_state(env.app, UUID(value["trip_id"]))
+            assert await trip_request_count(env.app, value["trip_id"]) == 1
+            assert len(entry.excluded) == 3
             assert entry.version == 1
 
     asyncio.run(run())
@@ -426,7 +428,7 @@ def test_target_expiry_during_provider_work_prevents_condition_and_result_commit
             assert not expired.json()["data"]["condition_update"]["applied"]
             assert expired.json()["data"]["stages"]["interpretation"] == "ok"
             assert await counts(env) == (1, 1, 1)
-            entry = env.app.state.recommendation_progress.trip(UUID(value["trip_id"]))
+            entry = await trip_state(env.app, UUID(value["trip_id"]))
             assert entry.version == 0 and entry.conditions.headcount == 2
 
     asyncio.run(run())

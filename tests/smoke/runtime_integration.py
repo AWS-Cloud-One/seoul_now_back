@@ -228,7 +228,7 @@ for line in (root / 'SHA256SUMS').read_text().splitlines():
 
             run("migration", ["alembic", "upgrade", "head"])
             run("migration", ["alembic", "check"])
-            assert sql("SELECT version_num FROM alembic_version") == "0014"
+            assert sql("SELECT version_num FROM alembic_version") == "0016"
             print("PASS AWS bootstrap/TLS/real migration/schema check", flush=True)
 
             command = [

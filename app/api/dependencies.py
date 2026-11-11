@@ -25,7 +25,11 @@ from app.services.area_queries import AreaQueryService
 from app.services.chat import RecommendationChatProcessor
 from app.services.current_place_answers import CurrentPlaceAnswers
 from app.services.health import HealthService
-from app.services.locations import LocationResolveService, LocationSearchService
+from app.services.locations import (
+    LocationResolveService,
+    LocationSearchService,
+    ProviderLocationPagination,
+)
 from app.services.map import MapService
 from app.services.origin_context import OriginContextStore
 from app.services.origin_search import OriginSearchService
@@ -123,10 +127,16 @@ def get_map_service(session: Session) -> MapService:
     return MapService(MapRepository(session))
 
 
+def shared_cursors(request: Request):
+    """Cursors shared through PostgreSQL; None falls back to the in-process store."""
+    return getattr(request.app.state, "query_cursors", None)
+
+
 def get_location_search_service(
+    request: Request,
     provider: Annotated[KakaoLocalClient, Depends(get_kakao_local_client)],
 ) -> LocationSearchService:
-    return LocationSearchService(provider)
+    return LocationSearchService(provider, ProviderLocationPagination(shared_cursors(request)))
 
 
 def get_location_resolve_service(
@@ -136,14 +146,17 @@ def get_location_resolve_service(
 
 
 def get_parking_nearby_service(
+    request: Request,
     session: Session,
     provider: Annotated[KakaoLocalClient, Depends(get_kakao_local_client)],
 ) -> ParkingNearbyService:
-    return ParkingNearbyService(ParkingNearbyRepository(session), provider)
+    return ParkingNearbyService(
+        ParkingNearbyRepository(session), provider, cursors=shared_cursors(request)
+    )
 
 
-def get_parking_search_service(session: Session) -> ParkingSearchService:
-    return ParkingSearchService(ParkingNearbyRepository(session))
+def get_parking_search_service(request: Request, session: Session) -> ParkingSearchService:
+    return ParkingSearchService(ParkingNearbyRepository(session), cursors=shared_cursors(request))
 
 
 def get_place_query_service(
@@ -154,6 +167,7 @@ def get_place_query_service(
     key = settings.kakao_rest_api_key.get_secret_value().strip()
     return PlaceQueryService(
         KakaoQueryClient(provider),
+        cursors=shared_cursors(request),
         driving_requests=request.app.state.driving_requests,
         cache_namespace=hashlib.sha256(key.encode()).hexdigest(),
     )

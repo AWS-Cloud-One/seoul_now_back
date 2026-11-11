@@ -63,7 +63,12 @@ class RecommendationPersistence:
         work: RecommendationWork,
         *,
         source_result_id=None,
+        before_commit=None,
     ) -> RecommendationResponse:
+        """`before_commit(session, finalized)` writes shared state in the same transaction.
+
+        It may raise to abort: the conditions and result are then not committed either.
+        """
         ready_to_commit = False
         try:
             async with self.writers.begin() as session:
@@ -78,6 +83,8 @@ class RecommendationPersistence:
                         RecommendationContextRepository(session),
                         ttl_seconds=self.context_ttl_seconds,
                     ).register(request.request_id, response, source_result_id=source_result_id)
+                if before_commit is not None:
+                    await before_commit(session, finalized)
                 ready_to_commit = True
         except DBAPIError as exc:
             if ready_to_commit and exc.connection_invalidated:

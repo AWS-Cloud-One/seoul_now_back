@@ -8,6 +8,7 @@ from uuid import uuid4
 import psycopg
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 from psycopg import sql
 from sqlalchemy.engine import make_url
 
@@ -16,7 +17,10 @@ from app.db.connection import connection_args
 from app.models import Base
 
 TABLES = set(Base.metadata.tables)
-PRIVATE = {name for name in TABLES if name.startswith(("chat_", "recommendation_"))}
+# In-flight API state (0015/0016) holds user conditions and origins, like chat data:
+# only the API reads and writes it.
+API_STATE = {"query_cursors", "read_replays", "trip_progress", "trip_requests", "origin_contexts"}
+PRIVATE = {name for name in TABLES if name.startswith(("chat_", "recommendation_"))} | API_STATE
 COLLECTION = {"data_sources", "collection_runs", "collection_rejection_reasons"}
 MAP = {name for name in TABLES if name.startswith("map_")}
 IMPORT_WRITES = (
@@ -218,13 +222,14 @@ def migrate(settings):
     if settings.runtime_role != "migration":
         raise RuntimeError("migration_role_required")
     cfg = Config("alembic.ini")
+    head = ScriptDirectory.from_config(cfg).get_current_head()
     command.upgrade(cfg, "head")
-    # A second upgrade must be a no-op at the same pinned head.
+    # A second upgrade must be a no-op at the same head shipped in this image.
     command.upgrade(cfg, "head")
     command.check(cfg)
     with connect(settings) as conn:
         revision = conn.execute("SELECT version_num FROM alembic_version").fetchall()
-        if revision != [("0014",)]:
+        if revision != [(head,)]:
             raise RuntimeError("unexpected_revision")
         tables = conn.execute("""
             SELECT tablename FROM pg_tables WHERE schemaname='public'
@@ -233,7 +238,7 @@ def migrate(settings):
         emit(
             "w4_migration",
             status="pass",
-            revision="0014",
+            revision=head,
             repeat_upgrade="no_change",
             schema_comparison="no_changes",
             owner="seoul_now_migration",

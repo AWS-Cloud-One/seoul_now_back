@@ -16,6 +16,7 @@ from app.modules.recommendation.progress import MemoryProgressStore
 from app.repositories.recommendation_context import RecommendationContextRepository
 from app.services.recommendation_context import RecommendationContextService
 from tests.api.test_recommendation_integration import candidate
+from tests.fixtures.state_inspection import trip_state
 from tests.integration.test_recommendation_chat_api_storage import (
     C01,
     R01,
@@ -227,7 +228,7 @@ def test_retry_commit_failure_keeps_original_and_exclusions_and_replays_failure(
             assert not data["condition_update"]["applied"] and data["result"] is None
             assert await stored_rows(env, first) == before
             assert await counts(env) == (1, 1, 1)
-            entry = env.app.state.recommendation_progress.trip(UUID(value["trip_id"]))
+            entry = await trip_state(env.app, UUID(value["trip_id"]))
             assert not entry.excluded
             assert (await post(env, R02, request, 503)).json()["data"] == data
             assert_only_retry(env, 2)
@@ -287,7 +288,7 @@ def test_context_expiry_during_retry_prevents_commit(normalized_database, provid
             assert failed.json()["error"]["code"] == "CONTEXT_EXPIRED"
             assert not failed.json()["data"]["condition_update"]["applied"]
             assert await counts(env) == (1, 1, 1)
-            entry = env.app.state.recommendation_progress.trip(UUID(value["trip_id"]))
+            entry = await trip_state(env.app, UUID(value["trip_id"]))
             assert not entry.excluded
 
     asyncio.run(run())
@@ -318,10 +319,11 @@ def test_retry_exclusions_and_search_progress_are_shared_without_consuming_searc
             value, first = await original(env)
             request = retry_body(value, first)
             request["excluded_place_ids"] = ["kakao:0"]
-            entry = env.app.state.recommendation_progress.trip(UUID(value["trip_id"]))
+            entry = await trip_state(env.app, UUID(value["trip_id"]))
             search_before = deepcopy(entry.search)
             second = (await post(env, R02, request)).json()["data"]
             assert ids(second) == ["kakao:1", "kakao:2"]
+            entry = await trip_state(env.app, UUID(value["trip_id"]))
             assert entry.search == search_before
             assert entry.excluded == {"kakao:0", "kakao:1", "kakao:2"}
             # A new request using the original result also excludes previous successes.

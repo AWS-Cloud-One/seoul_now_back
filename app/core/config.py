@@ -79,6 +79,15 @@ class Settings(BaseSettings):
     db_sslrootcert: Path | None = None
     health_timeout_seconds: float = Field(default=5, gt=0, le=30)
     result_context_ttl_seconds: int = Field(default=1800, ge=1, le=86400)
+    # Where in-flight API state lives. "database" is shared by every API process and
+    # survives a rolling restart; "memory" is one process only (DB-less tests).
+    state_backend: Literal["database", "memory"] = "database"
+
+    @model_validator(mode="after")
+    def require_shared_state_on_aws(self):
+        if self.runtime_env == "aws" and self.state_backend != "database":
+            raise ValueError("AWS API processes must share state through the database")
+        return self
 
     @model_validator(mode="after")
     def require_aws_bootstrap(self):

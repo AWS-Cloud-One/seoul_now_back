@@ -30,7 +30,7 @@ class ParkingNearbyService:
         verified_seoul=False,
     ):
         scope = ("parking-nearby", coordinates.latitude, coordinates.longitude, limit)
-        page = self.cursors.read(cursor, scope) if cursor else None
+        page = await self.cursors.read(cursor, scope) if cursor else None
         try:
             # Only internal readers of authenticated Seoul result coordinates may skip this.
             if not verified_seoul:
@@ -104,7 +104,7 @@ class ParkingNearbyService:
                         nearest_distance_meters=nearest,
                         items=items,
                         total_count=count,
-                        next_cursor=self.cursors.issue(
+                        next_cursor=await self.cursors.issue(
                             scope,
                             {
                                 "radius": radius,
