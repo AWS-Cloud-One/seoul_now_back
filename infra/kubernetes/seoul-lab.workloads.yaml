@@ -1,30 +1,8 @@
 # W5-A: private in-cluster API and continuous collection on the existing ARM node.
 # Secret values stay in Secrets Manager; app.bootstrap reads each role's secret.
-# Reapply a changed ConfigMap together with a rollout restart of its Deployment.
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: seoul-now-runtime
-  namespace: seoul-now
-data:
-  AWS_REGION: ap-northeast-2
-  AWS_DEFAULT_REGION: ap-northeast-2
-  APP_RUNTIME_ENV: aws
-  APP_DB_SSLMODE: verify-full
-  APP_DB_SSLROOTCERT: /app/certs/rds/ap-northeast-2-bundle.pem
----
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: seoul-now-api-settings
-  namespace: seoul-now
-data:
-  APP_AI_PROVIDER: bedrock
-  APP_BEDROCK_REGION: ap-northeast-2
-  APP_BEDROCK_MODEL_ID: global.anthropic.claude-haiku-4-5-20251001-v1:0
-  APP_DOCS_ENABLED: "false"
-  APP_CORS_ORIGINS: '["http://localhost:5173","http://127.0.0.1:5173"]'
----
+# ConfigMaps seoul-now-runtime / seoul-now-api-settings are generated with a content
+# hash by kustomization.yaml (render with `kubectl kustomize infra/kubernetes`);
+# do not apply this file alone.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -38,10 +16,15 @@ spec:
   revisionHistoryLimit: 3
   minReadySeconds: 10
   progressDeadlineSeconds: 300
-  # Origin/progress/replay stores are process-local. Do not add replicas/workers
-  # until their state-sharing contract is implemented. Updates have downtime.
+  # In-flight trip, origin, cursor and P03 replay state is shared through PostgreSQL
+  # (migration 0016, APP_STATE_BACKEND=database), so old and new Pods can serve the
+  # same trip. Start the new Pod first; remove the old one only after it is Ready.
+  # The external route-call limits stay per Pod; during a rollout they briefly double.
   strategy:
-    type: Recreate
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
   selector:
     matchLabels:
       app.kubernetes.io/name: seoul-now
@@ -68,8 +51,16 @@ spec:
           type: RuntimeDefault
       containers:
         - name: api
-          image: 963701985499.dkr.ecr.ap-northeast-2.amazonaws.com/seoul-now/lab/backend@sha256:365e74f0503aa8004b87dee13234980beb8081c2d9744e084c0bb3a4c4354f85
+          # Shared trip state (migration 0016). Previous image for rollback:
+          # sha256:365e74f0503aa8004b87dee13234980beb8081c2d9744e084c0bb3a4c4354f85
+          image: 963701985499.dkr.ecr.ap-northeast-2.amazonaws.com/seoul-now/lab/backend@sha256:03bc054f0a3b31e06656e290f99d780db54801ee592be7cbd7c0fd6997afffea
           imagePullPolicy: IfNotPresent
+          lifecycle:
+            preStop:
+              # Keep serving while the ALB deregisters this target, then let
+              # Uvicorn drain in-flight requests (45 s) within the 120 s grace.
+              exec:
+                command: [sleep, "15"]
           # Keep the image ENTRYPOINT so Secret bootstrap runs before Uvicorn.
           args:
             - uvicorn

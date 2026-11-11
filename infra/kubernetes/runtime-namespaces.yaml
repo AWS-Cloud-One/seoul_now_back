@@ -5,6 +5,9 @@ metadata:
   labels:
     pod-security.kubernetes.io/enforce: restricted
     pod-security.kubernetes.io/enforce-version: v1.36
+    # A new API Pod counts as Ready only after its ALB target is healthy, so a
+    # rolling update never removes the old Pod before the new one serves traffic.
+    elbv2.k8s.aws/pod-readiness-gate-inject: enabled
 ---
 apiVersion: v1
 kind: Namespace
