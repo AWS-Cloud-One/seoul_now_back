@@ -14,7 +14,7 @@ Metadata:
         Parameters: [ProjectName, Environment]
       - Label:
           default: GitHub
-        Parameters: [GitHubRepository, DeployBranch]
+        Parameters: [GitHubRepository, GitHubOwnerId, GitHubRepositoryId, DeployBranch]
       - Label:
           default: Existing runtime
         Parameters:
@@ -40,6 +40,14 @@ Parameters:
     Default: AWS-Cloud-One/seoul_now_back
     AllowedPattern: '[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+'
     Description: owner/repository whose workflows may deploy.
+  GitHubOwnerId:
+    Type: String
+    AllowedPattern: '[1-9][0-9]*'
+    Description: Immutable numeric GitHub owner ID included in the OIDC subject.
+  GitHubRepositoryId:
+    Type: String
+    AllowedPattern: '[1-9][0-9]*'
+    Description: Immutable numeric GitHub repository ID included in the OIDC subject.
   DeployBranch:
     Type: String
     Default: main
@@ -163,7 +171,7 @@ Resources:
       com.aws.cloudformation.Context:
         why: Assumed by GitHub Actions on the deploy branch to push images and start the deploy.
         must:
-          - Trust only this repository and branch (exact sub). Pull requests cannot assume it.
+          - Trust only this repository, immutable owner/repository IDs and branch (exact sub). Pull requests cannot assume it.
           - No IAM, EKS or Secrets Manager permissions; Kubernetes access stays in CodeBuild.
     Properties:
       RoleName: !Sub '${ProjectName}-${Environment}-github-deploy'
@@ -178,7 +186,10 @@ Resources:
             Condition:
               StringEquals:
                 token.actions.githubusercontent.com:aud: sts.amazonaws.com
-                token.actions.githubusercontent.com:sub: !Sub 'repo:${GitHubRepository}:ref:refs/heads/${DeployBranch}'
+                token.actions.githubusercontent.com:sub: !Sub
+                  - 'repo:${Owner}@${GitHubOwnerId}/${Repository}@${GitHubRepositoryId}:ref:refs/heads/${DeployBranch}'
+                  - Owner: !Select [0, !Split ['/', !Ref GitHubRepository]]
+                    Repository: !Select [1, !Split ['/', !Ref GitHubRepository]]
       Policies:
         - PolicyName: push-image-and-start-deploy
           PolicyDocument:
