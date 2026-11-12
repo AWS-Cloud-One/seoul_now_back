@@ -37,6 +37,11 @@ class ReferenceRepository:
     def __init__(self, session):
         self.session = session
 
+    async def has_place_records(self):
+        # Inactive rows still represent an intentional import. Bootstrap must not
+        # replace that reference set with the files bundled in a local checkout.
+        return bool(await self.session.scalar(select(select(PopulationArea).exists())))
+
     async def citydata_areas(self):
         rows = await self.session.execute(
             select(PopulationArea.area_code, PopulationArea.name)
