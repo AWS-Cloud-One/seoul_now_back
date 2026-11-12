@@ -40,9 +40,7 @@ def test_collector_can_only_update_road_name_and_timestamp(normalized_database):
                 before = conn.execute("SELECT updated_at FROM road_links").fetchone()[0]
                 apply_table_grants(conn, "collector", "road_links", username)
                 # Reapplying must remove an old, excessive column grant as well.
-                conn.execute(
-                    sql.SQL("GRANT UPDATE (geometry) ON road_links TO {}").format(user)
-                )
+                conn.execute(sql.SQL("GRANT UPDATE (geometry) ON road_links TO {}").format(user))
                 apply_table_grants(conn, "collector", "road_links", username)
                 conn.execute(sql.SQL("SET LOCAL ROLE {}").format(user))
                 with Session(bind=connection) as session:

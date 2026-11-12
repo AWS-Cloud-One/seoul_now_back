@@ -124,8 +124,7 @@ def grants(settings):
             for role in ("api", "collector", "import")
         },
         column_updates={
-            f"{role}.{table}": sorted(columns)
-            for (role, table), columns in COLUMN_UPDATES.items()
+            f"{role}.{table}": sorted(columns) for (role, table), columns in COLUMN_UPDATES.items()
         },
     )
 
