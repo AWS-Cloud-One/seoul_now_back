@@ -51,6 +51,9 @@ COLLECTOR_WRITES = (
     }
     | {name for name in TABLES if name.startswith("parking_")}
 )
+# Name enrichment must not replace geometry or change road identity/provenance.
+# The ORM updates updated_at alongside name; column UPDATE also permits row locks.
+COLUMN_UPDATES = {("collector", "road_links"): {"name", "updated_at"}}
 
 
 def rights(role, table):
@@ -68,6 +71,27 @@ def rights(role, table):
     return result
 
 
+def apply_table_grants(conn, role, table, username):
+    target = sql.Identifier("public", table)
+    user = sql.Identifier(username)
+    # Table REVOKE also clears existing column grants before restoring the policy.
+    conn.execute(sql.SQL("REVOKE ALL ON TABLE {} FROM {}").format(target, user))
+    allowed = rights(role, table)
+    if allowed:
+        conn.execute(
+            sql.SQL("GRANT {} ON TABLE {} TO {}").format(
+                sql.SQL(", ").join(map(sql.SQL, sorted(allowed))), target, user
+            )
+        )
+    columns = COLUMN_UPDATES.get((role, table), set())
+    if columns:
+        conn.execute(
+            sql.SQL("GRANT UPDATE ({}) ON TABLE {} TO {}").format(
+                sql.SQL(", ").join(map(sql.Identifier, sorted(columns))), target, user
+            )
+        )
+
+
 def grants(settings):
     if settings.runtime_role != "migration":
         raise RuntimeError("migration_role_required")
@@ -83,17 +107,8 @@ def grants(settings):
         if actual != tables:
             raise RuntimeError("unexpected_owned_tables")
         for role in ("api", "collector", "import"):
-            user = sql.Identifier("seoul_now_" + role)
             for table in sorted(tables):
-                target = sql.Identifier("public", table)
-                conn.execute(sql.SQL("REVOKE ALL ON TABLE {} FROM {}").format(target, user))
-                allowed = rights(role, table)
-                if allowed:
-                    conn.execute(
-                        sql.SQL("GRANT {} ON TABLE {} TO {}").format(
-                            sql.SQL(", ").join(map(sql.SQL, sorted(allowed))), target, user
-                        )
-                    )
+                apply_table_grants(conn, role, table, "seoul_now_" + role)
         # Current schema has UUID/text identities and no application sequences.
         if conn.execute(
             "SELECT count(*) FROM pg_sequences WHERE schemaname='public' "
@@ -107,6 +122,9 @@ def grants(settings):
         policy={
             role: {t: sorted(rights(role, t)) for t in sorted(tables)}
             for role in ("api", "collector", "import")
+        },
+        column_updates={
+            f"{role}.{table}": sorted(columns) for (role, table), columns in COLUMN_UPDATES.items()
         },
     )
 
@@ -133,8 +151,16 @@ def probe(settings):
                 ),
                 "DELETE": sql.SQL("DELETE FROM {} WHERE false").format(target),
             }
+            if any(t == table for _, t in COLUMN_UPDATES):
+                for field in Base.metadata.tables[table].columns:
+                    statements[f"UPDATE:{field.name}"] = sql.SQL(
+                        "UPDATE {} SET {}={} WHERE false"
+                    ).format(target, sql.Identifier(field.name), sql.Identifier(field.name))
             for operation, statement in statements.items():
-                expected = operation in rights(role, table)
+                privilege, _, field = operation.partition(":")
+                expected = privilege in rights(role, table) or (
+                    privilege == "UPDATE" and field in COLUMN_UPDATES.get((role, table), set())
+                )
                 try:
                     with conn.transaction(force_rollback=True):
                         conn.execute(statement)

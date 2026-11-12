@@ -36,4 +36,4 @@ configMapGenerator:
       - APP_BEDROCK_REGION=ap-northeast-2
       - APP_BEDROCK_MODEL_ID=global.anthropic.claude-haiku-4-5-20251001-v1:0
       - APP_DOCS_ENABLED=false
-      - 'APP_CORS_ORIGINS=["http://localhost:5173","http://127.0.0.1:5173"]'
+      - 'APP_CORS_ORIGINS=["http://localhost:5173","http://127.0.0.1:5173","https://d175hrpymm0ih1.cloudfront.net"]'

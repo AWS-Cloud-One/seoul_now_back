@@ -70,6 +70,29 @@ services:
       db:
         condition: service_healthy
 
+  # Initialize required local place geometry after schema creation, before readers start.
+  reference-init:
+    <<: *backend
+    environment:
+      <<: *app-environment
+      APP_RUNTIME_ROLE: import
+    command: ["python", "-m", "jobs.import_place_boundaries", "--if-empty"]
+    restart: "no"
+    stop_grace_period: 60s
+    healthcheck:
+      disable: true
+    volumes:
+      - *app-code
+      - *jobs-code
+      - *migration-code
+      - *project-config
+      - ./data:/app/data:ro
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
   api:
     <<: *backend
     environment:
@@ -103,6 +126,8 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+      reference-init:
+        condition: service_completed_successfully
 
   citydata-collector:
     <<: *backend
@@ -120,8 +145,10 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+      reference-init:
+        condition: service_completed_successfully
 
-  # Reference files are inputs to explicit imports, not runtime API/worker dependencies.
+  # Explicit reference refreshes remain available separately from automatic bootstrap.
   reference-import:
     <<: *backend
     environment:

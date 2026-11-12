@@ -37,6 +37,11 @@ class ReferenceRepository:
     def __init__(self, session):
         self.session = session
 
+    async def has_place_records(self):
+        # Inactive rows still represent an intentional import. Bootstrap must not
+        # replace that reference set with the files bundled in a local checkout.
+        return bool(await self.session.scalar(select(select(PopulationArea).exists())))
+
     async def citydata_areas(self):
         rows = await self.session.execute(
             select(PopulationArea.area_code, PopulationArea.name)
@@ -95,6 +100,16 @@ class ReferenceRepository:
                 select(RoadLink.link_id).where(*current_roads()).order_by(RoadLink.link_id)
             )
         )
+
+    async def road_name_links(self, *, limit, links=(), after=None, refresh=False):
+        query = select(RoadLink.link_id).where(*current_roads())
+        if links:
+            query = query.where(RoadLink.link_id.in_(links))
+        elif not refresh:
+            query = query.where((RoadLink.name.is_(None)) | (func.btrim(RoadLink.name) == ""))
+        if after is not None:
+            query = query.where(RoadLink.link_id > after)
+        return list(await self.session.scalars(query.order_by(RoadLink.link_id).limit(limit + 1)))
 
     async def topis_attempt_times(self):
         rows = await self.session.execute(

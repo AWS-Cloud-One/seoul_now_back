@@ -16,6 +16,31 @@ def lock_road_reference(session):
     session.execute(select(func.pg_advisory_xact_lock(func.hashtext(REFERENCE_LOCK))))
 
 
+def update_road_names(session, records):
+    """Only change names; geometry provenance and traffic observations keep their owners."""
+    lock_road_reference(session)
+    accepted, updated, missing = 0, 0, []
+    for record in records:
+        road = session.scalar(
+            select(RoadLink)
+            .where(
+                RoadLink.link_id == record["link_id"],
+                RoadLink.source == "topis_geometry",
+                RoadLink.is_active.is_(True),
+            )
+            .with_for_update()
+        )
+        if road is None:
+            missing.append(record["link_id"])
+            continue
+        accepted += 1
+        if road.name != record["name"]:
+            road.name = record["name"]
+            updated += 1
+    session.flush()
+    return accepted, updated, missing
+
+
 def rebuild_road_areas(session, link_ids, geometry_version=None):
     if geometry_version is None:
         rows = session.execute(
@@ -144,10 +169,16 @@ def replace_road_reference(writer, data, imported_at):
         .values(is_active=False, processed_at=imported_at)
     )
     for feature in data["features"]:
+        fields = road_link_fields(feature, ref["vertices"]["version"])
+        # Geometry files do not supply LinkInfo metadata. Reimporting coordinates
+        # must not erase names (or directions) obtained from another source.
+        for field in ("name", "direction"):
+            if fields[field] is None:
+                fields.pop(field)
         writer.upsert_geometry(
             "road_links",
             dict(
-                **road_link_fields(feature, ref["vertices"]["version"]),
+                **fields,
                 source="topis_geometry",
                 is_active=True,
                 reference_date=date.fromisoformat(ref["vertices"]["reference_date"])
