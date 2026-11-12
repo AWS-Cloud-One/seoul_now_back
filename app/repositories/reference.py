@@ -101,6 +101,16 @@ class ReferenceRepository:
             )
         )
 
+    async def road_name_links(self, *, limit, links=(), after=None, refresh=False):
+        query = select(RoadLink.link_id).where(*current_roads())
+        if links:
+            query = query.where(RoadLink.link_id.in_(links))
+        elif not refresh:
+            query = query.where((RoadLink.name.is_(None)) | (func.btrim(RoadLink.name) == ""))
+        if after is not None:
+            query = query.where(RoadLink.link_id > after)
+        return list(await self.session.scalars(query.order_by(RoadLink.link_id).limit(limit + 1)))
+
     async def topis_attempt_times(self):
         rows = await self.session.execute(
             select(RoadTrafficAttemptLatest.link_id, RoadTrafficAttemptLatest.attempted_at)
