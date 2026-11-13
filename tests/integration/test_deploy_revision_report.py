@@ -32,6 +32,13 @@ def test_revision_reports_database_and_image_without_changing_anything(
     assert report["image_head"] == head
     assert report["image_revisions"] == sorted(graph)
 
+    # The current image includes incompatible V2 migrations. A normal release
+    # must refuse this old database, and rollback cannot upgrade it either.
+    with pytest.raises(Refused, match="not backward_compatible"):
+        decide("release", graph, report)
+    with pytest.raises(Refused, match="normal deploy"):
+        decide("rollback", graph, report)
+
     engine = create_engine(normalized_database)
     try:
         with engine.connect() as connection:
@@ -40,11 +47,6 @@ def test_revision_reports_database_and_image_without_changing_anything(
             ]
     finally:
         engine.dispose()
-
-    # This image is ahead of the database: a release migrates, a rollback must not.
-    assert decide("release", graph, report)
-    with pytest.raises(Refused, match="normal deploy"):
-        decide("rollback", graph, report)
 
 
 @pytest.mark.parametrize("normalized_database", ["0015"], indirect=True)

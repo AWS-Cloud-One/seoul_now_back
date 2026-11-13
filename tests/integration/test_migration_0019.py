@@ -5,10 +5,10 @@ import asyncio
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import select, update
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy import delete, select, update
+from sqlalchemy.exc import DBAPIError, IntegrityError
 
-from app.models import ChatResult, ChatRun
+from app.models import ChatAction, ChatResult, ChatRun
 from tests.integration.test_chat_v2_dialogue import Harness
 
 pytestmark = pytest.mark.integration
@@ -30,6 +30,16 @@ def test_result_identity_upgrade_matches_metadata(normalized_database):
             # Emulate pre-P3 rows for this historical 0019 migration fixture.
             async with h.writers.begin() as db:
                 await db.execute(update(ChatRun).values(implementation_version="p2"))
+            # Today's harness also creates P5 question actions. Verify their
+            # downgrade guard before removing them only from this old-version fixture.
+            with pytest.raises(DBAPIError, match="P5 runs/actions must expire"):
+                await asyncio.to_thread(command.downgrade, config, "0018")
+            async with h.writers.begin() as db:
+                await db.execute(
+                    delete(ChatAction).where(
+                        ChatAction.conversation_id == h.conversation.conversation_id
+                    )
+                )
             await asyncio.to_thread(command.downgrade, config, "0018")
             await asyncio.to_thread(command.upgrade, config, "head")
             async with h.writers() as db:
@@ -49,7 +59,9 @@ def test_result_identity_upgrade_matches_metadata(normalized_database):
             assert regional.response.recommendation.selection_mode == "regional"
             async with h.writers.begin() as db:
                 await db.execute(update(ChatRun).values(implementation_version="p2"))
-            with pytest.raises(IntegrityError):
+            with pytest.raises(
+                IntegrityError, match="fk_chat_run_commits_trip_id_recommendation_results"
+            ):
                 await asyncio.to_thread(command.downgrade, config, "0018")
             await asyncio.to_thread(command.check, config)
         finally:
