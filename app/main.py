@@ -1,8 +1,9 @@
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from app.api.router import router
 from app.core.config import Settings
@@ -49,8 +50,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             interval=1 / config.mobility_requests_per_second,
         )
         try:
-            async with open_ai_provider(config) as provider:
-                app.state.ai_provider = provider
+            async with AsyncExitStack() as resources:
+                app.state.ai_provider = await resources.enter_async_context(
+                    open_ai_provider(config)
+                )
+                if config.chat_v2_enabled:
+                    from app.modules.chat_v2.api import open_runtime
+
+                    runtime = await resources.enter_async_context(
+                        open_runtime(
+                            config, engine=engine, driving_requests=app.state.driving_requests
+                        )
+                    )
+                    app.state.runtime = runtime
+                    await runtime.store.check_ready()
+                    await runtime.start()
+                    resources.push_async_callback(runtime.close)
                 yield
         finally:
             await engine.dispose()
@@ -65,13 +80,38 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
 
     app.state.settings = config
+    app.include_router(router)
+    if config.chat_v2_enabled:
+        from app.modules.chat_v2.api import install_api
+
+        install_api(app)
+        retired = {
+            "/api/v1/chat/messages",
+            "/api/v1/recommendations",
+            "/api/v1/recommendations/retry-routes",
+        }
+
+        @app.middleware("http")
+        async def retire_legacy_chat(request, call_next):
+            if request.method == "POST" and request.url.path.rstrip("/") in retired:
+                return JSONResponse(
+                    {
+                        "error": {
+                            "code": "LEGACY_CHAT_RETIRED",
+                            "message": "새로고침 후 새 대화를 시작해 주세요.",
+                        }
+                    },
+                    status_code=410,
+                    headers={"Cache-Control": "no-store"},
+                )
+            return await call_next(request)
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=config.cors_origins,
         allow_credentials=False,
         allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-        allow_headers=["Content-Type", "Result-Context"],
+        allow_headers=["Content-Type", "Result-Context", "Authorization"],
         expose_headers=["Age", "Retry-After"],
     )
-    app.include_router(router)
     return app

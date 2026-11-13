@@ -5,8 +5,8 @@ from sqlalchemy.schema import CreateIndex, CreateTable
 
 from app.models import Base
 
-# Disposable, expiring API state shared between processes. It holds no business data,
-# so JSONB is allowed here only; every business table must stay relational.
+# Disposable API state and explicitly versioned V2 contracts may use JSONB.
+# Conditions, cards and receipt identity/version foreign keys remain relational.
 TEMPORARY_STATE_TABLES = {
     "query_cursors",
     "read_replays",
@@ -14,17 +14,34 @@ TEMPORARY_STATE_TABLES = {
     "trip_requests",
     "origin_contexts",
 }
+V2_JSON_COLUMNS = {
+    ("chat_conversations", "context"),
+    ("chat_runs", "request"),
+    ("chat_runs", "context"),
+    ("chat_runs", "prepared"),
+    ("chat_runs", "response"),
+    ("chat_runs", "operation"),
+    ("chat_runs", "question"),
+    ("chat_runs", "user_message"),
+    ("chat_runs", "request_aliases"),
+    ("chat_actions", "decision"),
+    ("chat_run_events", "payload"),
+    ("chat_run_commits", "receipt"),
+}
 
 
 def test_runtime_models_use_relational_postgresql_schema():
     # 0013 adds result/card/evidence and compact search-area snapshots.
     # 0015/0016 add disposable shared API state (cursors, replays, trip progress, origins).
-    assert len(Base.metadata.tables) == 43
+    assert len(Base.metadata.tables) == 50
     assert "provider_snapshots" not in Base.metadata.tables
     for table in Base.metadata.sorted_tables:
         if table.name in TEMPORARY_STATE_TABLES:
             continue
-        assert all(not isinstance(c.type, postgresql.JSON) for c in table.columns)
+        assert all(
+            not isinstance(c.type, postgresql.JSON) or (table.name, c.name) in V2_JSON_COLUMNS
+            for c in table.columns
+        )
         assert str(CreateTable(table).compile(dialect=postgresql.dialect()))
         for index in table.indexes:
             assert str(CreateIndex(index).compile(dialect=postgresql.dialect()))

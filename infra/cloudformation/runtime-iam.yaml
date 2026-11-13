@@ -43,13 +43,21 @@ Parameters:
   BedrockModelId:
     Type: String
     Default: anthropic.claude-haiku-4-5-20251001-v1:0
+  ChatV2BedrockProfileId:
+    Type: String
+    Default: global.anthropic.claude-sonnet-5-5
+  ChatV2BedrockModelId:
+    Type: String
+    Default: anthropic.claude-sonnet-5-5
 Resources:
   ApiRole:
     Type: AWS::IAM::Role
     Metadata:
       com.aws.cloudformation.Context:
-        why: Pod Identity permissions for seoul-now/seoul-now-api.
-        must: No static AWS keys. Trust only this cluster, namespace and service account.
+        why: Pod Identity for the API; retain the old profile during V2 transition and allow only the selected V2 model.
+        must:
+        - No static AWS keys. Trust only this cluster, namespace and service account.
+        - Foundation model invocation must be conditioned on its approved inference profile.
     Properties:
       RoleName:
         Fn::Sub: ${ProjectName}-${Environment}-api-role
@@ -95,6 +103,18 @@ Resources:
               ArnEquals:
                 bedrock:InferenceProfileArn:
                   Fn::Sub: arn:${AWS::Partition}:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/${BedrockProfileId}
+          - Effect: Allow
+            Action: bedrock:InvokeModel
+            Resource:
+              Fn::Sub: arn:${AWS::Partition}:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/${ChatV2BedrockProfileId}
+          - Effect: Allow
+            Action: bedrock:InvokeModel
+            Resource:
+              Fn::Sub: arn:${AWS::Partition}:bedrock:*::foundation-model/${ChatV2BedrockModelId}
+            Condition:
+              ArnEquals:
+                bedrock:InferenceProfileArn:
+                  Fn::Sub: arn:${AWS::Partition}:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/${ChatV2BedrockProfileId}
       Tags:
       - Key: Project
         Value:

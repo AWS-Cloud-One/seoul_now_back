@@ -1,0 +1,4911 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Outside Dictionary Chat HTTP v2",
+  "$defs": {
+    "ActionInput": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "action",
+          "title": "Type",
+          "type": "string"
+        },
+        "action_id": {
+          "format": "uuid",
+          "title": "Action Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "action_id"
+      ],
+      "title": "ActionInput",
+      "type": "object"
+    },
+    "ActionView": {
+      "additionalProperties": false,
+      "properties": {
+        "action_id": {
+          "format": "uuid",
+          "title": "Action Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "choose",
+          "default": "choose",
+          "title": "Type",
+          "type": "string"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Description"
+        },
+        "target_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Target Ref"
+        },
+        "collection_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Collection Id"
+        },
+        "expires_at": {
+          "format": "date-time",
+          "title": "Expires At",
+          "type": "string"
+        },
+        "expected_condition_version": {
+          "title": "Expected Condition Version",
+          "type": "integer"
+        },
+        "expected_state_version": {
+          "title": "Expected State Version",
+          "type": "integer"
+        },
+        "status": {
+          "enum": [
+            "available",
+            "expired",
+            "stale",
+            "busy",
+            "consumed"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "consumed_by_run_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Consumed By Run Id"
+        }
+      },
+      "required": [
+        "action_id",
+        "label",
+        "expires_at",
+        "expected_condition_version",
+        "expected_state_version",
+        "status"
+      ],
+      "title": "ActionView",
+      "type": "object"
+    },
+    "AfterRecommendation": {
+      "additionalProperties": false,
+      "properties": {
+        "position": {
+          "default": 1,
+          "maximum": 3,
+          "minimum": 1,
+          "title": "Position",
+          "type": "integer"
+        },
+        "topics": {
+          "items": {
+            "enum": [
+              "place_info",
+              "driving",
+              "parking",
+              "recommendation_reason",
+              "traffic"
+            ],
+            "type": "string"
+          },
+          "maxItems": 4,
+          "minItems": 1,
+          "title": "Topics",
+          "type": "array"
+        }
+      },
+      "required": [
+        "topics"
+      ],
+      "title": "AfterRecommendation",
+      "type": "object"
+    },
+    "Alternative": {
+      "additionalProperties": false,
+      "properties": {
+        "when": {
+          "$ref": "#/$defs/Predicate"
+        },
+        "omit_parking": {
+          "default": false,
+          "title": "Omit Parking",
+          "type": "boolean"
+        },
+        "max_travel_seconds": {
+          "anyOf": [
+            {
+              "maximum": 86400,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Travel Seconds"
+        },
+        "purposes": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/Purpose"
+              },
+              "maxItems": 2,
+              "minItems": 1,
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Purposes"
+        },
+        "evidence_text": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "title": "Evidence Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "when",
+        "evidence_text"
+      ],
+      "title": "Alternative",
+      "type": "object"
+    },
+    "CancelRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "request_id": {
+          "format": "uuid",
+          "title": "Request Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "request_id"
+      ],
+      "title": "CancelRequest",
+      "type": "object"
+    },
+    "CandidateAssessment": {
+      "additionalProperties": false,
+      "properties": {
+        "place_id": {
+          "title": "Place Id",
+          "type": "string"
+        },
+        "truth": {
+          "enum": [
+            "true",
+            "false",
+            "unknown"
+          ],
+          "title": "Truth",
+          "type": "string"
+        },
+        "reason_code": {
+          "title": "Reason Code",
+          "type": "string"
+        },
+        "facts": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "maxItems": 8,
+          "title": "Facts",
+          "type": "array"
+        }
+      },
+      "required": [
+        "place_id",
+        "truth",
+        "reason_code"
+      ],
+      "title": "CandidateAssessment",
+      "type": "object"
+    },
+    "ChatResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "identity": {
+          "$ref": "#/$defs/RunIdentity"
+        },
+        "kind": {
+          "enum": [
+            "result",
+            "clarification",
+            "unchanged",
+            "unsupported",
+            "failure",
+            "answer",
+            "decision"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "succeeded",
+            "partial",
+            "failed",
+            "cancelled",
+            "interrupted",
+            "reconciling",
+            "waiting_input"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "answer": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Answer",
+          "type": "string"
+        },
+        "conditions": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Conditions"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "condition_version": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Condition Version"
+        },
+        "snapshot": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RunSnapshot"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "recommendation": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PublishedRecommendation"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "clarification": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NeedsInputIntent"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StageError"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "warnings": {
+          "items": {
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "title": "Warnings",
+          "type": "array"
+        },
+        "lookup": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LookupResult"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "origin_options": {
+          "items": {
+            "$ref": "#/$defs/OriginOption"
+          },
+          "maxItems": 5,
+          "title": "Origin Options",
+          "type": "array"
+        },
+        "comparison": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ComparisonResult"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "continuation": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ContinuationResult"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "evaluation": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EvaluationSummary"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "identity",
+        "kind",
+        "status",
+        "answer",
+        "conditions",
+        "condition_version"
+      ],
+      "title": "ChatResponse",
+      "type": "object"
+    },
+    "CommitReceipt": {
+      "additionalProperties": false,
+      "description": "Only the storage adapter may return this after verifying the actual commit.",
+      "properties": {
+        "phase": {
+          "const": "committed",
+          "default": "committed",
+          "title": "Phase",
+          "type": "string"
+        },
+        "identity": {
+          "$ref": "#/$defs/RunIdentity"
+        },
+        "previous_version": {
+          "minimum": 0,
+          "title": "Previous Version",
+          "type": "integer"
+        },
+        "current_version": {
+          "minimum": 0,
+          "title": "Current Version",
+          "type": "integer"
+        },
+        "conditions": {
+          "$ref": "#/$defs/Conditions"
+        },
+        "changed_fields": {
+          "items": {
+            "enum": [
+              "origin",
+              "purposes",
+              "headcount",
+              "max_travel_seconds"
+            ],
+            "type": "string"
+          },
+          "maxItems": 4,
+          "title": "Changed Fields",
+          "type": "array"
+        },
+        "result_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Result Id"
+        },
+        "committed_at": {
+          "format": "date-time",
+          "title": "Committed At",
+          "type": "string"
+        }
+      },
+      "required": [
+        "identity",
+        "previous_version",
+        "current_version",
+        "conditions",
+        "changed_fields",
+        "result_id",
+        "committed_at"
+      ],
+      "title": "CommitReceipt",
+      "type": "object"
+    },
+    "ComparisonResult": {
+      "additionalProperties": false,
+      "properties": {
+        "metric": {
+          "enum": [
+            "duration_seconds",
+            "distance_meters"
+          ],
+          "title": "Metric",
+          "type": "string"
+        },
+        "unit": {
+          "enum": [
+            "seconds",
+            "meters"
+          ],
+          "title": "Unit",
+          "type": "string"
+        },
+        "origin_label": {
+          "title": "Origin Label",
+          "type": "string"
+        },
+        "outcome": {
+          "enum": [
+            "complete",
+            "incomplete"
+          ],
+          "title": "Outcome",
+          "type": "string"
+        },
+        "values": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "title": "Values",
+          "type": "object"
+        },
+        "best_refs": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 3,
+          "title": "Best Refs",
+          "type": "array"
+        },
+        "reason_code": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason Code"
+        }
+      },
+      "required": [
+        "metric",
+        "unit",
+        "origin_label",
+        "outcome",
+        "values"
+      ],
+      "title": "ComparisonResult",
+      "type": "object"
+    },
+    "Conditions": {
+      "additionalProperties": false,
+      "properties": {
+        "origin": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Location"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "purposes": {
+          "items": {
+            "$ref": "#/$defs/Purpose"
+          },
+          "maxItems": 2,
+          "title": "Purposes",
+          "type": "array"
+        },
+        "group_type": {
+          "anyOf": [
+            {
+              "enum": [
+                "solo",
+                "date",
+                "friends",
+                "family",
+                "other"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Group Type"
+        },
+        "age_groups": {
+          "anyOf": [
+            {
+              "items": {
+                "enum": [
+                  "under_10",
+                  "teens",
+                  "twenties",
+                  "thirties",
+                  "forties",
+                  "fifties",
+                  "sixty_plus"
+                ],
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Age Groups"
+        },
+        "headcount": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Headcount"
+        },
+        "max_travel_seconds": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Max Travel Seconds"
+        }
+      },
+      "required": [
+        "origin",
+        "purposes",
+        "group_type",
+        "age_groups",
+        "headcount",
+        "max_travel_seconds"
+      ],
+      "title": "Conditions",
+      "type": "object"
+    },
+    "ConfirmedCommit": {
+      "additionalProperties": false,
+      "properties": {
+        "state": {
+          "const": "committed",
+          "title": "State",
+          "type": "string"
+        },
+        "receipt": {
+          "$ref": "#/$defs/CommitReceipt"
+        }
+      },
+      "required": [
+        "state",
+        "receipt"
+      ],
+      "title": "ConfirmedCommit",
+      "type": "object"
+    },
+    "ContextCard": {
+      "additionalProperties": false,
+      "properties": {
+        "rank": {
+          "anyOf": [
+            {
+              "maximum": 3,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Rank"
+        },
+        "place": {
+          "$ref": "#/$defs/Information_Place_"
+        },
+        "route": {
+          "$ref": "#/$defs/Information_RouteValue_"
+        },
+        "parking": {
+          "$ref": "#/$defs/ParkingSummary"
+        },
+        "reason": {
+          "$ref": "#/$defs/ContextReason"
+        },
+        "ranking": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RankingDecision"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "rank",
+        "place",
+        "route",
+        "parking",
+        "reason"
+      ],
+      "title": "ContextCard",
+      "type": "object"
+    },
+    "ContextReason": {
+      "additionalProperties": false,
+      "properties": {
+        "text": {
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        },
+        "source": {
+          "enum": [
+            "ai",
+            "fallback",
+            "none"
+          ],
+          "title": "Source",
+          "type": "string"
+        },
+        "evidence": {
+          "items": {
+            "discriminator": {
+              "mapping": {
+                "eta": "#/$defs/EtaEvidence",
+                "parking": "#/$defs/ParkingEvidence",
+                "traffic": "#/$defs/TrafficEvidence"
+              },
+              "propertyName": "type"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/EtaEvidence"
+              },
+              {
+                "$ref": "#/$defs/ParkingEvidence"
+              },
+              {
+                "$ref": "#/$defs/TrafficEvidence"
+              }
+            ]
+          },
+          "title": "Evidence",
+          "type": "array"
+        }
+      },
+      "required": [
+        "text",
+        "source",
+        "evidence"
+      ],
+      "title": "ContextReason",
+      "type": "object"
+    },
+    "ContinuationResult": {
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "enum": [
+            "pending",
+            "completed",
+            "failed",
+            "blocked",
+            "cancelled",
+            "interrupted",
+            "waiting_input"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "lookup": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LookupResult"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "reason_code": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason Code"
+        }
+      },
+      "required": [
+        "status"
+      ],
+      "title": "ContinuationResult",
+      "type": "object"
+    },
+    "ConversationContext": {
+      "additionalProperties": false,
+      "properties": {
+        "identity": {
+          "$ref": "#/$defs/RunIdentity"
+        },
+        "condition_version": {
+          "minimum": 0,
+          "title": "Condition Version",
+          "type": "integer"
+        },
+        "state_version": {
+          "minimum": 0,
+          "title": "State Version",
+          "type": "integer"
+        },
+        "current_conditions": {
+          "$ref": "#/$defs/Conditions"
+        },
+        "search_area": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DestinationArea"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "pending_question": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PendingHeadcountQuestion"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "draft": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecommendationDraft"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "references": {
+          "items": {
+            "$ref": "#/$defs/PlaceReference"
+          },
+          "maxItems": 35,
+          "title": "References",
+          "type": "array"
+        },
+        "focus_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Focus Ref"
+        },
+        "pending_read": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PendingRead"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "active_flow": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecommendationFlow"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "identity",
+        "condition_version",
+        "state_version",
+        "current_conditions"
+      ],
+      "title": "ConversationContext",
+      "type": "object"
+    },
+    "ConversationSnapshot": {
+      "additionalProperties": false,
+      "properties": {
+        "conversation_id": {
+          "format": "uuid",
+          "title": "Conversation Id",
+          "type": "string"
+        },
+        "trip_id": {
+          "format": "uuid",
+          "title": "Trip Id",
+          "type": "string"
+        },
+        "condition_version": {
+          "minimum": 0,
+          "title": "Condition Version",
+          "type": "integer"
+        },
+        "state_version": {
+          "minimum": 0,
+          "title": "State Version",
+          "type": "integer"
+        },
+        "conditions": {
+          "$ref": "#/$defs/Conditions"
+        },
+        "pending_question": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PendingHeadcountQuestion"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "active_run_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Active Run Id"
+        },
+        "expires_at": {
+          "format": "date-time",
+          "title": "Expires At",
+          "type": "string"
+        },
+        "questions": {
+          "items": {
+            "$ref": "#/$defs/QuestionView"
+          },
+          "maxItems": 2,
+          "title": "Questions",
+          "type": "array"
+        },
+        "search_area": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DestinationArea"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "draft": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecommendationDraft"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "references": {
+          "items": {
+            "$ref": "#/$defs/PlaceReference"
+          },
+          "maxItems": 30,
+          "title": "References",
+          "type": "array"
+        },
+        "focus_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Focus Ref"
+        },
+        "pending_read": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PendingRead"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "active_flow": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecommendationFlow"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "conversation_id",
+        "trip_id",
+        "condition_version",
+        "state_version",
+        "conditions",
+        "pending_question",
+        "active_run_id",
+        "expires_at"
+      ],
+      "title": "ConversationSnapshot",
+      "type": "object"
+    },
+    "Coordinates": {
+      "additionalProperties": false,
+      "properties": {
+        "latitude": {
+          "maximum": 90,
+          "minimum": -90,
+          "title": "Latitude",
+          "type": "number"
+        },
+        "longitude": {
+          "maximum": 180,
+          "minimum": -180,
+          "title": "Longitude",
+          "type": "number"
+        }
+      },
+      "required": [
+        "latitude",
+        "longitude"
+      ],
+      "title": "Coordinates",
+      "type": "object"
+    },
+    "DestinationArea": {
+      "additionalProperties": false,
+      "properties": {
+        "label": {
+          "maxLength": 160,
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        },
+        "kind": {
+          "default": "administrative",
+          "enum": [
+            "administrative",
+            "official",
+            "radius"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "query": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Query"
+        },
+        "area_ids": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 500,
+          "title": "Area Ids",
+          "type": "array"
+        },
+        "boundary_ids": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 3,
+          "title": "Boundary Ids",
+          "type": "array"
+        },
+        "boundary_versions": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Boundary Versions",
+          "type": "object"
+        },
+        "source": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source"
+        },
+        "alias_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Alias Version"
+        },
+        "anchor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RegionAnchor"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "radius_m": {
+          "anyOf": [
+            {
+              "maximum": 5000,
+              "minimum": 100,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Radius M"
+        }
+      },
+      "required": [
+        "label"
+      ],
+      "title": "DestinationArea",
+      "type": "object"
+    },
+    "DestinationOption": {
+      "additionalProperties": false,
+      "properties": {
+        "position": {
+          "maximum": 3,
+          "minimum": 1,
+          "title": "Position",
+          "type": "integer"
+        },
+        "region": {
+          "$ref": "#/$defs/DestinationArea"
+        },
+        "description": {
+          "title": "Description",
+          "type": "string"
+        }
+      },
+      "required": [
+        "position",
+        "region",
+        "description"
+      ],
+      "title": "DestinationOption",
+      "type": "object"
+    },
+    "ErrorCode": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "title": "Code",
+          "type": "string"
+        }
+      },
+      "required": [
+        "code"
+      ],
+      "title": "ErrorCode",
+      "type": "object"
+    },
+    "ErrorEnvelope": {
+      "additionalProperties": false,
+      "properties": {
+        "error": {
+          "$ref": "#/$defs/ErrorCode"
+        }
+      },
+      "required": [
+        "error"
+      ],
+      "title": "ErrorEnvelope",
+      "type": "object"
+    },
+    "EtaEvidence": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "eta",
+          "title": "Type",
+          "type": "string"
+        },
+        "text": {
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        },
+        "information": {
+          "$ref": "#/$defs/Information_RouteValue_"
+        }
+      },
+      "required": [
+        "type",
+        "text",
+        "information"
+      ],
+      "title": "EtaEvidence",
+      "type": "object"
+    },
+    "EvaluationSummary": {
+      "additionalProperties": false,
+      "properties": {
+        "assessments": {
+          "items": {
+            "$ref": "#/$defs/CandidateAssessment"
+          },
+          "maxItems": 15,
+          "title": "Assessments",
+          "type": "array"
+        },
+        "branch": {
+          "default": "primary",
+          "enum": [
+            "primary",
+            "alternative"
+          ],
+          "title": "Branch",
+          "type": "string"
+        },
+        "primary_outcome": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Primary Outcome"
+        },
+        "guard": {
+          "anyOf": [
+            {
+              "enum": [
+                "true",
+                "false",
+                "unknown"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Guard"
+        }
+      },
+      "title": "EvaluationSummary",
+      "type": "object"
+    },
+    "ExecutionView": {
+      "additionalProperties": false,
+      "properties": {
+        "identity": {
+          "$ref": "#/$defs/RunIdentity"
+        },
+        "state_version": {
+          "minimum": 0,
+          "title": "State Version",
+          "type": "integer"
+        },
+        "status": {
+          "enum": [
+            "accepted",
+            "running",
+            "reconciling",
+            "finished"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "response": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ChatResponse"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "stage": {
+          "default": "running",
+          "title": "Stage",
+          "type": "string"
+        },
+        "event_seq": {
+          "default": 0,
+          "title": "Event Seq",
+          "type": "integer"
+        },
+        "cancel_requested_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cancel Requested At"
+        },
+        "retryable_tasks": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Retryable Tasks",
+          "type": "array"
+        },
+        "question": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/QuestionView"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "identity",
+        "state_version",
+        "status"
+      ],
+      "title": "ExecutionView",
+      "type": "object"
+    },
+    "FinalizationResult": {
+      "additionalProperties": false,
+      "properties": {
+        "prepared": {
+          "$ref": "#/$defs/PreparedRecommendation"
+        },
+        "commit": {
+          "discriminator": {
+            "mapping": {
+              "committed": "#/$defs/ConfirmedCommit",
+              "not_applied": "#/$defs/UnappliedCommit",
+              "unknown": "#/$defs/UnknownCommit"
+            },
+            "propertyName": "state"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/ConfirmedCommit"
+            },
+            {
+              "$ref": "#/$defs/UnappliedCommit"
+            },
+            {
+              "$ref": "#/$defs/UnknownCommit"
+            }
+          ],
+          "title": "Commit"
+        }
+      },
+      "required": [
+        "prepared",
+        "commit"
+      ],
+      "title": "FinalizationResult",
+      "type": "object"
+    },
+    "FoundPlace": {
+      "additionalProperties": false,
+      "properties": {
+        "place_id": {
+          "title": "Place Id",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "category_code": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Category Code"
+        },
+        "category_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Category Name"
+        },
+        "coordinates": {
+          "$ref": "#/$defs/Coordinates"
+        },
+        "address": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Address"
+        },
+        "road_address": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Road Address"
+        },
+        "phone": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Phone"
+        },
+        "provider_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Provider Url"
+        },
+        "distance_meters": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Distance Meters"
+        },
+        "source": {
+          "const": "kakao_local",
+          "default": "kakao_local",
+          "title": "Source",
+          "type": "string"
+        },
+        "collected_at": {
+          "format": "date-time",
+          "title": "Collected At",
+          "type": "string"
+        }
+      },
+      "required": [
+        "place_id",
+        "name",
+        "category_code",
+        "category_name",
+        "coordinates",
+        "address",
+        "road_address",
+        "phone",
+        "provider_url",
+        "distance_meters",
+        "collected_at"
+      ],
+      "title": "FoundPlace",
+      "type": "object"
+    },
+    "HistoryPage": {
+      "additionalProperties": false,
+      "properties": {
+        "conversation_id": {
+          "format": "uuid",
+          "title": "Conversation Id",
+          "type": "string"
+        },
+        "state_version": {
+          "title": "State Version",
+          "type": "integer"
+        },
+        "snapshot_sequence": {
+          "title": "Snapshot Sequence",
+          "type": "integer"
+        },
+        "items": {
+          "items": {
+            "$ref": "#/$defs/HistoryTurn"
+          },
+          "title": "Items",
+          "type": "array"
+        },
+        "next_cursor": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Next Cursor"
+        },
+        "active_run_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Active Run Id"
+        }
+      },
+      "required": [
+        "conversation_id",
+        "state_version",
+        "snapshot_sequence",
+        "items",
+        "next_cursor",
+        "active_run_id"
+      ],
+      "title": "HistoryPage",
+      "type": "object"
+    },
+    "HistoryTurn": {
+      "additionalProperties": false,
+      "properties": {
+        "sequence": {
+          "title": "Sequence",
+          "type": "integer"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "user_message": {
+          "$ref": "#/$defs/UserMessage"
+        },
+        "assistant_message_id": {
+          "title": "Assistant Message Id",
+          "type": "string"
+        },
+        "run": {
+          "$ref": "#/$defs/ExecutionView"
+        }
+      },
+      "required": [
+        "sequence",
+        "created_at",
+        "user_message",
+        "assistant_message_id",
+        "run"
+      ],
+      "title": "HistoryTurn",
+      "type": "object"
+    },
+    "Information_ParkingDistance_": {
+      "additionalProperties": false,
+      "properties": {
+        "value": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ParkingDistance"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "enum": [
+            "available",
+            "unavailable",
+            "unsupported",
+            "error"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "freshness": {
+          "enum": [
+            "fresh",
+            "stale",
+            "unknown",
+            "not_applicable"
+          ],
+          "title": "Freshness",
+          "type": "string"
+        },
+        "observed_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Observed At"
+        },
+        "collected_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Collected At"
+        },
+        "source": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Source"
+        },
+        "reason_code": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Reason Code"
+        }
+      },
+      "required": [
+        "value",
+        "status",
+        "freshness",
+        "observed_at",
+        "collected_at",
+        "source",
+        "reason_code"
+      ],
+      "title": "Information[ParkingDistance]",
+      "type": "object"
+    },
+    "Information_Place_": {
+      "additionalProperties": false,
+      "properties": {
+        "value": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Place"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "enum": [
+            "available",
+            "unavailable",
+            "unsupported",
+            "error"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "freshness": {
+          "enum": [
+            "fresh",
+            "stale",
+            "unknown",
+            "not_applicable"
+          ],
+          "title": "Freshness",
+          "type": "string"
+        },
+        "observed_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Observed At"
+        },
+        "collected_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Collected At"
+        },
+        "source": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Source"
+        },
+        "reason_code": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Reason Code"
+        }
+      },
+      "required": [
+        "value",
+        "status",
+        "freshness",
+        "observed_at",
+        "collected_at",
+        "source",
+        "reason_code"
+      ],
+      "title": "Information[Place]",
+      "type": "object"
+    },
+    "Information_RegisteredParking_": {
+      "additionalProperties": false,
+      "properties": {
+        "value": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RegisteredParking"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "enum": [
+            "available",
+            "unavailable",
+            "unsupported",
+            "error"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "freshness": {
+          "enum": [
+            "fresh",
+            "stale",
+            "unknown",
+            "not_applicable"
+          ],
+          "title": "Freshness",
+          "type": "string"
+        },
+        "observed_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Observed At"
+        },
+        "collected_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Collected At"
+        },
+        "source": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Source"
+        },
+        "reason_code": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Reason Code"
+        }
+      },
+      "required": [
+        "value",
+        "status",
+        "freshness",
+        "observed_at",
+        "collected_at",
+        "source",
+        "reason_code"
+      ],
+      "title": "Information[RegisteredParking]",
+      "type": "object"
+    },
+    "Information_RouteValue_": {
+      "additionalProperties": false,
+      "properties": {
+        "value": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RouteValue"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "enum": [
+            "available",
+            "unavailable",
+            "unsupported",
+            "error"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "freshness": {
+          "enum": [
+            "fresh",
+            "stale",
+            "unknown",
+            "not_applicable"
+          ],
+          "title": "Freshness",
+          "type": "string"
+        },
+        "observed_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Observed At"
+        },
+        "collected_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Collected At"
+        },
+        "source": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Source"
+        },
+        "reason_code": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Reason Code"
+        }
+      },
+      "required": [
+        "value",
+        "status",
+        "freshness",
+        "observed_at",
+        "collected_at",
+        "source",
+        "reason_code"
+      ],
+      "title": "Information[RouteValue]",
+      "type": "object"
+    },
+    "Information_TrafficValue_": {
+      "additionalProperties": false,
+      "properties": {
+        "value": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TrafficValue"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "enum": [
+            "available",
+            "unavailable",
+            "unsupported",
+            "error"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "freshness": {
+          "enum": [
+            "fresh",
+            "stale",
+            "unknown",
+            "not_applicable"
+          ],
+          "title": "Freshness",
+          "type": "string"
+        },
+        "observed_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Observed At"
+        },
+        "collected_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Collected At"
+        },
+        "source": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Source"
+        },
+        "reason_code": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Reason Code"
+        }
+      },
+      "required": [
+        "value",
+        "status",
+        "freshness",
+        "observed_at",
+        "collected_at",
+        "source",
+        "reason_code"
+      ],
+      "title": "Information[TrafficValue]",
+      "type": "object"
+    },
+    "JsonValue": {},
+    "Location": {
+      "additionalProperties": false,
+      "properties": {
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "coordinates": {
+          "$ref": "#/$defs/Coordinates"
+        },
+        "address": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Address"
+        },
+        "region": {
+          "anyOf": [
+            {
+              "enum": [
+                "seoul",
+                "incheon",
+                "gyeonggi",
+                "other"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Region"
+        },
+        "supported": {
+          "title": "Supported",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "label",
+        "coordinates",
+        "address",
+        "region",
+        "supported"
+      ],
+      "title": "Location",
+      "type": "object"
+    },
+    "LookupResult": {
+      "additionalProperties": false,
+      "properties": {
+        "outcome": {
+          "enum": [
+            "ok",
+            "partial",
+            "empty",
+            "unavailable",
+            "error"
+          ],
+          "title": "Outcome",
+          "type": "string"
+        },
+        "items": {
+          "items": {
+            "$ref": "#/$defs/ReadItem"
+          },
+          "maxItems": 12,
+          "title": "Items",
+          "type": "array"
+        },
+        "places": {
+          "items": {
+            "$ref": "#/$defs/PlaceReference"
+          },
+          "maxItems": 5,
+          "title": "Places",
+          "type": "array"
+        },
+        "has_more": {
+          "default": false,
+          "title": "Has More",
+          "type": "boolean"
+        },
+        "reason_code": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason Code"
+        }
+      },
+      "required": [
+        "outcome"
+      ],
+      "title": "LookupResult",
+      "type": "object"
+    },
+    "MessageInput": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "message",
+          "default": "message",
+          "title": "Type",
+          "type": "string"
+        },
+        "text": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Text",
+          "type": "string"
+        },
+        "reply_to_clarification_id": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "pattern": "\\S",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reply To Clarification Id"
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "title": "MessageInput",
+      "type": "object"
+    },
+    "NeedsInputIntent": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "needs_input",
+          "title": "Kind",
+          "type": "string"
+        },
+        "question": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Question",
+          "type": "string"
+        },
+        "required_field": {
+          "enum": [
+            "headcount",
+            "origin",
+            "purposes",
+            "search_area",
+            "lookup_origin",
+            "target"
+          ],
+          "title": "Required Field",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "question",
+        "required_field"
+      ],
+      "title": "NeedsInputIntent",
+      "type": "object"
+    },
+    "OperatingHours": {
+      "additionalProperties": false,
+      "properties": {
+        "weekdays": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Weekdays"
+        },
+        "saturday": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Saturday"
+        },
+        "sunday_holidays": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sunday Holidays"
+        },
+        "notes": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Notes"
+        }
+      },
+      "title": "OperatingHours",
+      "type": "object"
+    },
+    "OriginOption": {
+      "additionalProperties": false,
+      "properties": {
+        "option_id": {
+          "title": "Option Id",
+          "type": "string"
+        },
+        "position": {
+          "maximum": 5,
+          "minimum": 1,
+          "title": "Position",
+          "type": "integer"
+        },
+        "location": {
+          "$ref": "#/$defs/Location"
+        }
+      },
+      "required": [
+        "option_id",
+        "position",
+        "location"
+      ],
+      "title": "OriginOption",
+      "type": "object"
+    },
+    "ParkingDistance": {
+      "additionalProperties": false,
+      "properties": {
+        "distance_meters": {
+          "minimum": 0,
+          "title": "Distance Meters",
+          "type": "number"
+        }
+      },
+      "required": [
+        "distance_meters"
+      ],
+      "title": "ParkingDistance",
+      "type": "object"
+    },
+    "ParkingEvidence": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "parking",
+          "title": "Type",
+          "type": "string"
+        },
+        "text": {
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        },
+        "information": {
+          "$ref": "#/$defs/Information_ParkingDistance_"
+        }
+      },
+      "required": [
+        "type",
+        "text",
+        "information"
+      ],
+      "title": "ParkingEvidence",
+      "type": "object"
+    },
+    "ParkingFacility": {
+      "additionalProperties": false,
+      "properties": {
+        "parking_id": {
+          "format": "uuid",
+          "title": "Parking Id",
+          "type": "string"
+        },
+        "identity_status": {
+          "enum": [
+            "verified",
+            "unverified"
+          ],
+          "title": "Identity Status",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "coordinates": {
+          "$ref": "#/$defs/Coordinates"
+        },
+        "distance_meters": {
+          "minimum": 0,
+          "title": "Distance Meters",
+          "type": "number"
+        },
+        "records": {
+          "items": {
+            "$ref": "#/$defs/ParkingSourceRecord"
+          },
+          "title": "Records",
+          "type": "array"
+        },
+        "availability": {
+          "$ref": "#/$defs/UnsupportedAvailability"
+        }
+      },
+      "required": [
+        "parking_id",
+        "identity_status",
+        "name",
+        "coordinates",
+        "distance_meters",
+        "records"
+      ],
+      "title": "ParkingFacility",
+      "type": "object"
+    },
+    "ParkingFees": {
+      "additionalProperties": false,
+      "properties": {
+        "base_minutes": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Base Minutes"
+        },
+        "base_fee_krw": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Base Fee Krw"
+        },
+        "additional_minutes": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Additional Minutes"
+        },
+        "additional_fee_krw": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Additional Fee Krw"
+        },
+        "daily_max_krw": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Daily Max Krw"
+        },
+        "notes": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Notes"
+        }
+      },
+      "title": "ParkingFees",
+      "type": "object"
+    },
+    "ParkingSourceRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "source_record_id": {
+          "format": "uuid",
+          "title": "Source Record Id",
+          "type": "string"
+        },
+        "source": {
+          "title": "Source",
+          "type": "string"
+        },
+        "reference_date": {
+          "anyOf": [
+            {
+              "format": "date",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Reference Date"
+        },
+        "registered": {
+          "$ref": "#/$defs/Information_RegisteredParking_"
+        }
+      },
+      "required": [
+        "source_record_id",
+        "source",
+        "reference_date",
+        "registered"
+      ],
+      "title": "ParkingSourceRecord",
+      "type": "object"
+    },
+    "ParkingSummary": {
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "enum": [
+            "available",
+            "unavailable",
+            "error"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "reason_code": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Reason Code"
+        },
+        "checked_at": {
+          "format": "date-time",
+          "title": "Checked At",
+          "type": "string"
+        },
+        "search_radius_meters": {
+          "anyOf": [
+            {
+              "enum": [
+                300,
+                500,
+                1000
+              ],
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Search Radius Meters"
+        },
+        "nearest_distance_meters": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Nearest Distance Meters"
+        },
+        "items": {
+          "items": {
+            "$ref": "#/$defs/ParkingFacility"
+          },
+          "title": "Items",
+          "type": "array"
+        },
+        "total_count": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Total Count"
+        },
+        "next_cursor": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Next Cursor"
+        }
+      },
+      "required": [
+        "status",
+        "reason_code",
+        "checked_at",
+        "search_radius_meters",
+        "nearest_distance_meters",
+        "items",
+        "total_count",
+        "next_cursor"
+      ],
+      "title": "ParkingSummary",
+      "type": "object"
+    },
+    "PendingHeadcountQuestion": {
+      "additionalProperties": false,
+      "properties": {
+        "clarification_id": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Clarification Id",
+          "type": "string"
+        },
+        "scope": {
+          "enum": [
+            "persistent",
+            "request_only"
+          ],
+          "title": "Scope",
+          "type": "string"
+        },
+        "question": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Question",
+          "type": "string"
+        },
+        "field": {
+          "default": "headcount",
+          "enum": [
+            "headcount",
+            "origin",
+            "purposes",
+            "search_area",
+            "target",
+            "lookup_origin"
+          ],
+          "title": "Field",
+          "type": "string"
+        }
+      },
+      "required": [
+        "clarification_id",
+        "scope",
+        "question"
+      ],
+      "title": "PendingHeadcountQuestion",
+      "type": "object"
+    },
+    "PendingRead": {
+      "additionalProperties": false,
+      "properties": {
+        "comparison_metric": {
+          "anyOf": [
+            {
+              "enum": [
+                "duration_seconds",
+                "distance_meters"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Comparison Metric"
+        },
+        "target_refs": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 3,
+          "title": "Target Refs",
+          "type": "array"
+        },
+        "origin_options": {
+          "items": {
+            "$ref": "#/$defs/OriginOption"
+          },
+          "maxItems": 5,
+          "title": "Origin Options",
+          "type": "array"
+        },
+        "clarification_id": {
+          "title": "Clarification Id",
+          "type": "string"
+        },
+        "topics": {
+          "items": {
+            "enum": [
+              "place_info",
+              "driving",
+              "parking",
+              "recommendation_reason",
+              "traffic"
+            ],
+            "type": "string"
+          },
+          "maxItems": 4,
+          "minItems": 1,
+          "title": "Topics",
+          "type": "array"
+        },
+        "question": {
+          "title": "Question",
+          "type": "string"
+        }
+      },
+      "required": [
+        "clarification_id",
+        "topics",
+        "question"
+      ],
+      "title": "PendingRead",
+      "type": "object"
+    },
+    "Place": {
+      "additionalProperties": false,
+      "properties": {
+        "place_id": {
+          "title": "Place Id",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "purpose": {
+          "anyOf": [
+            {
+              "enum": [
+                "cafe",
+                "food",
+                "walk",
+                "exhibition"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Purpose"
+        },
+        "category_code": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Category Code"
+        },
+        "category_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Category Name"
+        },
+        "coordinates": {
+          "$ref": "#/$defs/Coordinates"
+        },
+        "address": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Address"
+        },
+        "road_address": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Road Address"
+        },
+        "phone": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Phone"
+        },
+        "provider_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Provider Url"
+        }
+      },
+      "required": [
+        "place_id",
+        "name",
+        "purpose",
+        "category_code",
+        "category_name",
+        "coordinates",
+        "address",
+        "road_address",
+        "phone",
+        "provider_url"
+      ],
+      "title": "Place",
+      "type": "object"
+    },
+    "PlaceReference": {
+      "additionalProperties": false,
+      "properties": {
+        "ref_id": {
+          "title": "Ref Id",
+          "type": "string"
+        },
+        "collection_id": {
+          "format": "uuid",
+          "title": "Collection Id",
+          "type": "string"
+        },
+        "result_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Result Id"
+        },
+        "position": {
+          "maximum": 5,
+          "minimum": 1,
+          "title": "Position",
+          "type": "integer"
+        },
+        "place": {
+          "$ref": "#/$defs/FoundPlace"
+        }
+      },
+      "required": [
+        "ref_id",
+        "collection_id",
+        "position",
+        "place"
+      ],
+      "title": "PlaceReference",
+      "type": "object"
+    },
+    "Predicate": {
+      "additionalProperties": false,
+      "properties": {
+        "operator": {
+          "default": "all",
+          "enum": [
+            "all",
+            "any"
+          ],
+          "title": "Operator",
+          "type": "string"
+        },
+        "terms": {
+          "items": {
+            "discriminator": {
+              "mapping": {
+                "candidate_outcome": "#/$defs/PredicateAtom",
+                "compare": "#/$defs/PredicateAtom",
+                "group": "#/$defs/PredicateGroup",
+                "registered_parking_exists": "#/$defs/PredicateAtom",
+                "task_failed": "#/$defs/PredicateAtom"
+              },
+              "propertyName": "kind"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/PredicateAtom"
+              },
+              {
+                "$ref": "#/$defs/PredicateGroup"
+              }
+            ]
+          },
+          "maxItems": 4,
+          "minItems": 1,
+          "title": "Terms",
+          "type": "array"
+        }
+      },
+      "required": [
+        "terms"
+      ],
+      "title": "Predicate",
+      "type": "object"
+    },
+    "PredicateAtom": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": [
+            "registered_parking_exists",
+            "compare",
+            "candidate_outcome",
+            "task_failed"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "radius_m": {
+          "anyOf": [
+            {
+              "maximum": 1000,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Radius M"
+        },
+        "metric": {
+          "anyOf": [
+            {
+              "enum": [
+                "duration_seconds",
+                "distance_meters"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Metric"
+        },
+        "operator": {
+          "anyOf": [
+            {
+              "enum": [
+                "lt",
+                "lte",
+                "eq",
+                "gte",
+                "gt"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Operator"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "maximum": 200000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Value"
+        },
+        "outcome": {
+          "anyOf": [
+            {
+              "enum": [
+                "has_verified",
+                "no_matches",
+                "insufficient_evidence"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Outcome"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "title": "PredicateAtom",
+      "type": "object"
+    },
+    "PredicateGroup": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "group",
+          "default": "group",
+          "title": "Kind",
+          "type": "string"
+        },
+        "operator": {
+          "enum": [
+            "all",
+            "any"
+          ],
+          "title": "Operator",
+          "type": "string"
+        },
+        "terms": {
+          "items": {
+            "$ref": "#/$defs/PredicateAtom"
+          },
+          "maxItems": 4,
+          "minItems": 1,
+          "title": "Terms",
+          "type": "array"
+        }
+      },
+      "required": [
+        "operator",
+        "terms"
+      ],
+      "title": "PredicateGroup",
+      "type": "object"
+    },
+    "PreparedRecommendation": {
+      "additionalProperties": false,
+      "description": "Compute-only output. There is intentionally no result_id or applied flag.",
+      "properties": {
+        "phase": {
+          "const": "prepared",
+          "default": "prepared",
+          "title": "Phase",
+          "type": "string"
+        },
+        "plan": {
+          "discriminator": {
+            "mapping": {
+              "F01": "#/$defs/RecommendationPlan",
+              "F02": "#/$defs/ValidatedPlan"
+            },
+            "propertyName": "feature_id"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/ValidatedPlan"
+            },
+            {
+              "$ref": "#/$defs/RecommendationPlan"
+            }
+          ],
+          "title": "Plan"
+        },
+        "outcome": {
+          "enum": [
+            "recommendation",
+            "no_candidates",
+            "insufficient_evidence",
+            "error"
+          ],
+          "title": "Outcome",
+          "type": "string"
+        },
+        "selection_mode": {
+          "default": "driving",
+          "enum": [
+            "driving",
+            "regional"
+          ],
+          "title": "Selection Mode",
+          "type": "string"
+        },
+        "cards": {
+          "items": {
+            "$ref": "#/$defs/ContextCard"
+          },
+          "maxItems": 3,
+          "title": "Cards",
+          "type": "array"
+        },
+        "prepared_at": {
+          "format": "date-time",
+          "title": "Prepared At",
+          "type": "string"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StageError"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "warnings": {
+          "items": {
+            "$ref": "#/$defs/WarningMessage"
+          },
+          "title": "Warnings",
+          "type": "array"
+        },
+        "ranking_policy": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RankingPolicySnapshot"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "search_scope": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SearchScope"
+            },
+            {
+              "$ref": "#/$defs/RegionSearchScope"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Search Scope"
+        },
+        "evaluation": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EvaluationSummary"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "plan",
+        "outcome",
+        "prepared_at"
+      ],
+      "title": "PreparedRecommendation",
+      "type": "object"
+    },
+    "PublishedRecommendation": {
+      "additionalProperties": false,
+      "properties": {
+        "selection_mode": {
+          "default": "driving",
+          "enum": [
+            "driving",
+            "regional"
+          ],
+          "title": "Selection Mode",
+          "type": "string"
+        },
+        "search_area": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DestinationArea"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "result_id": {
+          "format": "uuid",
+          "title": "Result Id",
+          "type": "string"
+        },
+        "cards": {
+          "items": {
+            "$ref": "#/$defs/ContextCard"
+          },
+          "maxItems": 3,
+          "minItems": 1,
+          "title": "Cards",
+          "type": "array"
+        },
+        "effective_conditions": {
+          "$ref": "#/$defs/Conditions"
+        },
+        "scope": {
+          "default": "persistent",
+          "enum": [
+            "persistent",
+            "request_only"
+          ],
+          "title": "Scope",
+          "type": "string"
+        },
+        "flow_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Flow Id"
+        },
+        "constraints": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Predicate"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "result_id",
+        "cards",
+        "effective_conditions"
+      ],
+      "title": "PublishedRecommendation",
+      "type": "object"
+    },
+    "Purpose": {
+      "additionalProperties": false,
+      "properties": {
+        "purpose": {
+          "enum": [
+            "cafe",
+            "food",
+            "walk",
+            "exhibition"
+          ],
+          "title": "Purpose",
+          "type": "string"
+        },
+        "keyword": {
+          "anyOf": [
+            {
+              "maxLength": 100,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Keyword"
+        }
+      },
+      "required": [
+        "purpose"
+      ],
+      "title": "Purpose",
+      "type": "object"
+    },
+    "QuestionView": {
+      "additionalProperties": false,
+      "properties": {
+        "clarification_id": {
+          "title": "Clarification Id",
+          "type": "string"
+        },
+        "source_run_id": {
+          "format": "uuid",
+          "title": "Source Run Id",
+          "type": "string"
+        },
+        "prompt": {
+          "title": "Prompt",
+          "type": "string"
+        },
+        "required_field": {
+          "title": "Required Field",
+          "type": "string"
+        },
+        "scope": {
+          "enum": [
+            "persistent",
+            "request_only",
+            "lookup"
+          ],
+          "title": "Scope",
+          "type": "string"
+        },
+        "expected_answer_type": {
+          "enum": [
+            "integer",
+            "text",
+            "choice"
+          ],
+          "title": "Expected Answer Type",
+          "type": "string"
+        },
+        "allow_free_text": {
+          "const": true,
+          "default": true,
+          "title": "Allow Free Text",
+          "type": "boolean"
+        },
+        "status": {
+          "enum": [
+            "active",
+            "resolved"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "options": {
+          "items": {
+            "$ref": "#/$defs/ActionView"
+          },
+          "maxItems": 6,
+          "title": "Options",
+          "type": "array"
+        }
+      },
+      "required": [
+        "clarification_id",
+        "source_run_id",
+        "prompt",
+        "required_field",
+        "scope",
+        "expected_answer_type",
+        "status"
+      ],
+      "title": "QuestionView",
+      "type": "object"
+    },
+    "RankingDecision": {
+      "additionalProperties": false,
+      "properties": {
+        "evaluated_at": {
+          "format": "date-time",
+          "title": "Evaluated At",
+          "type": "string"
+        },
+        "eta_bucket": {
+          "minimum": 0,
+          "title": "Eta Bucket",
+          "type": "integer"
+        },
+        "traffic_applied": {
+          "title": "Traffic Applied",
+          "type": "boolean"
+        },
+        "parking_adjustment": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Parking Adjustment",
+          "type": "integer"
+        },
+        "adjusted_traffic_grade": {
+          "anyOf": [
+            {
+              "enum": [
+                "원활",
+                "서행",
+                "정체"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Adjusted Traffic Grade"
+        }
+      },
+      "required": [
+        "evaluated_at",
+        "eta_bucket",
+        "traffic_applied",
+        "parking_adjustment",
+        "adjusted_traffic_grade"
+      ],
+      "title": "RankingDecision",
+      "type": "object"
+    },
+    "RankingPolicySnapshot": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "const": "eta_traffic_parking_v1",
+          "default": "eta_traffic_parking_v1",
+          "title": "Name",
+          "type": "string"
+        },
+        "time_bucket_seconds": {
+          "exclusiveMinimum": 0,
+          "title": "Time Bucket Seconds",
+          "type": "integer"
+        },
+        "parking_bonus_radius_m": {
+          "minimum": 0,
+          "title": "Parking Bonus Radius M",
+          "type": "integer"
+        },
+        "traffic_max_age_seconds": {
+          "default": 1800,
+          "exclusiveMinimum": 0,
+          "title": "Traffic Max Age Seconds",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "time_bucket_seconds",
+        "parking_bonus_radius_m"
+      ],
+      "title": "RankingPolicySnapshot",
+      "type": "object"
+    },
+    "ReadItem": {
+      "additionalProperties": false,
+      "properties": {
+        "topic": {
+          "enum": [
+            "place_info",
+            "driving",
+            "parking",
+            "recommendation_reason",
+            "traffic"
+          ],
+          "title": "Topic",
+          "type": "string"
+        },
+        "place_ref": {
+          "title": "Place Ref",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "ok",
+            "empty",
+            "unavailable",
+            "error"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "data": {
+          "$ref": "#/$defs/JsonValue",
+          "default": null
+        },
+        "sources": {
+          "items": {
+            "$ref": "#/$defs/SourceReference"
+          },
+          "title": "Sources",
+          "type": "array"
+        },
+        "reason_code": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason Code"
+        },
+        "retryable": {
+          "default": false,
+          "title": "Retryable",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "topic",
+        "place_ref",
+        "status"
+      ],
+      "title": "ReadItem",
+      "type": "object"
+    },
+    "RecommendationDraft": {
+      "additionalProperties": false,
+      "properties": {
+        "scope": {
+          "default": "persistent",
+          "enum": [
+            "persistent",
+            "request_only"
+          ],
+          "title": "Scope",
+          "type": "string"
+        },
+        "constraints": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Predicate"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "commit_guard": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Predicate"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "alternative": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Alternative"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "after": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AfterRecommendation"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "base_condition_version": {
+          "minimum": 0,
+          "title": "Base Condition Version",
+          "type": "integer"
+        },
+        "conditions": {
+          "$ref": "#/$defs/Conditions"
+        },
+        "search_area": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DestinationArea"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "origin_options": {
+          "items": {
+            "$ref": "#/$defs/OriginOption"
+          },
+          "maxItems": 5,
+          "title": "Origin Options",
+          "type": "array"
+        },
+        "destination_options": {
+          "items": {
+            "$ref": "#/$defs/DestinationOption"
+          },
+          "maxItems": 3,
+          "title": "Destination Options",
+          "type": "array"
+        },
+        "destination_query": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Destination Query"
+        },
+        "destination_radius_m": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Destination Radius M"
+        },
+        "destination_relation": {
+          "default": "area",
+          "enum": [
+            "area",
+            "near",
+            "inside"
+          ],
+          "title": "Destination Relation",
+          "type": "string"
+        },
+        "flow_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Flow Id"
+        },
+        "flow_excluded": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Flow Excluded",
+          "type": "array"
+        }
+      },
+      "required": [
+        "base_condition_version",
+        "conditions"
+      ],
+      "title": "RecommendationDraft",
+      "type": "object"
+    },
+    "RecommendationFlow": {
+      "additionalProperties": false,
+      "properties": {
+        "flow_id": {
+          "format": "uuid",
+          "title": "Flow Id",
+          "type": "string"
+        },
+        "result_id": {
+          "format": "uuid",
+          "title": "Result Id",
+          "type": "string"
+        },
+        "conditions": {
+          "$ref": "#/$defs/Conditions"
+        },
+        "search_area": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DestinationArea"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "constraints": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Predicate"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "excluded": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Excluded",
+          "type": "array"
+        }
+      },
+      "required": [
+        "flow_id",
+        "result_id",
+        "conditions"
+      ],
+      "title": "RecommendationFlow",
+      "type": "object"
+    },
+    "RecommendationPlan": {
+      "additionalProperties": false,
+      "properties": {
+        "scope": {
+          "default": "persistent",
+          "enum": [
+            "persistent",
+            "request_only"
+          ],
+          "title": "Scope",
+          "type": "string"
+        },
+        "constraints": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Predicate"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "commit_guard": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Predicate"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "alternative": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Alternative"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "after": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AfterRecommendation"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "phase": {
+          "const": "validated",
+          "default": "validated",
+          "title": "Phase",
+          "type": "string"
+        },
+        "feature_id": {
+          "const": "F01",
+          "default": "F01",
+          "title": "Feature Id",
+          "type": "string"
+        },
+        "search_area": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DestinationArea"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "context": {
+          "$ref": "#/$defs/ConversationContext"
+        },
+        "flow_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Flow Id"
+        },
+        "flow_excluded": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Flow Excluded",
+          "type": "array"
+        },
+        "effective_conditions": {
+          "$ref": "#/$defs/Conditions"
+        },
+        "changed_fields": {
+          "items": {
+            "enum": [
+              "origin",
+              "purposes",
+              "headcount",
+              "max_travel_seconds"
+            ],
+            "type": "string"
+          },
+          "maxItems": 4,
+          "title": "Changed Fields",
+          "type": "array"
+        }
+      },
+      "required": [
+        "context",
+        "effective_conditions",
+        "changed_fields"
+      ],
+      "title": "RecommendationPlan",
+      "type": "object"
+    },
+    "RegionAnchor": {
+      "additionalProperties": false,
+      "properties": {
+        "place_id": {
+          "title": "Place Id",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "coordinates": {
+          "$ref": "#/$defs/Coordinates"
+        },
+        "address": {
+          "title": "Address",
+          "type": "string"
+        },
+        "category": {
+          "title": "Category",
+          "type": "string"
+        },
+        "collected_at": {
+          "format": "date-time",
+          "title": "Collected At",
+          "type": "string"
+        }
+      },
+      "required": [
+        "place_id",
+        "name",
+        "coordinates",
+        "address",
+        "category",
+        "collected_at"
+      ],
+      "title": "RegionAnchor",
+      "type": "object"
+    },
+    "RegionSearchScope": {
+      "additionalProperties": false,
+      "description": "V2 spatial snapshot; a radius is never a V1 origin fallback or admin area.",
+      "properties": {
+        "region": {
+          "$ref": "#/$defs/DestinationArea"
+        },
+        "more_available": {
+          "title": "More Available",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "region",
+        "more_available"
+      ],
+      "title": "RegionSearchScope",
+      "type": "object"
+    },
+    "RegisteredParking": {
+      "additionalProperties": false,
+      "properties": {
+        "address": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Address"
+        },
+        "registered_capacity": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Registered Capacity"
+        },
+        "fees": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ParkingFees"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "operating_hours": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OperatingHours"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "title": "RegisteredParking",
+      "type": "object"
+    },
+    "RetryInput": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "retry",
+          "title": "Type",
+          "type": "string"
+        },
+        "source_run_id": {
+          "format": "uuid",
+          "title": "Source Run Id",
+          "type": "string"
+        },
+        "task_ids": {
+          "items": {
+            "enum": [
+              "interpretation",
+              "recommendation",
+              "lookup",
+              "search",
+              "action"
+            ],
+            "type": "string"
+          },
+          "maxItems": 1,
+          "minItems": 1,
+          "title": "Task Ids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "type",
+        "source_run_id",
+        "task_ids"
+      ],
+      "title": "RetryInput",
+      "type": "object"
+    },
+    "RouteValue": {
+      "additionalProperties": false,
+      "properties": {
+        "duration_seconds": {
+          "minimum": 0,
+          "title": "Duration Seconds",
+          "type": "integer"
+        },
+        "distance_meters": {
+          "minimum": 0,
+          "title": "Distance Meters",
+          "type": "number"
+        }
+      },
+      "required": [
+        "duration_seconds",
+        "distance_meters"
+      ],
+      "title": "RouteValue",
+      "type": "object"
+    },
+    "RunEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "event_seq": {
+          "title": "Event Seq",
+          "type": "integer"
+        },
+        "type": {
+          "title": "Type",
+          "type": "string"
+        },
+        "state_version": {
+          "minimum": 0,
+          "title": "State Version",
+          "type": "integer"
+        },
+        "payload": {
+          "additionalProperties": true,
+          "title": "Payload",
+          "type": "object"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        }
+      },
+      "required": [
+        "event_seq",
+        "type",
+        "state_version",
+        "payload",
+        "created_at"
+      ],
+      "title": "RunEvent",
+      "type": "object"
+    },
+    "RunIdentity": {
+      "additionalProperties": false,
+      "description": "Allocated and ownership-checked by the server, never by the model.",
+      "properties": {
+        "conversation_id": {
+          "format": "uuid",
+          "title": "Conversation Id",
+          "type": "string"
+        },
+        "trip_id": {
+          "format": "uuid",
+          "title": "Trip Id",
+          "type": "string"
+        },
+        "run_id": {
+          "format": "uuid",
+          "title": "Run Id",
+          "type": "string"
+        },
+        "request_id": {
+          "format": "uuid",
+          "title": "Request Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "conversation_id",
+        "trip_id",
+        "run_id",
+        "request_id"
+      ],
+      "title": "RunIdentity",
+      "type": "object"
+    },
+    "RunPoll": {
+      "additionalProperties": false,
+      "properties": {
+        "run": {
+          "$ref": "#/$defs/ExecutionView"
+        },
+        "events": {
+          "items": {
+            "$ref": "#/$defs/RunEvent"
+          },
+          "title": "Events",
+          "type": "array"
+        }
+      },
+      "required": [
+        "run",
+        "events"
+      ],
+      "title": "RunPoll",
+      "type": "object"
+    },
+    "RunRequest": {
+      "additionalProperties": false,
+      "description": "Client submits text, a server-issued choice, or an explicit retry.",
+      "properties": {
+        "schema_version": {
+          "const": 2,
+          "default": 2,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "request_id": {
+          "format": "uuid",
+          "title": "Request Id",
+          "type": "string"
+        },
+        "expected_condition_version": {
+          "minimum": 0,
+          "title": "Expected Condition Version",
+          "type": "integer"
+        },
+        "expected_state_version": {
+          "minimum": 0,
+          "title": "Expected State Version",
+          "type": "integer"
+        },
+        "input": {
+          "discriminator": {
+            "mapping": {
+              "action": "#/$defs/ActionInput",
+              "message": "#/$defs/MessageInput",
+              "retry": "#/$defs/RetryInput"
+            },
+            "propertyName": "type"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/MessageInput"
+            },
+            {
+              "$ref": "#/$defs/RetryInput"
+            },
+            {
+              "$ref": "#/$defs/ActionInput"
+            }
+          ],
+          "title": "Input"
+        },
+        "viewed_context": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ViewedContext"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "request_id",
+        "expected_condition_version",
+        "expected_state_version",
+        "input"
+      ],
+      "title": "RunRequest",
+      "type": "object"
+    },
+    "RunSnapshot": {
+      "additionalProperties": false,
+      "description": "Internal final F02 hand-off, not the complete public V2 response schema.\n\nThe future response adapter projects a verified finalization into wire fields.\nQuestions, accepted/running events and the other V2 features remain separate work.",
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "status": {
+          "enum": [
+            "succeeded",
+            "partial",
+            "failed",
+            "cancelled",
+            "reconciling"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "finalization": {
+          "$ref": "#/$defs/FinalizationResult"
+        }
+      },
+      "required": [
+        "status",
+        "finalization"
+      ],
+      "title": "RunSnapshot",
+      "type": "object"
+    },
+    "SearchAreaSnapshot": {
+      "additionalProperties": false,
+      "description": "Compact selection facts; polygon coordinates stay in the spatial source.",
+      "properties": {
+        "area_id": {
+          "minLength": 1,
+          "title": "Area Id",
+          "type": "string"
+        },
+        "name": {
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "center": {
+          "$ref": "#/$defs/Coordinates"
+        },
+        "source": {
+          "minLength": 1,
+          "title": "Source",
+          "type": "string"
+        },
+        "geometry_version": {
+          "minLength": 1,
+          "title": "Geometry Version",
+          "type": "string"
+        },
+        "congestion": {
+          "enum": [
+            "원활",
+            "서행",
+            "정체",
+            "확인 불가"
+          ],
+          "title": "Congestion",
+          "type": "string"
+        },
+        "road_observed_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Road Observed At"
+        },
+        "registered_parking_count": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Registered Parking Count"
+        },
+        "parking_checked_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Parking Checked At"
+        }
+      },
+      "required": [
+        "area_id",
+        "name",
+        "center",
+        "source",
+        "geometry_version",
+        "congestion",
+        "road_observed_at",
+        "registered_parking_count",
+        "parking_checked_at"
+      ],
+      "title": "SearchAreaSnapshot",
+      "type": "object"
+    },
+    "SearchScope": {
+      "additionalProperties": false,
+      "properties": {
+        "areas": {
+          "items": {
+            "$ref": "#/$defs/SearchAreaSnapshot"
+          },
+          "title": "Areas",
+          "type": "array"
+        },
+        "fallback": {
+          "title": "Fallback",
+          "type": "boolean"
+        },
+        "more_available": {
+          "title": "More Available",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "areas",
+        "fallback",
+        "more_available"
+      ],
+      "title": "SearchScope",
+      "type": "object"
+    },
+    "SessionCreated": {
+      "additionalProperties": false,
+      "properties": {
+        "session_id": {
+          "format": "uuid",
+          "title": "Session Id",
+          "type": "string"
+        },
+        "session_token": {
+          "title": "Session Token",
+          "type": "string"
+        },
+        "expires_at": {
+          "format": "date-time",
+          "title": "Expires At",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "session_token",
+        "expires_at"
+      ],
+      "title": "SessionCreated",
+      "type": "object"
+    },
+    "SourceReference": {
+      "additionalProperties": false,
+      "properties": {
+        "source_id": {
+          "title": "Source Id",
+          "type": "string"
+        },
+        "provider": {
+          "title": "Provider",
+          "type": "string"
+        },
+        "record_ref": {
+          "title": "Record Ref",
+          "type": "string"
+        },
+        "collected_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Collected At"
+        },
+        "checked_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Checked At"
+        }
+      },
+      "required": [
+        "source_id",
+        "provider",
+        "record_ref",
+        "collected_at"
+      ],
+      "title": "SourceReference",
+      "type": "object"
+    },
+    "StageError": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "enum": [
+            "INTERPRETATION_FAILED",
+            "VALIDATION_FAILED",
+            "INTERNAL_ERROR",
+            "RECOMMENDATION_FAILED",
+            "COMMIT_FAILED",
+            "COMMIT_UNCERTAIN",
+            "CONFLICT",
+            "CANCELLED",
+            "INTERRUPTED",
+            "DEADLINE_EXCEEDED",
+            "UNSUPPORTED"
+          ],
+          "title": "Code",
+          "type": "string"
+        },
+        "safe_message": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Safe Message",
+          "type": "string"
+        },
+        "retryable": {
+          "title": "Retryable",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "code",
+        "safe_message",
+        "retryable"
+      ],
+      "title": "StageError",
+      "type": "object"
+    },
+    "SubmitResult": {
+      "additionalProperties": false,
+      "properties": {
+        "run": {
+          "$ref": "#/$defs/ExecutionView"
+        },
+        "status_url": {
+          "title": "Status Url",
+          "type": "string"
+        }
+      },
+      "required": [
+        "run",
+        "status_url"
+      ],
+      "title": "SubmitResult",
+      "type": "object"
+    },
+    "TrafficEvidence": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "traffic",
+          "title": "Type",
+          "type": "string"
+        },
+        "text": {
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        },
+        "information": {
+          "$ref": "#/$defs/Information_TrafficValue_"
+        }
+      },
+      "required": [
+        "type",
+        "text",
+        "information"
+      ],
+      "title": "TrafficEvidence",
+      "type": "object"
+    },
+    "TrafficValue": {
+      "additionalProperties": false,
+      "properties": {
+        "grade": {
+          "enum": [
+            "원활",
+            "서행",
+            "정체"
+          ],
+          "title": "Grade",
+          "type": "string"
+        }
+      },
+      "required": [
+        "grade"
+      ],
+      "title": "TrafficValue",
+      "type": "object"
+    },
+    "UnappliedCommit": {
+      "additionalProperties": false,
+      "properties": {
+        "state": {
+          "const": "not_applied",
+          "title": "State",
+          "type": "string"
+        },
+        "error": {
+          "$ref": "#/$defs/StageError"
+        }
+      },
+      "required": [
+        "state",
+        "error"
+      ],
+      "title": "UnappliedCommit",
+      "type": "object"
+    },
+    "UnknownCommit": {
+      "additionalProperties": false,
+      "properties": {
+        "state": {
+          "const": "unknown",
+          "title": "State",
+          "type": "string"
+        },
+        "error": {
+          "$ref": "#/$defs/StageError"
+        }
+      },
+      "required": [
+        "state",
+        "error"
+      ],
+      "title": "UnknownCommit",
+      "type": "object"
+    },
+    "UnsupportedAvailability": {
+      "additionalProperties": false,
+      "properties": {
+        "value": {
+          "default": null,
+          "title": "Value",
+          "type": "null"
+        },
+        "status": {
+          "const": "unsupported",
+          "default": "unsupported",
+          "title": "Status",
+          "type": "string"
+        },
+        "freshness": {
+          "const": "not_applicable",
+          "default": "not_applicable",
+          "title": "Freshness",
+          "type": "string"
+        },
+        "observed_at": {
+          "default": null,
+          "title": "Observed At",
+          "type": "null"
+        },
+        "collected_at": {
+          "default": null,
+          "title": "Collected At",
+          "type": "null"
+        },
+        "source": {
+          "default": null,
+          "title": "Source",
+          "type": "null"
+        },
+        "reason_code": {
+          "const": "NOT_SUPPORTED",
+          "default": "NOT_SUPPORTED",
+          "title": "Reason Code",
+          "type": "string"
+        }
+      },
+      "title": "UnsupportedAvailability",
+      "type": "object"
+    },
+    "UserMessage": {
+      "additionalProperties": false,
+      "properties": {
+        "message_id": {
+          "title": "Message Id",
+          "type": "string"
+        },
+        "input_type": {
+          "enum": [
+            "message",
+            "action",
+            "retry"
+          ],
+          "title": "Input Type",
+          "type": "string"
+        },
+        "text": {
+          "title": "Text",
+          "type": "string"
+        },
+        "source_run_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Run Id"
+        }
+      },
+      "required": [
+        "message_id",
+        "input_type",
+        "text"
+      ],
+      "title": "UserMessage",
+      "type": "object"
+    },
+    "ValidatedPlan": {
+      "additionalProperties": false,
+      "description": "Server-owned F02 plan. Values outside headcount must remain unchanged.\n\nConstructing this model does not verify evidence, ownership, current DB versions\nor geography. Those checks belong to the PlanValidator component.",
+      "properties": {
+        "phase": {
+          "const": "validated",
+          "default": "validated",
+          "title": "Phase",
+          "type": "string"
+        },
+        "feature_id": {
+          "const": "F02",
+          "default": "F02",
+          "title": "Feature Id",
+          "type": "string"
+        },
+        "context": {
+          "$ref": "#/$defs/ConversationContext"
+        },
+        "scope": {
+          "const": "persistent",
+          "default": "persistent",
+          "title": "Scope",
+          "type": "string"
+        },
+        "requested_headcount": {
+          "exclusiveMinimum": 0,
+          "title": "Requested Headcount",
+          "type": "integer"
+        },
+        "effective_conditions": {
+          "$ref": "#/$defs/Conditions"
+        },
+        "changed_fields": {
+          "items": {
+            "const": "headcount",
+            "type": "string"
+          },
+          "maxItems": 1,
+          "title": "Changed Fields",
+          "type": "array"
+        }
+      },
+      "required": [
+        "context",
+        "requested_headcount",
+        "effective_conditions",
+        "changed_fields"
+      ],
+      "title": "ValidatedPlan",
+      "type": "object"
+    },
+    "ViewedContext": {
+      "additionalProperties": false,
+      "properties": {
+        "result_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Result Id"
+        },
+        "clarification_id": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "pattern": "\\S",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Clarification Id"
+        },
+        "collection_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Collection Id"
+        },
+        "place_ref": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "pattern": "\\S",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Place Ref"
+        }
+      },
+      "title": "ViewedContext",
+      "type": "object"
+    },
+    "WarningMessage": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "title": "Code",
+          "type": "string"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "title": "WarningMessage",
+      "type": "object"
+    }
+  },
+  "contracts": {
+    "RunRequest": {
+      "$ref": "#/$defs/RunRequest"
+    },
+    "CancelRequest": {
+      "$ref": "#/$defs/CancelRequest"
+    },
+    "SessionCreated": {
+      "$ref": "#/$defs/SessionCreated"
+    },
+    "ConversationSnapshot": {
+      "$ref": "#/$defs/ConversationSnapshot"
+    },
+    "ExecutionView": {
+      "$ref": "#/$defs/ExecutionView"
+    },
+    "SubmitResult": {
+      "$ref": "#/$defs/SubmitResult"
+    },
+    "RunPoll": {
+      "$ref": "#/$defs/RunPoll"
+    },
+    "HistoryPage": {
+      "$ref": "#/$defs/HistoryPage"
+    },
+    "ErrorEnvelope": {
+      "$ref": "#/$defs/ErrorEnvelope"
+    }
+  }
+}

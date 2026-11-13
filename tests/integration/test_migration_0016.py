@@ -17,8 +17,8 @@ def test_trip_state_tables_upgrade_downgrade_and_match_models(normalized_databas
     try:
         config = Config("alembic.ini")
         command.upgrade(config, "0016")
-        # Models and frozen DDL agree (indexes, defaults, constraints).
-        command.check(config)
+        # Runtime metadata now includes later revisions; head agreement is checked
+        # by the latest migration test, not against this historical target.
         with engine.begin() as connection:
             assert all(connection.execute(exists, {"name": t}).scalar() for t in TABLES)
             with pytest.raises(Exception, match="lock_pair"):

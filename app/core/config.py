@@ -64,6 +64,15 @@ class Settings(BaseSettings):
     seoul_api_key: SecretStr = SecretStr("")
     seoul_citydata_api_key: SecretStr = SecretStr("")
 
+    # Enable only once the V2 migrations/permissions and public route are ready.
+    chat_v2_enabled: bool = False
+    chat_sessions_per_day: int = Field(default=300, ge=1)
+    chat_model_calls_per_day: int = Field(default=200, ge=2)
+    chat_model_input_bytes_per_day: int = Field(default=6_500_000, ge=1)
+    chat_model_output_tokens_per_day: int = Field(default=204_800, ge=1)
+    chat_http_calls_per_day: int = Field(default=8000, ge=1)
+    chat_http_calls_per_run: int = Field(default=40, ge=1, le=100)
+
     app_name: str = "서울 지금 어디 API"
     docs_enabled: bool = True
     cors_origins: list[str] = Field(
@@ -82,6 +91,12 @@ class Settings(BaseSettings):
     # Where in-flight API state lives. "database" is shared by every API process and
     # survives a rolling restart; "memory" is one process only (DB-less tests).
     state_backend: Literal["database", "memory"] = "database"
+
+    @model_validator(mode="after")
+    def validate_chat_provider(self):
+        if self.chat_v2_enabled and self.ai_provider != "bedrock":
+            raise ValueError("Chat V2 currently requires the Bedrock provider")
+        return self
 
     @model_validator(mode="after")
     def require_shared_state_on_aws(self):

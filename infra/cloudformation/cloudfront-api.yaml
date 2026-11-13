@@ -72,21 +72,23 @@ Resources:
             QueryStrings: [bbox, level, cache_refresh]
   DynamicOriginRequestPolicy:
     Type: AWS::CloudFront::OriginRequestPolicy
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Forward bearer ownership tokens and a CloudFront-generated peer identity for chat limits.
+        must:
+          - Pair with DisabledCachePolicy only; personal responses must never enter edge cache.
+          - Forward all viewer headers to preserve Authorization; it cannot be individually allowlisted here.
+          - CloudFront-Viewer-Address is trusted only through the existing private VPC origin.
     Properties:
       OriginRequestPolicyConfig:
         Name: !Sub '${ProjectName}-${Environment}-api-dynamic'
-        Comment: Forward API parameters, result context and browser CORS preflight headers.
+        Comment: Forward Authorization, API/CORS headers and CloudFront-generated viewer address.
         CookiesConfig:
           CookieBehavior: none
         HeadersConfig:
-          HeaderBehavior: whitelist
+          HeaderBehavior: allViewerAndWhitelistCloudFront
           Headers:
-            - Origin
-            - Access-Control-Request-Method
-            - Access-Control-Request-Headers
-            - Content-Type
-            - Result-Context
-            - Accept
+            - CloudFront-Viewer-Address
         QueryStringsConfig:
           QueryStringBehavior: all
   GeometryOriginRequestPolicy:
@@ -137,7 +139,7 @@ Resources:
           - Reuse the user-created VPC origin and internal ALB; do not create a public origin.
           - Viewer HTTPS terminates at CloudFront; the private origin hop intentionally uses HTTP.
           - Keep this distribution during API redeploys to preserve its default hostname.
-          - No authentication is provided by CORS. This is an intentionally public lab API.
+          - Public session issuance; the backend enforces bearer conversation ownership. CORS is not authentication.
           - API logs remain in CloudWatch; edge access log delivery is not enabled in this MVP.
     Properties:
       Tags:
