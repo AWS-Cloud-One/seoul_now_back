@@ -36,7 +36,7 @@ async def collect_areas(http, settings):
     token = (response.json().get("result") or {}).get("accessToken")
     if not token:
         raise CollectionError("sgis_auth_failed")
-    districts = (await sgis_json(http, token, "addr/stage.json", {"cd": "11", "pg_yn": "0"}))[
+    districts = (await sgis_json(http, token, "addr/stage.json", {"cd": "11", "pg_yn": "1"}))[
         "result"
     ]
     areas, issues = [], []
@@ -71,7 +71,13 @@ async def collect_areas(http, settings):
     except Exception:
         boundary = {"features": []}
         issues.append({"error_code": "sgis_boundary_collection_failed"})
-    return {"areas": areas, "boundary": boundary, "complete": complete, "issues": issues}
+    return {
+        "areas": areas,
+        "districts": districts,
+        "boundary": boundary,
+        "complete": complete,
+        "issues": issues,
+    }
 
 
 async def collect_sdot(http, settings, *, now=None):

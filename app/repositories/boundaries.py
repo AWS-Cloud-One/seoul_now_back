@@ -30,6 +30,22 @@ def store_boundaries(session, data, boundary):
             ),
             ["code_system", "region_code"],
         )
+    for feature in data.get("district_features", []):
+        version = fingerprint(feature)
+        writer.upsert_geometry(
+            "region_boundaries",
+            dict(
+                code_system="sgis",
+                region_code=feature["id"],
+                name=feature["properties"]["name"],
+                geometry=feature["geometry"],
+                boundary_version=version,
+                source="sgis_areas",
+                source_version=None,
+                **common,
+            ),
+            ["code_system", "region_code"],
+        )
     values = [
         dict(
             **administrative_area_fields(feature, fingerprint(feature)),

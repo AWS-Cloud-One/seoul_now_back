@@ -4,7 +4,7 @@
 # Inputs (environment):
 #   IMAGE_DIGEST   sha256:<64 hex> of an image in the backend ECR repository
 #   GIT_SHA        commit whose manifests are in the bundle (labels and logs only)
-#   DEPLOY_ACTION  release (default) | rollback
+#   DEPLOY_ACTION  release (default) | rollback | cutover (one-time V2 maintenance)
 #   DEPLOY_MODE    deploy (default) | verify
 #   CLUSTER_NAME, KUBE_NAMESPACE, AWS_REGION   set by the CodeBuild project
 #
@@ -12,15 +12,17 @@
 # from the newest pipeline commit; infra/kubernetes from the commit being deployed
 # (for a rollback: the commit of the older image, so its config comes back too).
 #
-# Both actions first run a read-only Job with the target image that reports the
+# All actions first run a read-only Job with the target image that reports the
 # database revision and the image's migrations; db_compat.py then decides:
 #   release   image at/ahead of the DB, compatible pending migrations only
 #             -> migrate + grants -> API permission probe
 #   rollback  DB is never changed; allowed only if every newer DB revision is
 #             backward_compatible with the image (no migrate, grants or probe)
+#   cutover   explicit 0016 -> 0023 transition (or 0023 repair): check references,
+#             stop API, migrate + grants + probe; failure leaves API stopped
 # Then: apply image + versioned (hashed) ConfigMaps -> rollouts -> public health.
-# Any failure after the apply returns each changed Deployment to the exact revision
-# it had before this run (image AND config) and checks that it did.
+# Compatible release/rollback failures after apply restore each Deployment to its
+# exact pre-run revision (image AND config). Cutover never restores a V1 image.
 #
 # verify changes no workload: server-side dry runs, the read-only revision Job
 # (deleted afterwards), the compatibility decision and a diff.
@@ -48,7 +50,8 @@ fail() { log "ERROR: $*"; exit 1; }
 
 [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || fail "IMAGE_DIGEST must be sha256:<64 hex>"
 [[ "$DEPLOY_MODE" == deploy || "$DEPLOY_MODE" == verify ]] || fail "DEPLOY_MODE must be deploy or verify"
-[[ "$DEPLOY_ACTION" == release || "$DEPLOY_ACTION" == rollback ]] || fail "DEPLOY_ACTION must be release or rollback"
+[[ "$DEPLOY_ACTION" == release || "$DEPLOY_ACTION" == rollback || "$DEPLOY_ACTION" == cutover ]] || fail "invalid DEPLOY_ACTION"
+[[ "$DEPLOY_ACTION" != cutover || -z "$DEPLOY_DRILL" ]] || fail "cutover cannot run a rollback drill"
 IMAGE="${REGISTRY_REPO}@${IMAGE_DIGEST}"
 RUN_ID="$(date -u +%Y%m%d%H%M%S)-${GIT_SHA:0:7}"
 WORK="$(mktemp -d)"
@@ -57,6 +60,7 @@ K=(kubectl -n "$KUBE_NAMESPACE" --request-timeout=60s)
 
 APPLIED=0   # workloads were applied by this run
 DONE=0      # every check after the apply passed
+MAINTENANCE_STARTED=0
 declare -A before_generation before_revision before_template
 
 cleanup() {
@@ -172,10 +176,22 @@ fi
 #    rejects incompatible/unmarked changes before any migration or workload mutation.
 #    A rollback leaves the database exactly as it is.
 check_database
-if [[ "$DEPLOY_ACTION" == release ]]; then
+if [[ "$DEPLOY_ACTION" != rollback ]] && grep -q 'APP_CHAT_V2_ENABLED: "true"\|APP_CHAT_V2_ENABLED: true' "$WORK/workloads.yaml"; then
+  run_job chat-reference api seoul-now-api "$API_SECRET" "python /work/w4_database.py chat-reference"
+fi
+if [[ "$DEPLOY_ACTION" == cutover ]]; then
+  log "V2 maintenance: stopping API; failures stay stopped for forward repair"
+  MAINTENANCE_STARTED=1
+  "${K[@]}" patch deployment seoul-now-api --type=merge -p '{"spec":{"replicas":0}}'
+  "${K[@]}" wait --for=delete pod -l app.kubernetes.io/component=api --timeout=180s
+fi
+if [[ "$DEPLOY_ACTION" != rollback ]]; then
   run_job migrate migration seoul-now-migration "$MIGRATION_SECRET" \
     "python /work/w4_database.py migrate && python /work/w4_database.py grants"
   run_job probe api seoul-now-api "$API_SECRET" "python /work/w4_database.py probe"
+  if grep -q 'APP_CHAT_V2_ENABLED: "true"\|APP_CHAT_V2_ENABLED: true' "$WORK/workloads.yaml"; then
+    run_job chat-preflight api seoul-now-api "$API_SECRET" "python /work/w4_database.py chat-preflight"
+  fi
 else
   log "rollback: database unchanged; skipping migrate, grants and probe"
 fi

@@ -50,7 +50,13 @@ rollback() {
 on_exit() {
   local rc=$?
   trap - EXIT
-  if (( APPLIED == 1 && DONE == 0 )); then
+  if (( ${MAINTENANCE_STARTED:-0} == 1 && DONE == 0 )); then
+    # The V2 schema/payload may already exist. Never resurrect a V1 writer.
+    "${K[@]}" patch deployment seoul-now-api --type=merge -p '{"spec":{"replicas":0}}' \
+      || log "ERROR: could not stop API after failed cutover; inspect Pods immediately"
+    log "ERROR: V2 cutover incomplete; API kept stopped. Repair forward or restore a pre-cutover DB snapshot with a separately reviewed V1 configuration."
+    rc=1
+  elif (( APPLIED == 1 && DONE == 0 )); then
     if ! rollback; then
       log "ERROR: automatic rollback incomplete; manual action required"
     fi

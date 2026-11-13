@@ -28,9 +28,17 @@ class RecommendationSource:
         except KakaoError as exc:
             raise provider_failure(exc) from None
 
-    async def search(self, query, origin, purpose, page):
+    async def search(self, query, origin, purpose, page, *, radius=None, rect=None):
         try:
-            rows, is_end = documents(await self.kakao.nearby_keyword(query, origin, page=page))
+            rows, is_end = documents(
+                await self.kakao.nearby_keyword(
+                    query,
+                    origin,
+                    page=page,
+                    **({"radius": radius} if radius is not None else {}),
+                    **({"rect": rect} if rect is not None else {}),
+                )
+            )
         except KakaoError as exc:
             raise provider_failure(exc) from None
         candidates = []

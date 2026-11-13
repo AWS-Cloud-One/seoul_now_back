@@ -1,4 +1,4 @@
-"""Normalized models matching revision 0016, including spatial lookup indexes."""
+"""Normalized models matching revision 0023, including shared public-chat budgets."""
 
 from .areas import (
     AdministrativeArea,
@@ -15,6 +15,15 @@ from .chat import (
     ChatExcludedPlace,
     ChatMessage,
     ChatSession,
+)
+from .chat_v2 import (
+    ChatAction,
+    ChatBrowserSession,
+    ChatConversation,
+    ChatResult,
+    ChatRun,
+    ChatRunCommit,
+    ChatRunEvent,
 )
 from .collection import (
     CollectionRejectionReason,
@@ -54,6 +63,12 @@ from .traffic import (
 )
 
 __all__ = [
+    "ChatBrowserSession",
+    "ChatConversation",
+    "ChatResult",
+    "ChatRun",
+    "ChatRunCommit",
+    "ChatRunEvent",
     "RecommendationResult",
     "RecommendationCard",
     "RecommendationEvidence",
@@ -98,4 +113,5 @@ __all__ = [
     "RoadTrafficLatest",
     "RoadTrafficAttemptLatest",
     "Base",
+    "ChatAction",
 ]

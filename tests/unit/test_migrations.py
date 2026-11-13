@@ -15,8 +15,8 @@ def test_migration_revisions_are_unique_with_one_head():
         warnings.simplefilter("error", UserWarning)
         scripts = ScriptDirectory.from_config(Config("alembic.ini"))
         revisions = list(scripts.walk_revisions())
-        assert scripts.get_heads() == ["0016"]
-        assert {item.revision for item in revisions} == {f"{n:04}" for n in range(1, 17)}
+        assert scripts.get_heads() == ["0023"]
+        assert {item.revision for item in revisions} == {f"{n:04}" for n in range(1, 24)}
         assert len({item.revision for item in revisions}) == len(revisions)
         assert scripts.get_revision("0009").down_revision == "0008"
         assert scripts.get_revision("0010").down_revision == "0009"
@@ -26,6 +26,13 @@ def test_migration_revisions_are_unique_with_one_head():
         assert scripts.get_revision("0014").down_revision == "0013"
         assert scripts.get_revision("0015").down_revision == "0014"
         assert scripts.get_revision("0016").down_revision == "0015"
+        assert scripts.get_revision("0017").down_revision == "0016"
+        assert scripts.get_revision("0018").down_revision == "0017"
+        assert scripts.get_revision("0019").down_revision == "0018"
+        assert scripts.get_revision("0020").down_revision == "0019"
+        assert scripts.get_revision("0021").down_revision == "0020"
+        assert scripts.get_revision("0022").down_revision == "0021"
+        assert scripts.get_revision("0023").down_revision == "0022"
 
 
 def test_0013_frozen_upgrade_only_adds_result_context_tables(monkeypatch):

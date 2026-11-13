@@ -34,6 +34,13 @@ configMapGenerator:
     literals:
       - APP_AI_PROVIDER=bedrock
       - APP_BEDROCK_REGION=ap-northeast-2
-      - APP_BEDROCK_MODEL_ID=global.anthropic.claude-haiku-4-5-20251001-v1:0
+      - APP_BEDROCK_MODEL_ID=global.anthropic.claude-sonnet-5-5
+      - APP_CHAT_V2_ENABLED=true
+      - APP_CHAT_SESSIONS_PER_DAY=300
+      - APP_CHAT_MODEL_CALLS_PER_DAY=200
+      - APP_CHAT_MODEL_INPUT_BYTES_PER_DAY=6500000
+      - APP_CHAT_MODEL_OUTPUT_TOKENS_PER_DAY=204800
+      - APP_CHAT_HTTP_CALLS_PER_DAY=8000
+      - APP_CHAT_HTTP_CALLS_PER_RUN=40
       - APP_DOCS_ENABLED=false
       - 'APP_CORS_ORIGINS=["http://localhost:5173","http://127.0.0.1:5173","https://d175hrpymm0ih1.cloudfront.net"]'

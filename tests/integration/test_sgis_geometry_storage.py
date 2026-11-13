@@ -258,3 +258,31 @@ def test_duplicate_identity_is_rejected_without_deactivating_prior_areas(normali
             await engine.dispose()
 
     asyncio.run(run())
+
+
+def test_district_name_is_stored_for_chat_and_invalid_recollection_preserves_it(
+    normalized_database,
+):
+    from app.models import RegionBoundary
+    from app.modules.chat_v2.destination import resolve_destination
+
+    async def run():
+        engine = create_async_engine(normalized_database)
+        factory = async_sessionmaker(engine, expire_on_commit=False)
+        source = collected([("11010510", VALID)])
+        source["districts"] = [{"cd": "11010", "addr_name": "테스트구", "pg": VALID}]
+        try:
+            result = await store(factory, source)
+            assert result["status"] == "success"
+            resolved = await resolve_destination(factory, "테스트구")
+            assert resolved.area_ids == ["11010510"]
+            source["districts"][0]["pg"] = "invalid"
+            result = await store(factory, source)
+            assert result["status"] == "partial"
+            async with factory() as db:
+                saved = await db.get(RegionBoundary, ("sgis", "11010"))
+                assert saved.name == "테스트구" and saved.is_active
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())

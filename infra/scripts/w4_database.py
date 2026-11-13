@@ -295,7 +295,63 @@ def revision(settings):
     )
 
 
-OPERATIONS = {"migrate": migrate, "grants": grants, "probe": probe, "revision": revision}
+def chat_preflight(settings):
+    """Read-only readiness for the V2 API role; never collect or alter reference data."""
+    if settings.runtime_role != "api":
+        raise RuntimeError("api_role_required")
+    with connect(settings) as conn:
+        conn.execute("SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY")
+        # Required writer tables are checked by probe(); these reads also verify the
+        # latest history/lease columns, without printing any conversations or tokens.
+        conn.execute("SELECT sequence, question, implementation_version FROM chat_runs LIMIT 0")
+        conn.execute("SELECT used FROM chat_usage_buckets LIMIT 0")
+    chat_reference(settings)
+
+
+def chat_reference(settings):
+    """Safe to run before V2 DDL, while the V1 API is still serving."""
+    if settings.runtime_role != "api":
+        raise RuntimeError("api_role_required")
+    with connect(settings) as conn:
+        conn.execute("SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY")
+        queries = {
+            "seoul_boundary": (
+                "SELECT count(*) FROM region_boundaries WHERE "
+                "code_system='sgis' AND region_code='11' AND is_active "
+                "AND processed_at IS NOT NULL"
+            ),
+            "districts": (
+                "SELECT count(*) FROM region_boundaries WHERE code_system='sgis' "
+                "AND region_code LIKE '11%' AND length(region_code)=5 AND is_active "
+                "AND processed_at IS NOT NULL"
+            ),
+            "dongs": (
+                "SELECT count(*) FROM administrative_areas WHERE code_system='sgis' "
+                "AND sigungu_code LIKE '11%' AND source='sgis_areas' AND is_active "
+                "AND processed_at IS NOT NULL"
+            ),
+            "population_areas": (
+                "SELECT count(*) FROM population_areas WHERE is_active "
+                "AND source='citydata_place_boundaries' AND source_version IS NOT NULL "
+                "AND processed_at IS NOT NULL"
+            ),
+        }
+        counts = {name: conn.execute(query).fetchone()[0] for name, query in queries.items()}
+    minimum = {"seoul_boundary": 1, "districts": 25, "dongs": 400, "population_areas": 121}
+    missing = [name for name, count in counts.items() if count < minimum[name]]
+    emit("chat_v2_preflight", status="fail" if missing else "pass", counts=counts, missing=missing)
+    if missing:
+        raise RuntimeError("chat_reference_data_incomplete")
+
+
+OPERATIONS = {
+    "migrate": migrate,
+    "grants": grants,
+    "probe": probe,
+    "revision": revision,
+    "chat-preflight": chat_preflight,
+    "chat-reference": chat_reference,
+}
 
 
 def main():

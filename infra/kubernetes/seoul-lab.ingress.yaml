@@ -35,6 +35,13 @@ spec:
   rules:
     - http:
         paths:
+          - path: /api/v2/chat
+            pathType: Prefix
+            backend:
+              service:
+                name: seoul-now-api
+                port:
+                  number: 80
           - path: /api/v1
             pathType: Prefix
             backend:

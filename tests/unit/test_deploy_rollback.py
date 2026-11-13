@@ -23,6 +23,7 @@ before_template[seoul-now-api]='old-api-image | runtime-old api-old'
 before_template[seoul-now-collector]='old-collector-image | runtime-old'
 APPLIED=1
 DONE=0
+[[ "$SCENARIO" == cutover ]] && MAINTENANCE_STARTED=1
 
 fake_kubectl() {
   printf '%s\n' "$*" >> "$CALLS"
@@ -50,6 +51,7 @@ fake_kubectl() {
       [[ "$d" != seoul-now-api || "$SCENARIO" != undo-fails ]] ;;
     'rollout status')
       [[ "$d" != seoul-now-api || "$SCENARIO" != not-ready ]] ;;
+    'patch deployment') return 0 ;;
     *) return 99 ;;
   esac
 }
@@ -98,6 +100,14 @@ def test_success_restores_both_exact_revisions_and_checks_readiness(run_rollback
     assert "rollout undo deployment/seoul-now-api --to-revision=7" in calls
     assert "rollout undo deployment/seoul-now-collector --to-revision=9" in calls
     assert calls.count("rollout status") == 2
+
+
+def test_failed_cutover_keeps_api_stopped_without_v1_rollback(run_rollback):
+    result, calls, cleaned = run_rollback("cutover", exit_trap=True)
+    assert result.returncode == 1 and cleaned
+    assert "patch deployment seoul-now-api" in calls
+    assert "rollout undo" not in calls
+    assert "Repair forward" in result.stdout
 
 
 @pytest.mark.parametrize(

@@ -9,3 +9,6 @@ alembic==1.19.2
 geoalchemy2==0.20.0
 httpx==0.28.1
 boto3[crt]==1.43.127
+langchain-core==1.8.0
+langchain-aws==1.9.3
+langsmith==0.14.17

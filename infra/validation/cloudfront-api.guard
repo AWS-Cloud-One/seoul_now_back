@@ -42,6 +42,10 @@ rule bounded_public_cache {
     }
 }
 rule single_cors_authority {
+    Resources.DynamicOriginRequestPolicy.Properties.OriginRequestPolicyConfig.HeadersConfig {
+        HeaderBehavior == 'allViewerAndWhitelistCloudFront'
+        Headers == ['CloudFront-Viewer-Address']
+    }
     Resources.ApiResponseHeadersPolicy.Properties.ResponseHeadersPolicyConfig {
         CorsConfig !exists
         SecurityHeadersConfig.ContentTypeOptions.Override == true

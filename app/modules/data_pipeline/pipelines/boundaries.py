@@ -47,6 +47,37 @@ async def prepare_areas(spatial, collected):
         area_results.append({"code": row.get("cd"), **quality})
         if geometry is not None:
             areas.append(normalizers.area_feature(district, row, geometry))
+    # Keep the provider's district names/codes and checked geometry, too. Chat resolves
+    # a 구 name through these rows and still searches its existing administrative dongs.
+    districts, district_results = [], []
+    district_rows = collected.get("districts", [])
+    district_codes = Counter(str(row.get("cd")) for row in district_rows if isinstance(row, dict))
+    for row in district_rows:
+        code = row.get("cd") if isinstance(row, dict) else None
+        if (
+            not isinstance(code, str)
+            or len(code) != 5
+            or not code.startswith("11")
+            or not code.isdigit()
+            or not isinstance(row.get("addr_name"), str)
+            or not row["addr_name"].strip()
+            or district_codes[code] != 1
+        ):
+            district_results.append(
+                {"code": code, "status": "rejected", "reason": "invalid_sgis_district_identity"}
+            )
+            continue
+        geometry, quality = await polygon(row.get("pg"))
+        district_results.append({"code": code, **quality})
+        if geometry is not None:
+            districts.append(
+                {
+                    "type": "Feature",
+                    "id": code,
+                    "geometry": geometry,
+                    "properties": {"name": row["addr_name"]},
+                }
+            )
     boundaries = []
     for feature in collected["boundary"]["features"]:
         geometry, quality = await polygon(
@@ -62,6 +93,8 @@ async def prepare_areas(spatial, collected):
             for _ in boundary_results
         ]
     data, boundary = normalizers.area_snapshot(areas), normalizers.boundary_snapshot(boundaries)
+    data["district_features"] = districts
+    boundary_results += district_results
     for snapshot, results in ((data, area_results), (boundary, boundary_results)):
         snapshot["geometry_quality"] = {
             "received": len(results),
@@ -86,11 +119,15 @@ async def save_areas(session, collected, *, started_at=None):
     data, boundary = await prepare_areas(SpatialRepository(session), collected)
     qualities = [data["geometry_quality"], boundary["geometry_quality"]]
     received = sum(q["received"] for q in qualities)
-    accepted = len(data["features"]) + len(boundary["features"])
+    accepted = len(data["features"]) + len(boundary["features"]) + len(data["district_features"])
     reasons = Counter(
         row["reason"] for q in qualities for row in q["rows"] if row["status"] == "rejected"
     )
-    incomplete = not data["complete"] or not boundary["features"]
+    incomplete = (
+        not data["complete"]
+        or not boundary["features"]
+        or ("districts" in collected and not data["district_features"])
+    )
     error = None
     try:
         async with session.begin_nested():

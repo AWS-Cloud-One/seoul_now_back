@@ -42,6 +42,21 @@ def test_same_revision_is_allowed_for_both_actions(graph):
         assert decide(action, graph, report("0003", "0003", ["0001", "0002", "0003"]))
 
 
+def test_cutover_is_specific_and_never_enables_old_image_rollback():
+    graph = load_graph(MIGRATIONS)
+    image = [f"{n:04}" for n in range(1, 24)]
+    assert "API stopped" in decide("cutover", graph, report("0016", "0023", image))
+    assert decide("cutover", graph, report("0023", "0023", image))
+    with pytest.raises(Refused, match="supports only"):
+        decide("cutover", graph, report("0018", "0023", image))
+    with pytest.raises(Refused, match="backward_compatible"):
+        decide("release", graph, report("0016", "0023", image))
+    with pytest.raises(Refused, match="backward_compatible"):
+        decide("rollback", graph, report("0023", "0016", image[:16]))
+    with pytest.raises(Refused, match="0023"):
+        decide("rollback", graph, report("0023", "0022", image[:22]))
+
+
 def test_release_of_a_newer_image_migrates(graph):
     reason = decide("release", graph, report("0002", "0003", ["0001", "0002", "0003"]))
     assert "0002 -> 0003" in reason
@@ -99,15 +114,18 @@ def test_branched_history_is_refused(tmp_path):
         write_migrations(tmp_path, ("0001", None, None), ("0002", ("0001", "0000"), None))
 
 
-def test_real_history_allows_rollback_to_the_pre_state_sharing_image():
+def test_real_history_allows_additive_revisions_but_refuses_new_result_writer():
     graph = load_graph(MIGRATIONS)
     head = max(graph)
     older = [f"{n:04}" for n in range(1, 15)]
-    # 0015/0016 only add tables: an image at 0014 runs on the current database.
-    assert decide("rollback", graph, report(head, "0014", older))
+    # Through 0018 the changes are additive/relaxed constraints.
+    assert decide("rollback", graph, report("0018", "0014", older))
+    # 0019 requires V2 writers to insert the new result identity before a receipt.
+    with pytest.raises(Refused, match="0019"):
+        decide("rollback", graph, report(head, "0014", older))
     # 0014 is not marked, so going further back is refused.
     with pytest.raises(Refused, match="0014"):
-        decide("rollback", graph, report(head, "0013", older[:-1]))
+        decide("rollback", graph, report("0018", "0013", older[:-1]))
 
 
 def run_cli(action, log):

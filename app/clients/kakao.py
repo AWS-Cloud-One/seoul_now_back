@@ -69,7 +69,15 @@ class KakaoLocalClient:
             self.key,
         )
 
-    async def nearby_keyword(self, query: str, coordinates, *, page: int) -> dict:
+    async def nearby_keyword(
+        self,
+        query: str,
+        coordinates,
+        *,
+        page: int,
+        radius: int | None = None,
+        rect: str | None = None,
+    ) -> dict:
         return await kakao_get(
             self.http,
             "https://dapi.kakao.com/v2/local/search/keyword.json",
@@ -80,6 +88,8 @@ class KakaoLocalClient:
                 "page": page,
                 "size": 15,
                 "sort": "distance",
+                **({"radius": radius} if radius is not None else {}),
+                **({"rect": rect} if rect is not None else {}),
             },
             self.key,
         )

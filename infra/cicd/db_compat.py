@@ -15,8 +15,10 @@ release  the image must be at or ahead of the database. Every pending migration
 rollback the database is never changed. The image may be behind the database only
          if every revision it does not know declares `backward_compatible = True`
          (an image built before that revision keeps working with it).
+cutover  explicit first public V2 baseline: 0016 -> 0023, or 0023 -> 0023 repair.
+         The caller stops the API before migration and cannot restore old V1 Pods.
 
-Usage: db_compat.py --action release|rollback --migrations DIR --report JOB_LOG
+Usage: db_compat.py --action release|rollback|cutover --migrations DIR --report JOB_LOG
 Prints one JSON line; exit 0 = proceed, 1 = refuse.
 """
 
@@ -120,7 +122,7 @@ def read_report(path):
 
 def decide(action, graph, report):
     """Return a human-readable reason to proceed, or raise Refused."""
-    if action not in ("release", "rollback"):
+    if action not in ("release", "rollback", "cutover"):
         raise Refused(f"unknown action {action}")
     db, head = report["db_revision"], report["image_head"]
     if db not in graph:
@@ -130,6 +132,12 @@ def decide(action, graph, report):
     image_chain = lineage(graph, head)
     if set(report["image_revisions"]) != set(image_chain):
         raise Refused("migrations in the image differ from this pipeline's history")
+    if action == "cutover":
+        # One specific, unreleased V2 transition, not a generic compatibility bypass.
+        # deploy.sh stops the API before migrating and never auto-restores V1 afterward.
+        if db not in {"0016", "0023"} or head != "0023":
+            raise Refused("V2 cutover supports only 0016 -> 0023 (or a 0023 repair)")
+        return f"maintenance cutover {db} -> 0023; API stopped, no automatic V1 rollback"
     if head == db:
         return f"image and database are both at {db}"
     if db in image_chain:
@@ -167,7 +175,7 @@ def decide(action, graph, report):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--action", required=True, choices=("release", "rollback"))
+    parser.add_argument("--action", required=True, choices=("release", "rollback", "cutover"))
     parser.add_argument("--migrations", required=True)
     parser.add_argument("--report", required=True)
     args = parser.parse_args(argv)

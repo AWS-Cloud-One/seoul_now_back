@@ -6,7 +6,9 @@
 #   rollback (manual with image_digest of a git-<sha> image):
 #     manifests and config of <sha>, scripts and migration graph of main
 #     -> CodeBuild deploy.sh: DB compat check (DB never changed), rollout
-#   Both: public health check; any failure restores the pre-run revision.
+#   cutover (manual v2_cutover): stop API for the first public V2 baseline.
+#     Failure keeps API stopped; repair forward or restore a reviewed DB snapshot.
+#   All: public health check; only compatible releases restore the pre-run revision.
 name: Deploy
 
 on:
@@ -16,6 +18,11 @@ on:
     branches: [main]
   workflow_dispatch:
     inputs:
+      v2_cutover:
+        description: One-time V1 to V2 maintenance (stops API, no automatic V1 rollback). Confirm backup and edge/IAM readiness first.
+        type: boolean
+        required: false
+        default: false
       image_digest:
         description: Roll back to this earlier pipeline image (sha256:..., tagged git-<sha>). Leave empty to build and release the selected commit.
         required: false
@@ -56,6 +63,7 @@ jobs:
     env:
       GIT_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
       REQUESTED_DIGEST: ${{ inputs.image_digest }}
+      V2_CUTOVER: ${{ inputs.v2_cutover }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -73,6 +81,8 @@ jobs:
       - name: Resolve image
         run: |
           set -euo pipefail
+          [[ "$V2_CUTOVER" != true || -z "$REQUESTED_DIGEST" ]] \
+            || { echo "cutover cannot be combined with rollback" >&2; exit 1; }
           if [[ -n "$REQUESTED_DIGEST" ]]; then
             [[ "$REQUESTED_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "invalid image_digest" >&2; exit 1; }
             tags="$(aws ecr describe-images --repository-name "$ECR_REPOSITORY" \
@@ -92,7 +102,7 @@ jobs:
             exit 0
           fi
           {
-            echo "DEPLOY_ACTION=release"
+            if [[ "$V2_CUTOVER" == true ]]; then echo "DEPLOY_ACTION=cutover"; else echo "DEPLOY_ACTION=release"; fi
             echo "MANIFEST_SHA=$GIT_SHA"
           } >> "$GITHUB_ENV"
           tag="git-${GIT_SHA}"
@@ -134,5 +144,5 @@ jobs:
             echo "- manifests: \`${MANIFEST_SHA:-unresolved}\`"
             echo "- image: \`${IMAGE_DIGEST:-unresolved}\`"
             echo "- result: ${{ job.status }}"
-            echo "- rollback: run this workflow on main with the image_digest of an earlier git-<sha> image"
+            echo "- rollback: only DB-compatible git-<sha> images; the public V2 baseline cannot revert to V1 by image alone"
           } >> "$GITHUB_STEP_SUMMARY"

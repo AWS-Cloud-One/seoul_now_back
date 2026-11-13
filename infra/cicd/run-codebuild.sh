@@ -12,7 +12,7 @@ DEPLOY_MODE="${DEPLOY_MODE:-deploy}"
 DEPLOY_DRILL="${DEPLOY_DRILL:-}"   # test only (see deploy.sh); the workflow never sets it
 [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "invalid IMAGE_DIGEST" >&2; exit 1; }
 [[ "$GIT_SHA" =~ ^[0-9a-f]{7,40}$|^unknown$ ]] || { echo "invalid GIT_SHA" >&2; exit 1; }
-[[ "$DEPLOY_ACTION" == release || "$DEPLOY_ACTION" == rollback ]] || { echo "invalid DEPLOY_ACTION" >&2; exit 1; }
+[[ "$DEPLOY_ACTION" == release || "$DEPLOY_ACTION" == rollback || "$DEPLOY_ACTION" == cutover ]] || { echo "invalid DEPLOY_ACTION" >&2; exit 1; }
 [[ "$DEPLOY_MODE" == deploy || "$DEPLOY_MODE" == verify ]] || { echo "invalid DEPLOY_MODE" >&2; exit 1; }
 [[ -z "$DEPLOY_DRILL" || "$DEPLOY_DRILL" == rollback ]] || { echo "invalid DEPLOY_DRILL" >&2; exit 1; }
 

@@ -13,6 +13,7 @@ import time
 from pathlib import Path
 from uuid import uuid4
 
+from tests.fixtures.migrations import current_head
 from tests.smoke.database_tls import POSTGIS, RDS_CA, certificates
 from tests.smoke.runtime_settings import docker
 
@@ -228,7 +229,7 @@ for line in (root / 'SHA256SUMS').read_text().splitlines():
 
             run("migration", ["alembic", "upgrade", "head"])
             run("migration", ["alembic", "check"])
-            assert sql("SELECT version_num FROM alembic_version") == "0016"
+            assert sql("SELECT version_num FROM alembic_version") == current_head()
             print("PASS AWS bootstrap/TLS/real migration/schema check", flush=True)
 
             command = [
