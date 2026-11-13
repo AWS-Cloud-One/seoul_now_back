@@ -1,4 +1,4 @@
-"""Normalized models matching revision 0022, including spatial lookup indexes."""
+"""Normalized models matching revision 0023, including shared public-chat budgets."""
 
 from .areas import (
     AdministrativeArea,

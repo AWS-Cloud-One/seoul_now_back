@@ -33,7 +33,9 @@ V2_JSON_COLUMNS = {
 def test_runtime_models_use_relational_postgresql_schema():
     # 0013 adds result/card/evidence and compact search-area snapshots.
     # 0015/0016 add disposable shared API state (cursors, replays, trip progress, origins).
-    assert len(Base.metadata.tables) == 50
+    # 0023 adds shared admission/provider usage counters for public chat.
+    assert len(Base.metadata.tables) == 51
+    assert "chat_usage_buckets" in Base.metadata.tables
     assert "provider_snapshots" not in Base.metadata.tables
     for table in Base.metadata.sorted_tables:
         if table.name in TEMPORARY_STATE_TABLES:
